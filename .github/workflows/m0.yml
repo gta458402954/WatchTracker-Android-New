@@ -1,0 +1,49 @@
+name: WatchTracker Android M0
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: rustfmt, clippy
+      - uses: android-actions/setup-android@v3
+      - name: Pin Android SDK/NDK
+        shell: pwsh
+        run: |
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.15729638"
+      - run: npm ci
+      - run: npm run contracts:check
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: cargo fmt --check
+        working-directory: src-tauri
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test --locked
+        working-directory: src-tauri
+      - run: npx tauri android build --debug --target aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: watchtracker-android-m0
+          if-no-files-found: error
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+            src-tauri/gen/android/app/build/outputs/bundle/universalDebug/app-universal-debug.aab

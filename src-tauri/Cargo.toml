@@ -1,0 +1,48 @@
+[package]
+name = "app"
+version = "1.10.2"
+description = "Portable movie and series watch tracker"
+authors = ["Mark"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.1", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-shell = "2"
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
+# Rustls keeps the Android target self-contained.  The desktop baseline used
+# native-tls-vendored, which requires Perl/OpenSSL when cross-compiling and
+# cannot be built in the supported Windows Android toolchain.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+urlencoding = "2.1"
+url = "2.5"
+fern = "0.6"
+thiserror = "2.0.19"
+aes-gcm = "0.10.3"
+sha2 = "0.10.9"
+infer = "0.22.0"
+uuid = { version = "1.23.1", features = ["v4"] }
+zeroize = "1.8.2"
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+machine-uid = "0.6.0"

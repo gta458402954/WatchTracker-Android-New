@@ -1,0 +1,51 @@
+{
+  "name": "watch-tracker",
+  "version": "1.10.2",
+  "private": true,
+  "description": "影视观看追踪 App",
+  "author": "Mark",
+  "type": "module",
+  "scripts": {
+    "contracts:generate": "node scripts/generate-contracts.mjs",
+    "contracts:check": "node scripts/generate-contracts.mjs --check",
+    "dev": "vite",
+    "typecheck": "tsc -b --noEmit",
+    "test": "npm run contracts:check && node --test \"src/shared/lib/__tests__/*.test.mjs\"",
+    "test:e2e": "playwright test",
+    "build": "tsc -b && vite build",
+    "android:init": "tauri android init --ci",
+    "android:build": "tauri android build --debug --target aarch64",
+    "android:test": "cd src-tauri/gen/android && gradlew.bat :app:connectedArm64DebugAndroidTest -x :app:rustBuildArm64Debug",
+    "check:m0": "npm run contracts:check && npm run typecheck && npm run lint && npm test && npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "build:portable": "node scripts/build-portable.mjs",
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.9.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.0",
+    "@tauri-apps/cli": "^2.11.1",
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.2",
+    "vite": "^8.0.10"
+  }
+}

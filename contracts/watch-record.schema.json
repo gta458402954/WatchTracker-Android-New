@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "enums": {
+    "RecordStatus": {
+      "typescriptName": "Status",
+      "values": [
+        { "rust": "Watched", "wire": "已看" },
+        { "rust": "Watching", "wire": "在看" },
+        { "rust": "Unwatched", "wire": "未看" }
+      ]
+    },
+    "MediaType": {
+      "typescriptName": "MediaType",
+      "typescriptOnly": true,
+      "values": [
+        { "wire": "电影" },
+        { "wire": "剧集" },
+        { "wire": "纪录片" },
+        { "wire": "综艺" },
+        { "wire": "动画" }
+      ]
+    },
+    "TmdbMediaKind": {
+      "typescriptName": "TmdbMediaKind",
+      "typescriptOnly": true,
+      "values": [
+        { "wire": "movie" },
+        { "wire": "tv" },
+        { "wire": "tv-season" }
+      ]
+    },
+    "SeriesRecordKind": {
+      "typescriptName": "SeriesRecordKind",
+      "typescriptOnly": true,
+      "values": [
+        { "wire": "season" },
+        { "wire": "whole-series" },
+        { "wire": "single-work" }
+      ]
+    }
+  },
+  "watchRecord": [
+    { "wire": "id", "rust": "id", "type": "string" },
+    { "wire": "originalName", "rust": "original_name", "type": "string", "mutable": "optional" },
+    { "wire": "chineseName", "rust": "chinese_name", "type": "string", "mutable": "optional" },
+    { "wire": "progress", "rust": "progress", "type": "string", "mutable": "optional" },
+    { "wire": "totalEpisodes", "rust": "total_episodes", "type": "i32", "nullable": true, "mutable": "patch" },
+    { "wire": "episodeTrackingEnabled", "rust": "episode_tracking_enabled", "type": "bool", "default": true, "tsOptional": true },
+    { "wire": "nextEpisode", "rust": "next_episode", "type": "i32", "nullable": true, "default": true, "tsOptional": true },
+    { "wire": "movieProgress", "rust": "movie_progress", "type": "i32", "nullable": true, "mutable": "patch" },
+    { "wire": "movieDuration", "rust": "movie_duration", "type": "i32", "nullable": true, "mutable": "patch" },
+    { "wire": "releaseYear", "rust": "release_year", "type": "string", "nullable": true, "mutable": "patch" },
+    { "wire": "posterPath", "rust": "poster_path", "type": "string", "nullable": true, "mutable": "patch" },
+    { "wire": "status", "rust": "status", "type": "RecordStatus", "mutable": "optional" },
+    { "wire": "platform", "rust": "platform", "type": "string", "mutable": "optional" },
+    { "wire": "rating", "rust": "rating", "type": "i32", "nullable": true, "mutable": "patch" },
+    { "wire": "startDate", "rust": "start_date", "type": "string", "nullable": true, "tsNullable": false, "mutable": "patch" },
+    { "wire": "endDate", "rust": "end_date", "type": "string", "nullable": true, "tsNullable": false, "mutable": "patch" },
+    { "wire": "notes", "rust": "notes", "type": "string", "mutable": "optional" },
+    { "wire": "createdAt", "rust": "created_at", "type": "string" },
+    { "wire": "updatedAt", "rust": "updated_at", "type": "string", "nullable": true, "tsOptional": true },
+    { "wire": "imdbId", "rust": "imdb_id", "type": "string", "nullable": true, "mutable": "patch" },
+    { "wire": "isLocked", "rust": "is_locked", "type": "bool", "nullable": true, "tsNullable": false, "tsOptional": true, "mutable": "patch" },
+    { "wire": "genres", "rust": "genres", "type": "string", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "originCountry", "rust": "origin_country", "type": "string", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "imdbRating", "rust": "imdb_rating", "type": "f64", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "tmdbStatus", "rust": "tmdb_status", "type": "string", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "interestLevel", "rust": "interest_level", "type": "i32", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "episodeRuntime", "rust": "episode_runtime", "type": "i32", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "mediaType", "rust": "media_type", "type": "MediaType", "mutable": "optional" },
+    { "wire": "contentTags", "rust": "content_tags", "type": "string", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "tmdbMediaKind", "rust": "tmdb_media_kind", "type": "TmdbMediaKind", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "tmdbId", "rust": "tmdb_id", "type": "i64", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "tmdbParentId", "rust": "tmdb_parent_id", "type": "i64", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "tmdbSeasonNumber", "rust": "tmdb_season_number", "type": "i32", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "seriesRecordKind", "rust": "series_record_kind", "type": "SeriesRecordKind", "nullable": true, "tsOptional": true, "mutable": "patch" },
+    { "wire": "rev", "rust": "rev", "type": "i64", "default": true, "tsOptional": true },
+    { "wire": "revActor", "rust": "rev_actor", "type": "string", "default": true, "tsOptional": true }
+  ]
+}

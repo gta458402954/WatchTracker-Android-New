@@ -1,0 +1,52 @@
+# 依赖项
+node_modules/
+.npm/
+
+# 编译产物
+dist/
+dist-ssr/
+dist-build/
+*.local
+target/
+
+# Tauri 相关
+src-tauri/target/
+# Keep the generated Android Gradle project reproducible, but ignore its
+# local Gradle caches and build products.
+src-tauri/gen/*
+!src-tauri/gen/android/
+!src-tauri/gen/android/**
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/build/
+src-tauri/gen/android/buildSrc/build/
+src-tauri/gen/android/app/src/main/jniLibs/
+
+# 测试报告与本地发布副本
+playwright-report/
+test-results/
+blob-report/
+/WatchTracker-Portable.exe
+/*.msi
+/*-setup.exe
+
+# 个人数据与日志（严禁上传）
+data/
+*.log
+*.sqlite
+*.db
+
+# 编辑器与环境
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 临时文件
+.workbuddy/
+tmp/
+temp/

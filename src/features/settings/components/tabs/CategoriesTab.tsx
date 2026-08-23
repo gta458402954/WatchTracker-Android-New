@@ -1,0 +1,11 @@
+import type { WatchRecord } from '../../../../shared/types';
+import { MEDIA_TYPES, mediaTypeOf, regionsOf } from '../../../../shared/lib/classification';
+
+export default function CategoriesTab({ records }: { records: WatchRecord[] }) {
+  return <div className="space-y-6 animate-fade-in animate-duration-200">
+    <div><h3 className="text-2xl font-black text-gray-900">🏷️ 类型与标签</h3><p className="text-xs text-gray-400 mt-1">内容类型用于主列表筛选；地区以 originCountry 国家代码为主，内容标签仅为旧数据回退和自定义主题。</p></div>
+    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-4"><div className="flex items-center gap-2.5 border-b border-gray-50 pb-4"><span className="text-2xl">🎞️</span><div><h4 className="font-bold text-gray-800">固定内容类型</h4><p className="text-[11px] text-gray-400">类型是统一结构，不能自行新增或重命名，避免电影、纪录片与剧集混用。</p></div></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{MEDIA_TYPES.map(type => { const count = records.filter(record => mediaTypeOf(record) === type).length; return <div key={type} className="rounded-2xl border border-indigo-100 bg-indigo-50/50 px-4 py-3"><p className="text-sm font-bold text-indigo-700">{type}</p><p className="mt-1 text-xs text-gray-500">{count} 部记录</p></div>; })}</div></div>
+    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-4"><div className="flex items-center gap-2.5 border-b border-gray-50 pb-4"><span className="text-2xl">🌐</span><div><h4 className="font-bold text-gray-800">标准地区标签</h4><p className="text-[11px] text-gray-400">顶部地区筛选只读取每条记录的第一个国家代码；旧中文地区标签仅在国家代码缺失时回退使用。</p></div></div><div className="flex flex-wrap gap-2">{(['美国', '韩国', '日本', '英国', '中国大陆', '中国香港', '中国台湾'] as const).map(tag => { const count = records.filter(record => regionsOf(record).includes(tag)).length; return <span key={tag} className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm font-semibold text-gray-600">{tag} <b className="ml-1 text-indigo-600">{count}</b></span>; })}</div></div>
+    <div className="rounded-3xl border border-amber-100 bg-amber-50/60 p-5"><h4 className="font-bold text-amber-900">如何维护内容标签</h4><p className="mt-1 text-xs leading-6 text-amber-800">“纪录片”现在是独立内容类型，请在编辑页的“内容类型”中选择。TMDB 自动填充会更新 originCountry 和可识别的标准地区标签，同时保留你手工添加的其他主题标签。</p></div>
+  </div>;
+}
