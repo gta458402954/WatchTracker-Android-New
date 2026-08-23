@@ -16,6 +16,7 @@
     "android:init": "tauri android init --ci",
     "android:build": "tauri android build --debug --target aarch64",
     "android:test": "cd src-tauri/gen/android && gradlew.bat :app:connectedArm64DebugAndroidTest -x :app:rustBuildArm64Debug",
+    "android:smoke": "node scripts/android-m0-device-smoke.mjs",
     "check:m0": "npm run contracts:check && npm run typecheck && npm run lint && npm test && npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "build:portable": "node scripts/build-portable.mjs",
     "tauri": "tauri",

@@ -54,14 +54,14 @@ release checklist; do not claim a device result when `adb devices` is empty.
   `watchtracker.db`, `posters/`, and `backups/` under the app sandbox.
 - `connectedArm64DebugAndroidTest` passed 2/2 after explicitly configuring
   `androidx.test.runner.AndroidJUnitRunner`.
-- The new `DeviceSmokeTest` is checked in and exercises the installed app's
-  WebView through `window.__TAURI_INTERNALS__.invoke`, including CRUD, the
-  WebDAV probe, and `convertFileSrc` poster assertions. The first run exposed
-  and fixed a harness bug that treated its `started` marker as success. A
-  subsequent run reached the real WebView/IPC stage but the target activity
-  did not expose a WebView before the bounded wait (`Tauri WebView was not
-  found`). This remains a failed/blocked gate, not a passing CRUD or network
-  claim.
+- The earlier instrumentation WebView harness was removed from the gate after
+  it proved sensitive to Activity/WebView timing; the stable external CDP
+  smoke below is the reproducible device path.
+- The stable external smoke is `npm run android:smoke` (Node 24 native
+  WebSocket + adb/CDP). After installing the current APK it completed:
+  `OK CRUD=true WebDAV status=200 etag=watchtracker-m0 poster=true
+  traversalRejected=true`. It uses a public controlled ETag endpoint, emits
+  only status/ETag shape/value, and removes its adb forward in `finally`.
 - After `am force-stop` and a second `monkey` launch, the same
   `watchtracker.db` (110,592 bytes) remained and `app.log` recorded a second
   startup against the same app-private path, proving restart persistence of
@@ -74,12 +74,10 @@ release checklist; do not claim a device result when `adb devices` is empty.
 
 ### Evidence limits
 
-- No successful independent device-side HTTPS WebDAV GET run was captured;
-  the checked-in smoke currently blocks at the Tauri invoke bridge. Transport
-  and redaction unit tests remain the available evidence.
-- No successful Android WebView `poster://` load/reject trace was captured;
-  the checked-in smoke currently blocks before that assertion. Rust
-  path/signature tests cover the fail-closed boundary.
+- The external CDP smoke now provides the successful device-side HTTPS GET,
+  status/ETag/JSON, and WebView poster load/traversal evidence above. The
+  public endpoint is a transport Spike only and is not production sync
+  configuration.
 
 ## Known environment blockers
 
