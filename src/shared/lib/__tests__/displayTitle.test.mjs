@@ -38,6 +38,24 @@ describe('mainland-China first-season display titles', () => {
     assert.equal(displayTitlesOf(record({ chineseName: '示例剧 下部' })).primary, '示例剧 下部');
   });
 
+  test('hides only the redundant first-season marker while retaining a part title', () => {
+    assert.deepEqual(displayTitlesOf(record({
+      chineseName: '示例剧 第 1 季：上部', originalName: 'Example Season 1: Part One',
+    })), { primary: '示例剧：上部', secondary: 'Example: Part One' });
+  });
+
+  test('does not strip a first-season phrase embedded in an ordinary title', () => {
+    assert.deepEqual(displayTitlesOf(record({
+      chineseName: '第一季的故事', originalName: 'The Season 1 Story',
+    })), { primary: '第一季的故事', secondary: 'The Season 1 Story' });
+  });
+
+  test('keeps a standalone marker when no series base name remains', () => {
+    assert.deepEqual(displayTitlesOf(record({
+      chineseName: '第一季   ', originalName: 'Season 1   ',
+    })), { primary: '第一季', secondary: 'Season 1' });
+  });
+
   test('does not alter non-mainland or movie titles', () => {
     assert.equal(displayTitlesOf(record({ originCountry: 'US' })).primary, '示例剧 第一季');
     assert.equal(displayTitlesOf(record({ mediaType: '电影' })).primary, '示例剧 第一季');

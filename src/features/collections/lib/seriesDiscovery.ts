@@ -1,38 +1,6 @@
 import type { WatchRecord } from '../../../shared/types';
 import type { TmdbSeason } from '../../../shared/lib/classification';
-
-const ARABIC_SEASON_PATTERNS = [
-  /第\s*(\d+)\s*季/i,
-  /\bSeason\s*(\d+)\b/i,
-  /\bS(\d{1,3})(?:E\d+)?\b/i,
-];
-const CHINESE_SEASON_PATTERN = /第\s*([零〇一二两三四五六七八九十百]+)\s*季/i;
-
-function chineseNumber(value: string): number | null {
-  const digits: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-  if ([...value].every(character => character in digits)) {
-    const number = Number([...value].map(character => digits[character]).join(''));
-    return Number.isInteger(number) && number >= 0 && number <= 99 ? number : null;
-  }
-  const hundred = value.indexOf('百');
-  const ten = value.indexOf('十');
-  let number = 0;
-  if (hundred >= 0) number += (hundred === 0 ? 1 : digits[value[hundred - 1]]) * 100;
-  if (ten >= 0) number += (ten === 0 || (hundred >= 0 && ten === hundred + 1) ? 1 : digits[value[ten - 1]]) * 10;
-  const last = value.at(-1)!;
-  if (last !== '百' && last !== '十') number += digits[last] ?? 0;
-  return Number.isInteger(number) && number >= 0 && number <= 99 ? number : null;
-}
-
-function seasonOfText(value: string | null | undefined): number | null {
-  if (!value) return null;
-  for (const pattern of ARABIC_SEASON_PATTERNS) {
-    const match = value.match(pattern);
-    if (match) return Number(match[1]);
-  }
-  const chinese = value.match(CHINESE_SEASON_PATTERN);
-  return chinese ? chineseNumber(chinese[1]) : null;
-}
+import { seasonNumberFromText } from '../../../shared/lib/seasonTitles.ts';
 
 export interface RecordSeasonIdentity {
   seasonNumber: number | null;
@@ -43,19 +11,19 @@ export function recordSeasonIdentity(
   record: Pick<WatchRecord, 'chineseName' | 'originalName' | 'progress'>,
 ): RecordSeasonIdentity {
   const values = [record.chineseName, record.originalName, record.progress]
-    .map(seasonOfText)
+    .map(seasonNumberFromText)
     .filter((value): value is number => value !== null);
   const unique = [...new Set(values)];
   return { seasonNumber: unique.length === 1 ? unique[0] : null, conflicted: unique.length > 1 };
 }
 
 export function seriesBaseName(value: string | null | undefined): string {
-  return (value ?? '')
-    .replace(/第\s*\d+\s*季/ig, '')
-    .replace(CHINESE_SEASON_PATTERN, '')
-    .replace(/\bSeason\s*\d+\b/ig, '')
-    .replace(/\bS\d{1,3}(?:E\d+)?\b/ig, '')
-    .trim();
+  const text = (value ?? '').trim();
+  const marker = text.match(/第\s*(?:\d+|[零〇一二两三四五六七八九十百]+)\s*季|\bSeason\s*\d+\b|\bS\d{1,3}(?:E\d+)?\b/i);
+  if (!marker || marker.index == null) return text;
+  const before = text.slice(0, marker.index).replace(/[\s:：|\-–—]+$/, '').trim();
+  if (before) return before;
+  return text.slice(marker.index + marker[0].length).replace(/^[\s:：|\-–—]+/, '').trim();
 }
 
 export function seasonNumberOf(record: Pick<WatchRecord, 'chineseName' | 'originalName' | 'progress'>): number | null {

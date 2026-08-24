@@ -24,9 +24,16 @@ interface RecordFormProps {
   onNotify?: (tone: NoticeTone, message: string) => void;
   collections?: WatchCollection[];
   collectionMembers?: CollectionMember[];
+  capabilities?: {
+    tmdb?: boolean;
+    collections?: boolean;
+    sync?: boolean;
+    mobile?: boolean;
+  };
 }
 
-export default function RecordForm({ record, onSave, onDelete, onClose, onNotify, collections = [], collectionMembers = [] }: RecordFormProps) {
+export default function RecordForm({ record, onSave, onDelete, onClose, onNotify, collections = [], collectionMembers = [], capabilities = {} }: RecordFormProps) {
+  const { tmdb = true, collections: collectionsEnabled = true, mobile = false } = capabilities;
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>(() => record
     ? collectionMembers.filter(member => member.recordId === record.id).map(member => member.collectionId)
     : []);
@@ -88,7 +95,7 @@ export default function RecordForm({ record, onSave, onDelete, onClose, onNotify
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className={`fixed inset-0 z-50 flex items-center justify-center p-4 ${mobile ? 'mobile-record-form' : ''}`}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={dialogRef}
@@ -129,7 +136,7 @@ export default function RecordForm({ record, onSave, onDelete, onClose, onNotify
             </div>
           </div>
 
-          <TmdbSearchSection form={form} initialFocusRef={initialFocusRef} isSearching={isSearching} searchResults={searchResults} searchError={searchError} showResults={showResults} seasons={seasons} selectedSeries={selectedSeries} onSearch={() => void handleTMDBSearch()} onSelectResult={item => void handleSelectResult(item, setMovieDurationStr)} onSelectSeason={season => void handleSelectSeason(season)} onShowResults={setShowResults} onSeasonsChange={setSeasons} onSelectedSeriesChange={setSelectedSeries} onChineseNameChange={value => set('chineseName', value)} onOriginalNameChange={value => set('originalName', value)} onReleaseYearChange={value => set('releaseYear', value)} />
+          <TmdbSearchSection form={form} initialFocusRef={initialFocusRef} enabled={tmdb} isSearching={isSearching} searchResults={searchResults} searchError={searchError} showResults={showResults} seasons={seasons} selectedSeries={selectedSeries} onSearch={() => void handleTMDBSearch()} onSelectResult={item => void handleSelectResult(item, setMovieDurationStr)} onSelectSeason={season => void handleSelectSeason(season)} onShowResults={setShowResults} onSeasonsChange={setSeasons} onSelectedSeriesChange={setSelectedSeries} onChineseNameChange={value => set('chineseName', value)} onOriginalNameChange={value => set('originalName', value)} onReleaseYearChange={value => set('releaseYear', value)} />
           {/* Status & Progress & Total Episodes */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -194,14 +201,14 @@ export default function RecordForm({ record, onSave, onDelete, onClose, onNotify
 
           <PlaybackFields form={form} isEpisodic={isEpisodic} movieProgressStr={movieProgressStr} movieDurationStr={movieDurationStr} onTotalEpisodesChange={value => set('totalEpisodes', value)} onMovieProgressChange={(value, seconds) => { setMovieProgressStr(value); set('movieProgress', seconds); }} onMovieDurationChange={(value, seconds) => { setMovieDurationStr(value); set('movieDuration', seconds); }} onPlatformChange={value => set('platform', value)} />
           <RecordDetailsFields form={form} startYearOnly={startYearOnly} endYearOnly={endYearOnly} years={years} onStartYearOnlyChange={setStartYearOnly} onEndYearOnlyChange={setEndYearOnly} onInterestLevelChange={value => set('interestLevel', value)} onRatingChange={value => set('rating', value)} onStartDateChange={value => set('startDate', value)} onEndDateChange={value => set('endDate', value)} onNotesChange={value => set('notes', value)} />
-          <CollectionMembership
+          {collectionsEnabled && <CollectionMembership
             collections={collections}
             selectedCollectionIds={selectedCollectionIds}
             onSelectedCollectionIdsChange={setSelectedCollectionIds}
             collectionDrafts={collectionDrafts}
             onCollectionDraftsChange={setCollectionDrafts}
             onNotify={onNotify}
-          />
+          />}
 
           {/* Buttons */}
           <div className="flex gap-3 pt-2">

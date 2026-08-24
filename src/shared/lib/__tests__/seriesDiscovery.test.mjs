@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chronologicalRecords, defaultMissingSeasonNumbers, locallyKnownSeries, recordSeasonIdentity, seasonNumberOf } from '../../../features/collections/lib/seriesDiscovery.ts';
+import { chronologicalRecords, defaultMissingSeasonNumbers, locallyKnownSeries, recordSeasonIdentity, seasonNumberOf, seriesBaseName } from '../../../features/collections/lib/seriesDiscovery.ts';
 
 const record = (id, chineseName, releaseYear = null) => ({ id, chineseName, originalName: '', progress: '', releaseYear, imdbId: null });
 
@@ -31,6 +31,12 @@ test('local discovery groups Arabic and Chinese season names under the same base
   assert.equal(values.length, 1);
   assert.equal(values[0].name, '小谢尔顿');
   assert.deepEqual(values[0].seasons, [1, 5]);
+});
+
+test('extracts the pure series name from titled seasons', () => {
+  assert.equal(seriesBaseName('时差游戏 第 17 季：台湾：铁路竞速'), '时差游戏');
+  assert.equal(seriesBaseName('Jet Lag: The Game Season 17: Taiwan: Rail Rush'), 'Jet Lag: The Game');
+  assert.equal(seriesBaseName('小谢尔顿 第五季'), '小谢尔顿');
 });
 
 test('stable parent IDs use the same canonical source key as collections', () => {

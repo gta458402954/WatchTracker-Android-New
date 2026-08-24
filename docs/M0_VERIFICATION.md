@@ -1,5 +1,9 @@
 # M0 verification record
 
+M0 is the completed Android technical baseline. The repeatable Android 16
+emulator evidence below is valid; physical-device Alpha validation remains an
+open M1 item.
+
 Run from `WatchTracker-Android-New`.
 
 ```powershell
@@ -16,6 +20,16 @@ The arm64 debug Rust build and Gradle packaging produce:
 The APK is a universal debug container with the arm64 Rust library included;
 the generated project is configured for arm64 as the M0 target. The matching
 debug AAB is emitted beside it under `outputs/bundle/universalDebug`.
+
+`npm run android:build` is the authoritative command that refreshes the
+universal APK/AAB. A direct Gradle `assembleArm64Debug` (including the
+instrumentation workflow) instead refreshes:
+
+`src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk`
+
+After such a Gradle task, install that arm64 APK for manual/device checks. To
+use the universal path, rerun `npm run android:build` first; otherwise an older
+universal APK can be mistaken for the newly compiled arm64 code.
 
 With an emulator or device online:
 
@@ -78,6 +92,41 @@ release checklist; do not claim a device result when `adb devices` is empty.
   status/ETag/JSON, and WebView poster load/traversal evidence above. The
   public endpoint is a transport Spike only and is not production sync
   configuration.
+
+### 2026-08-24 M0 + M1.1 rerun
+
+- `npm run check` passed: contract check, typecheck, lint, 171 Node tests and
+  the Vite production build.
+- `npm run test:e2e` passed 104/104, including `tests/mobile-shell.spec.ts`.
+  The Android-user-agent/Tauri mock entered the Mobile Shell, exercised the
+  FAB and local CRUD form, verified TMDB is hidden, verified locked-record
+  protections, and verified that form Back traverses one history entry before
+  returning to the library. Root Back is asserted as an explicit `exit` action;
+  it does not claim a browser-only form-to-Activity test.
+- `npm run android:build` produced the arm64 debug APK and AAB at the paths
+  above. `Medium_Phone` (Android 16, `emulator-5554`) installed the APK and
+  launched `com.watchtracker.android.debug` successfully.
+- `npm run android:test` passed 2/2 instrumentation tests. After reinstalling
+  the APK (instrumentation cleanup uninstalls it), `npm run android:smoke`
+  passed: `OK CRUD=true WebDAV status=200 etag=watchtracker-m0 poster=true
+  traversalRejected=true`.
+- This is emulator evidence only. No physical Android handset was used, so
+  M1 Alpha physical-device validation remains open.
+- The final rebuilt APK was relaunched on `Medium_Phone` (Android 16). In the
+  exact native sequence `settings -> tap 片库 -> system Back`, the first Back
+  from the library finished `MainActivity` and the foreground became
+  `com.google.android.apps.nexuslauncher/.NexusLauncherActivity`. Selecting
+  片库 replaces the tab entry, while the library handler returns `exit`
+  directly; there is no second Back requirement. The Android callback is a
+  single `OnBackInvokedCallback` bridge, avoiding duplicate system/key dispatch.
+- For the final native callback check, the installed package was reconciled
+  with `adb shell pm path com.watchtracker.android.debug`, `adb pull`, and
+  SHA-256 hashing. The local arm64 APK and pulled installed `base.apk` were
+  both `5C47EE65ADD5C3254EA10859546FDC8DC5E67F4DF8102F18AD549803BFDD1997`
+  (205,860,220 bytes). The verified launcher component was
+  `com.watchtracker.android.debug/com.watchtracker.android.MainActivity`; after
+  root Back the foreground component was
+  `com.google.android.apps.nexuslauncher/.NexusLauncherActivity`.
 
 ## Known environment blockers
 

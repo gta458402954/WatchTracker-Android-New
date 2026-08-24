@@ -1,4 +1,4 @@
-name: WatchTracker Android M0
+name: WatchTracker Android CI
 
 on:
   pull_request:
@@ -33,6 +33,11 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Install Playwright browser
+        shell: pwsh
+        run: npx playwright install chromium
+      - name: Browser compatibility E2E
+        run: npm run test:e2e
       - run: cargo fmt --check
         working-directory: src-tauri
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
@@ -42,7 +47,7 @@ jobs:
       - run: npx tauri android build --debug --target aarch64
       - uses: actions/upload-artifact@v4
         with:
-          name: watchtracker-android-m0
+          name: watchtracker-android-debug
           if-no-files-found: error
           path: |
             src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk

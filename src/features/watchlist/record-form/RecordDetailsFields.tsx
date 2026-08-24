@@ -10,6 +10,7 @@ export default function RecordDetailsFields({ form, startYearOnly, endYearOnly, 
                   <button
                     key={star}
                     type="button"
+                    aria-label={`期待值 ${star} 分`}
                     onClick={() => onInterestLevelChange(form.interestLevel === star ? null : star)}
                     className={`text-2xl transition-transform hover:scale-110 ${
                       form.interestLevel != null && star <= (form.interestLevel ?? 0)
@@ -35,6 +36,7 @@ export default function RecordDetailsFields({ form, startYearOnly, endYearOnly, 
                   <button
                     key={star}
                     type="button"
+                    aria-label={`评分 ${star} 分`}
                     onClick={() => onRatingChange(form.rating === star ? null : star)}
                     className={`text-xl transition-transform hover:scale-110 ${
                       form.rating != null && star <= (form.rating ?? 0)

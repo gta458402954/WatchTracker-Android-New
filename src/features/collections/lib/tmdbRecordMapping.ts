@@ -7,24 +7,10 @@ import {
   type TmdbMedia,
   type TmdbSeason,
 } from '../../../shared/lib/classification.ts';
+import { formatSeasonTitles } from '../../../shared/lib/seasonTitles.ts';
 
 function missingText(value: string | null | undefined): boolean {
   return !value?.trim();
-}
-
-function genericSeasonName(value: string | null | undefined, seasonNumber: number): boolean {
-  const normalized = value?.trim().replace(/\s+/g, ' ') ?? '';
-  if (!normalized) return true;
-  return new RegExp(`^(?:Season\\s*${seasonNumber}|第\\s*${seasonNumber}\\s*(?:季)?)$`, 'i').test(normalized);
-}
-
-function appendSpecificSeasonTitle(seriesName: string, seasonName: string, separator: string): string {
-  const normalizedSeries = seriesName.trim();
-  const normalizedSeason = seasonName.trim();
-  if (!normalizedSeries || normalizedSeason.toLocaleLowerCase().startsWith(normalizedSeries.toLocaleLowerCase())) {
-    return normalizedSeason || normalizedSeries;
-  }
-  return `${normalizedSeries}${separator}${normalizedSeason}`;
 }
 
 export function tmdbOriginalLanguageLocale(originalLanguage?: string | null): string {
@@ -50,18 +36,16 @@ export function seasonRecordMetadata(
   );
   const runtime = positiveEpisodeRuntimeOf(series);
   const seasonNumber = season.season_number ?? originalSeason?.season_number ?? 0;
-  const localizedSeasonName = season.name?.trim() ?? '';
-  const originalSeasonName = originalSeason?.name?.trim() ?? '';
-  const specificLocalizedName = !genericSeasonName(localizedSeasonName, seasonNumber) ? localizedSeasonName : '';
-  const specificOriginalName = !genericSeasonName(originalSeasonName, seasonNumber) ? originalSeasonName : '';
-  const bestLocalizedSeasonName = specificLocalizedName || specificOriginalName;
+  const titles = formatSeasonTitles({
+    seriesName,
+    originalName,
+    seasonNumber,
+    localizedSeasonName: season.name,
+    originalSeasonName: originalSeason?.name,
+  });
   const next: Partial<WatchRecord> = {
-    chineseName: bestLocalizedSeasonName
-      ? appendSpecificSeasonTitle(seriesName, bestLocalizedSeasonName, '：')
-      : `${seriesName} 第 ${seasonNumber} 季`.trim(),
-    originalName: specificOriginalName
-      ? appendSpecificSeasonTitle(originalName, specificOriginalName, ': ')
-      : `${originalName} Season ${seasonNumber}`.trim(),
+    chineseName: titles.chineseName,
+    originalName: titles.originalName,
     releaseYear: season.air_date?.slice(0, 4) || null,
     posterPath: season.poster_path || series.poster_path || null,
     totalEpisodes: season.episode_count || null,

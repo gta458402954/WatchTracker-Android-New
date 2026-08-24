@@ -1,10 +1,27 @@
-# M0 Android architecture
+# Android architecture
 
 This project is a mobile Tauri shell around the WatchTracker-Main domain
 baseline. The record contract, SQLite V18 schema, atomic CRUD, episode history,
 recovery points, WebDAV payload parsing/merge, and poster validation remain
 shared Rust/TypeScript code. Mobile UI and Android-only capabilities are kept
 at explicit adapter boundaries.
+
+## Runtime and UI boundaries
+
+`src/platform/runtime.ts` is the single runtime decision point. Android is
+selected only when a Tauri runtime and Android user agent are both present.
+Desktop Tauri and browser/Playwright use the compatibility `App` shell. The
+Android path enters `MobileApp`, whose M1.1 shell uses a replaceable tab entry,
+a real form history entry, safe-area-aware layout and the existing Rust-backed
+local record repository. The library is the mobile root: native Back returns an
+explicit Activity-exit action there, without traversing stale browser history.
+The form explicitly disables TMDB and collection capabilities on Android until
+their platform adapters are complete; desktop defaults remain unchanged.
+
+The M1.1 shell exposes library, discovery, collections, statistics, and
+settings entry points. The latter four are deliberate no-op development
+placeholders. Local add/edit/delete is real; filters, episode redesign, TMDB,
+SAF, Keystore production integration and WebDAV are outside M1.1.
 
 ## Platform boundaries
 

@@ -49,9 +49,22 @@ test('Jet Lag reality seasons preserve their specific TMDB season title', () => 
   });
 
   assert.equal(result.mediaType, '综艺');
-  assert.equal(result.chineseName, 'Jet Lag: The Game：Connect 4 Across America');
-  assert.equal(result.originalName, 'Jet Lag: The Game: Connect 4 Across America');
+  assert.equal(result.chineseName, 'Jet Lag: The Game 第 1 季：Connect 4 Across America');
+  assert.equal(result.originalName, 'Jet Lag: The Game Season 1: Connect 4 Across America');
   assert.equal(tmdbOriginalLanguageLocale('en'), 'en-US');
+});
+
+test('season title formatting keeps the season number and removes duplicated series or season markers', () => {
+  const result = seasonRecordMetadata({
+    id: 258321, name: 'Jet Lag: The Game', original_name: 'Jet Lag: The Game',
+  }, {
+    id: 383896, season_number: 17, name: 'Jet Lag: The Game: Taiwan: Rail Rush',
+  }, undefined, {
+    id: 383896, season_number: 17, name: 'Jet Lag: The Game: Taiwan: Rail Rush',
+  });
+
+  assert.equal(result.chineseName, 'Jet Lag: The Game 第 17 季：Taiwan: Rail Rush');
+  assert.equal(result.originalName, 'Jet Lag: The Game Season 17: Taiwan: Rail Rush');
 });
 
 test('generic TMDB season names keep the established numbered-title fallback', () => {

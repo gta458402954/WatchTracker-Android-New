@@ -21,15 +21,16 @@ interface TmdbSearchSectionProps {
   onChineseNameChange: (value: string) => void;
   onOriginalNameChange: (value: string) => void;
   onReleaseYearChange: (value: string | null) => void;
+  enabled?: boolean;
 }
 
-export default function TmdbSearchSection({ form, initialFocusRef, isSearching, searchResults, searchError, showResults, seasons, selectedSeries, onSearch, onSelectResult, onSelectSeason, onShowResults, onSeasonsChange, onSelectedSeriesChange, onChineseNameChange, onOriginalNameChange, onReleaseYearChange }: TmdbSearchSectionProps) {
+export default function TmdbSearchSection({ form, initialFocusRef, enabled = true, isSearching, searchResults, searchError, showResults, seasons, selectedSeries, onSearch, onSelectResult, onSelectSeason, onShowResults, onSeasonsChange, onSelectedSeriesChange, onChineseNameChange, onOriginalNameChange, onReleaseYearChange }: TmdbSearchSectionProps) {
   return <div className="grid grid-cols-2 gap-3">
     <div className="relative col-span-2">
       <label className="block text-sm font-medium text-gray-700 mb-1">中文名 <span className="text-red-400">*</span></label>
       <div className="flex gap-2">
         <input ref={initialFocusRef} type="text" value={form.chineseName} onChange={event => onChineseNameChange(event.target.value)} placeholder="请输入中文名称" className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition" required />
-        <button type="button" onClick={onSearch} disabled={isSearching || (!form.chineseName && !form.originalName)} className="px-3 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-semibold hover:bg-indigo-100 disabled:opacity-50 transition-colors flex items-center gap-1">{isSearching ? '搜索中...' : '🔍 自动填充'}</button>
+        {enabled && <button type="button" onClick={onSearch} disabled={isSearching || (!form.chineseName && !form.originalName)} className="px-3 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-semibold hover:bg-indigo-100 disabled:opacity-50 transition-colors flex items-center gap-1">{isSearching ? '搜索中...' : '🔍 自动填充'}</button>}
       </div>
       {showResults && <div className="absolute z-[60] left-0 right-0 top-full mt-1 bg-white border border-gray-100 shadow-xl rounded-2xl max-h-60 overflow-y-auto p-1">
         <div className="flex items-center justify-between p-2 border-b border-gray-50"><div className="flex items-center gap-2">{seasons.length > 0 && <button type="button" onClick={() => { onSeasonsChange([]); onSelectedSeriesChange(null); }} className="p-1 hover:bg-gray-100 rounded-full text-indigo-600"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>}<span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{seasons.length > 0 ? `选择季节 (${selectedSeries?.name})` : '搜索结果 (TMDB)'}</span></div><button type="button" aria-label="关闭 TMDB 搜索结果" onClick={() => onShowResults(false)} className="text-gray-400 hover:text-gray-600"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button></div>

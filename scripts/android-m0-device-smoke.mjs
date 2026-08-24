@@ -76,6 +76,21 @@ async function main() {
   });
   let id = 0;
   const nextId = () => ++id;
+  // The WebView DevTools socket can appear before Tauri has injected its
+  // bridge. Wait on the bridge itself so a cold emulator launch is reliable.
+  let bridgeReady = false;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const probe = await cdpRequest(ws, 'Runtime.evaluate', {
+      expression: 'Boolean(window.__TAURI_INTERNALS__?.invoke && window.__TAURI_INTERNALS__?.convertFileSrc)',
+      returnByValue: true,
+    }, nextId);
+    if (probe.result?.value === true) {
+      bridgeReady = true;
+      break;
+    }
+    await sleep(500);
+  }
+  if (!bridgeReady) throw new Error('Tauri bridge did not become ready');
   const expression = `
     (async () => {
       const invoke = window.__TAURI_INTERNALS__?.invoke;

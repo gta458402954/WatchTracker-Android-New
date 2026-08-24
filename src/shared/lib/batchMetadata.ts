@@ -6,6 +6,7 @@ import {
   positiveEpisodeRuntimeOf,
   type TmdbMedia,
 } from './classification.ts';
+import { formatSeasonTitles, seasonNumberFromText } from './seasonTitles.ts';
 
 export type TmdbEntityType = 'movie' | 'tv';
 export type BatchMetadataField = keyof Pick<UpdateWatchRecord,
@@ -103,16 +104,11 @@ function isEpisodicType(type: MediaType): boolean {
 }
 
 export function seasonNumberOf(record: Pick<WatchRecord, 'originalName' | 'chineseName' | 'progress'>): number | null {
-  const candidates = [
-    record.originalName.match(/\bSeason\s+(\d+)\b/i),
-    record.chineseName.match(/第\s*(\d+)\s*季/),
-    record.progress.match(/\bS(\d{1,3})E\d{1,4}\b/i),
-  ];
-  for (const match of candidates) {
-    const value = match?.[1] ? Number.parseInt(match[1], 10) : 0;
-    if (value > 0) return value;
-  }
-  return null;
+  const candidates = [record.originalName, record.chineseName, record.progress]
+    .map(seasonNumberFromText)
+    .filter((value): value is number => value !== null && value > 0);
+  const unique = [...new Set(candidates)];
+  return unique.length === 1 ? unique[0] : null;
 }
 
 export function tmdbTypeHintOf(record: WatchRecord): TmdbEntityType | null {
@@ -210,15 +206,17 @@ export function buildBatchMetadataPatch(
     ? undefined
     : detail.seasons?.find(season => season.season_number === seasonNumber);
   const localizedBaseName = detail.name || detail.title;
-  const localizedName = seasonNumber == null
-    ? localizedBaseName
-    : localizedBaseName
-      ? `${localizedBaseName} ${targetSeason?.name || `第 ${seasonNumber} 季`}`
-      : undefined;
   const originalBaseName = detail.original_name || detail.original_title;
-  const originalName = seasonNumber == null
-    ? originalBaseName
-    : originalBaseName ? `${originalBaseName} Season ${seasonNumber}` : undefined;
+  const seasonTitles = seasonNumber != null && (localizedBaseName || originalBaseName)
+    ? formatSeasonTitles({
+      seriesName: localizedBaseName,
+      originalName: originalBaseName || localizedBaseName,
+      seasonNumber,
+      localizedSeasonName: targetSeason?.name,
+    })
+    : undefined;
+  const localizedName = seasonNumber == null ? localizedBaseName : seasonTitles?.chineseName;
+  const originalName = seasonNumber == null ? originalBaseName : seasonTitles?.originalName;
   const releaseDate = targetSeason?.air_date || detail.release_date || detail.first_air_date;
   const releaseYear = releaseDate?.split('-')[0];
   const posterPath = targetSeason?.poster_path || detail.poster_path;

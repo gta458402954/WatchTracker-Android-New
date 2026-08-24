@@ -44,6 +44,11 @@ describe('batch metadata identity', () => {
     assert.equal(remoteIdentityKey({ id: 77, type: 'tv' }, null), 'tv:77:series');
   });
 
+  test('recognizes legacy Chinese-number season names and rejects conflicting title fields', () => {
+    assert.equal(seasonNumberOf(record({ chineseName: '示例剧 第五季', originalName: '', mediaType: '剧集' })), 5);
+    assert.equal(seasonNumberOf(record({ chineseName: '示例剧 第五季', originalName: 'Example Season 6', mediaType: '剧集' })), null);
+  });
+
   test('never falls back to a mismatched type and rejects ambiguous special media', () => {
     const movie = record();
     assert.deepEqual(selectTmdbMatch(movie, [{ id: 9, media_type: 'tv' }]), {
@@ -100,6 +105,30 @@ describe('field-level safe patch', () => {
     assert.equal(patch.seasonNumber, 2);
     assert.equal('movieDuration' in patch.updates, false);
     assert.equal('mediaType' in patch.updates, false);
+  });
+
+  test('formats missing season names through the shared season-title formatter', () => {
+    const season = record({ originalName: 'Example Season 2', chineseName: '', mediaType: '剧集' });
+    const patch = buildBatchMetadataPatch(season, {
+      id: 46511, name: '示例剧', original_name: 'Example',
+      seasons: [{ id: 62090, season_number: 2, name: '示例剧：台湾篇', episode_count: 13 }],
+    }, 'tv');
+
+    assert.equal(patch.updates.chineseName, '示例剧 第 2 季：台湾篇');
+    assert.equal(patch.updates.originalName, undefined);
+  });
+
+  test('does not write a localized season subtitle into the missing original name', () => {
+    const season = record({
+      originalName: '', chineseName: '', mediaType: '剧集', tmdbSeasonNumber: 2,
+    });
+    const patch = buildBatchMetadataPatch(season, {
+      id: 46511, name: '示例剧', original_name: 'Example',
+      seasons: [{ id: 62090, season_number: 2, name: '台湾篇', episode_count: 13 }],
+    }, 'tv');
+
+    assert.equal(patch.updates.chineseName, '示例剧 第 2 季：台湾篇');
+    assert.equal(patch.updates.originalName, 'Example Season 2');
   });
 
   test('does not turn remote nulls or invalid numbers into destructive updates', () => {

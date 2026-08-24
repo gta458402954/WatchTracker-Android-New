@@ -6,12 +6,18 @@ export interface DisplayTitles {
   secondary: string | null;
 }
 
-const CHINESE_FIRST_SEASON_SUFFIX = /\s*(?:第\s*(?:1|一)\s*季|第一季)\s*$/;
-const ENGLISH_FIRST_SEASON_SUFFIX = /\s+Season\s*1\s*$/i;
-
 function stripFirstSeasonSuffix(value: string, chinese: boolean): string {
-  const stripped = value.replace(chinese ? CHINESE_FIRST_SEASON_SUFFIX : ENGLISH_FIRST_SEASON_SUFFIX, '').trim();
-  return stripped || value.trim();
+  const marker = chinese ? /第\s*(?:1|一)\s*季|第一季/i : /\bSeason\s*1\b/i;
+  const match = value.match(marker);
+  if (!match || match.index == null) return value.trim();
+  const before = value.slice(0, match.index).trim();
+  const after = value.slice(match.index + match[0].length);
+  const delimiter = after.match(/^\s*[:：|\-–—]\s*/);
+  if (after.trim() && !delimiter) return value.trim();
+  const suffix = delimiter ? after.slice(delimiter[0].length).trim() : '';
+  if (!before) return suffix || value.trim();
+  if (!suffix) return before;
+  return chinese ? `${before}：${suffix}` : `${before}: ${suffix}`;
 }
 
 export function displayTitlesOf(
