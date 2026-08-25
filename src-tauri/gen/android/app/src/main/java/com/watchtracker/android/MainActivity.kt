@@ -31,17 +31,6 @@ class MainActivity : TauriActivity() {
       finish()
       return
     }
-    val route = webView.url?.substringAfter('#', "")?.substringBefore('&')
-    if (route.isNullOrEmpty() || route == "library") {
-      // Keep the JS contract observable, but finish synchronously for the
-      // shell root so WebView's older document history cannot consume Back.
-      webView.evaluateJavascript(
-        "window.__WATCHTRACKER_ANDROID_BACK__ && window.__WATCHTRACKER_ANDROID_BACK__()",
-        null,
-      )
-      finish()
-      return
-    }
     webView.evaluateJavascript(
       "window.__WATCHTRACKER_ANDROID_BACK__ ? window.__WATCHTRACKER_ANDROID_BACK__() : 'exit'"
     ) { action ->

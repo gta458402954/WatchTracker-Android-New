@@ -9,9 +9,10 @@ interface SafePosterImageProps {
   alt: string;
   className: string;
   compact?: boolean;
+  autoDownload?: boolean;
 }
 
-export default function SafePosterImage({ posterPath, size = 'w342', alt, className, compact = false }: SafePosterImageProps) {
+export default function SafePosterImage({ posterPath, size = 'w342', alt, className, compact = false, autoDownload = true }: SafePosterImageProps) {
   const [revision, setRevision] = useState(0);
   const [attempted, setAttempted] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -58,8 +59,13 @@ export default function SafePosterImage({ posterPath, size = 'w342', alt, classN
     <img
       src={source}
       alt={alt}
+      loading="lazy"
       className={className}
       onError={() => {
+        if (!autoDownload) {
+          setFailed(true);
+          return;
+        }
         if (attempted) {
           setFailed(true);
           return;
