@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { UpdateWatchRecord, WatchRecord } from '../../../shared/types';
+import type { EpisodeTracking } from '../../../shared/lib/database.ts';
+import { mobileEpisodeWriteReason, type MobileEpisodeWriteReason } from '../mobileEpisodeTracking.ts';
 import { useRecordRepository, type LocalWriteHandler } from './useRecordRepository';
 
 export type MobileWriteReason = 'missing' | 'stale' | 'locked' | 'error';
 export type MobileWriteResult = { ok: true; record: WatchRecord } | { ok: false; reason: MobileWriteReason; error?: unknown };
+export type MobileEpisodeWriteResult = { ok: true; tracking: EpisodeTracking } | { ok: false; reason: MobileEpisodeWriteReason; error?: unknown };
 
 /** Mobile-only write façade. The underlying Rust CRUD remains unchanged and is not CAS.
  * We reload and compare the revision immediately before each write to reduce stale UI writes. */
@@ -44,5 +47,23 @@ export function useMobileRecordRepository(onLocalWrite: LocalWriteHandler) {
     }
   }, [reloadLatest, repository]);
 
-  return { ...repository, updateMobileRecord, deleteMobileRecord, reloadLatest };
+  /** Episode commands are real Rust CAS transactions. Their persisted record and
+   * history are returned together, so no optimistic episode state is created. */
+  const changeMobileEpisode = useCallback(async (record: WatchRecord, nextEpisode: number | null): Promise<MobileEpisodeWriteResult> => {
+    try {
+      const tracking = await repository.changeNextEpisode(record, nextEpisode);
+      return { ok: true, tracking };
+    } catch (error) {
+      const reason = mobileEpisodeWriteReason(error);
+      try {
+        await reloadRecords();
+      } catch {
+        // Preserve the command failure classification. Initialization and the
+        // next explicit reload still surface a database read failure safely.
+      }
+      return { ok: false, reason, error };
+    }
+  }, [reloadRecords, repository]);
+
+  return { ...repository, updateMobileRecord, deleteMobileRecord, changeMobileEpisode, reloadLatest };
 }

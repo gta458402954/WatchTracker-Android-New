@@ -58,6 +58,7 @@
   .mobile-record-subtitle { overflow: hidden; margin-top: 3px; color: #94a3b8; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-record-meta { display: flex; gap: 7px; margin-top: 9px; color: #64748b; font-size: 11px; }
   .mobile-record-meta span { border-radius: 999px; background: #f1f5f9; padding: 3px 7px; }
+  .mobile-episode-card-status { margin: 8px 0 0; color: #4f46e5; font-size: 11px; font-weight: 800; line-height: 1.45; }
   .mobile-record-actions { display: flex; flex-direction: column; gap: 5px; }
   .mobile-count-row { display: flex; justify-content: flex-end; margin: 0 4px 10px; color: #64748b; font-size: 12px; }
   .mobile-search-row, .mobile-toolbar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
@@ -100,6 +101,25 @@
   .mobile-status-pill { display: inline-block; margin: 2px 4px 2px 0; padding: 5px 8px; border-radius: 999px; background: #e0e7ff; color: #4338ca; font-size: 11px; font-weight: 800; }
   .mobile-status-pill.locked { background: #fef3c7; color: #92400e; }
   .mobile-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .mobile-episode-panel { margin: 0 0 18px; padding: 16px; border: 1px solid #c7d2fe; border-radius: 18px; background: #fff; box-shadow: 0 4px 14px rgba(79, 70, 229, .06); }
+  .mobile-episode-heading, .mobile-episode-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .mobile-episode-heading h2, .mobile-episode-history-heading h3 { margin: 0; color: #1e293b; font-size: 17px; font-weight: 900; }
+  .mobile-episode-heading > span { border-radius: 999px; background: #eef2ff; padding: 5px 9px; color: #4338ca; font-size: 12px; font-weight: 800; }
+  .mobile-episode-summary { margin: 12px 0; color: #334155; font-size: 14px; font-weight: 800; }
+  .mobile-episode-legacy, .mobile-episode-note, .mobile-episode-resume, .mobile-episode-history { margin: 12px 0; padding: 12px; border-radius: 12px; background: #f8fafc; color: #475569; font-size: 12px; line-height: 1.55; }
+  .mobile-episode-legacy { background: #fffbeb; color: #854d0e; }
+  .mobile-episode-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin: 12px 0; }
+  .mobile-episode-control label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: #64748b; font-size: 12px; font-weight: 800; }
+  .mobile-episode-control select { width: 100%; min-height: 48px; border: 1px solid #dbe3ef; border-radius: 12px; background: white; padding: 0 10px; color: #334155; }
+  .mobile-episode-complete-button { width: 100%; }
+  .mobile-episode-finish-button { width: 100%; border: 1px solid #c7d2fe; }
+  .mobile-episode-resume { background: #ecfdf5; color: #065f46; }
+  .mobile-episode-resume p { margin: 0 0 10px; font-weight: 700; }
+  .mobile-episode-history { margin-bottom: 0; }
+  .mobile-episode-history h3 { font-size: 14px; }
+  .mobile-episode-history p { margin: 8px 0 0; }
+  .mobile-episode-history ol { max-height: 220px; margin: 8px 0 0; padding-left: 22px; overflow-y: auto; }
+  .mobile-episode-history li { padding: 4px 0; }
   .mobile-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; background: #e2e8f0; }
   .mobile-detail-grid div { min-width: 0; padding: 11px; background: #fff; }
   .mobile-detail-grid dt { color: #94a3b8; font-size: 11px; }
@@ -136,7 +156,7 @@
   .mobile-shell input, .mobile-shell select, .mobile-shell textarea { min-height: 48px; }
   .mobile-shell .mobile-record-form button { min-width: 48px; min-height: 48px; }
   .mobile-shell [role="dialog"] { max-height: calc(100dvh - 2rem); padding-bottom: env(safe-area-inset-bottom); }
-  @media (max-width: 380px) { .mobile-record-actions { gap: 1px; } .mobile-record-actions .mobile-quiet-button { padding-left: 4px; padding-right: 4px; font-size: 10px; } .mobile-form-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 380px) { .mobile-record-card { align-items: stretch; flex-direction: column; } .mobile-record-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; } .mobile-record-actions .mobile-quiet-button { padding-left: 4px; padding-right: 4px; font-size: 10px; } .mobile-episode-quick-button { grid-column: 1 / -1; } .mobile-form-grid, .mobile-episode-control { grid-template-columns: 1fr; } }
   @media (min-width: 700px) { .mobile-content { width: min(100%, 680px); margin: 0 auto; } }
 }
 

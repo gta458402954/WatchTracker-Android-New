@@ -64,6 +64,26 @@ function cdpRequest(ws, method, params, nextId) {
   });
 }
 
+async function openPageSocket(port, timeoutMs) {
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+  const target = targets.find(item => item.type === 'page' && item.webSocketDebuggerUrl);
+  if (!target) throw new Error('No WebView page target found');
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); reject(new Error('CDP open timeout')); }, timeoutMs);
+      const cleanup = () => { clearTimeout(timer); ws.removeEventListener('open', opened); ws.removeEventListener('error', failed); ws.removeEventListener('close', failed); };
+      const opened = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(new Error('CDP socket closed during connect')); };
+      ws.addEventListener('open', opened); ws.addEventListener('error', failed); ws.addEventListener('close', failed);
+    });
+  } catch (error) {
+    try { ws.close(); } catch { /* best effort */ }
+    throw error;
+  }
+  return ws;
+}
+
 async function main() {
   if (usingMock) {
     mockServer = createServer((_request, response) => { response.writeHead(200, { 'Content-Type': 'application/json', ETag: '"watchtracker-m0-local"' }); response.end('{"ok":true,"source":"m0-local-mock"}'); });
@@ -74,26 +94,30 @@ async function main() {
   const socket = await waitForSocket(pid);
   runAdb(['forward', `tcp:${localPort}`, `localabstract:${socket}`]);
   forwarded = true;
-  const targets = await (await fetch(`http://127.0.0.1:${localPort}/json`)).json();
-  const target = targets.find(item => item.type === 'page' && item.webSocketDebuggerUrl);
-  if (!target) throw new Error('No WebView page target found');
-
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  const cdpTimeoutMs = Number(process.env.M0_CDP_TIMEOUT_MS ?? 10000);
+  let ws = await openPageSocket(localPort, cdpTimeoutMs);
   activeWebSocket = ws;
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true });
-    ws.addEventListener('error', reject, { once: true });
-  });
   let id = 0;
   const nextId = () => ++id;
+  const readinessRequest = async params => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { return await cdpRequest(ws, 'Runtime.evaluate', params, nextId); } catch (error) {
+        if (attempt > 0) throw error;
+        try { ws.close(); } catch { /* best effort */ }
+        ws = await openPageSocket(localPort, cdpTimeoutMs);
+        activeWebSocket = ws;
+      }
+    }
+    throw new Error('CDP readiness evaluation failed');
+  };
   // The WebView DevTools socket can appear before Tauri has injected its
   // bridge. Wait on the bridge itself so a cold emulator launch is reliable.
   let bridgeReady = false;
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const probe = await cdpRequest(ws, 'Runtime.evaluate', {
+    const probe = await readinessRequest({
       expression: 'Boolean(window.__TAURI_INTERNALS__?.invoke && window.__TAURI_INTERNALS__?.convertFileSrc)',
       returnByValue: true,
-    }, nextId);
+    });
     if (probe.result?.value === true) {
       bridgeReady = true;
       break;
@@ -103,7 +127,7 @@ async function main() {
   if (!bridgeReady) throw new Error('Tauri bridge did not become ready');
   let shellReady = false;
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const shell = await cdpRequest(ws, 'Runtime.evaluate', { expression: "Boolean(document.querySelector('#mobile-library-title, [data-empty-state=\\\"library\\\"], [role=\\\"alert\\\"]'))", returnByValue: true }, nextId);
+    const shell = await readinessRequest({ expression: "Boolean(document.querySelector('#mobile-library-title, [data-empty-state=\\\"library\\\"], [role=\\\"alert\\\"]'))", returnByValue: true });
     if (shell.result?.value === true) { shellReady = true; break; }
     await sleep(500);
   }

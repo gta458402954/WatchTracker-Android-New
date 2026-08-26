@@ -521,10 +521,17 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               if (index < 0) throw new Error('episode_record_missing');
               const previous = snapshot.records[index];
               if ((previous.rev ?? 0) !== args.expectedRev) throw new Error('stale_episode_progress');
+              if (previous.isLocked) throw new Error('episode_record_locked');
+              if (previous.mediaType === '电影') throw new Error('episode_tracking_unsupported_media');
+              if (typeof previous.totalEpisodes !== 'number' || !Number.isInteger(previous.totalEpisodes) || previous.totalEpisodes <= 0) throw new Error('episode_total_missing');
               if (previous.status === '已看') throw new Error('episode_record_already_completed');
-              snapshot.records[index] = { ...previous, episodeTrackingEnabled: true, nextEpisode: args.initialNextEpisode as number, status: '在看', rev: (previous.rev ?? 0) + 1, revActor: 'mock-device' };
+              if (previous.episodeTrackingEnabled) throw new Error('episode_tracking_already_enabled');
+              const initial = args.initialNextEpisode as number;
+              if (!Number.isInteger(initial) || initial < 1 || initial > Number(previous.totalEpisodes)) throw new Error('episode_out_of_range');
+              const now = new Date().toISOString();
+              snapshot.records[index] = { ...previous, episodeTrackingEnabled: true, nextEpisode: initial, status: '在看', startDate: previous.startDate || now.slice(0, 10), updatedAt: now, rev: (previous.rev ?? 0) + 1, revActor: 'mock-device' };
               recordsGeneration += 1; queueOutbox('episode-tracking-enable');
-              return { record: structuredClone(snapshot.records[index]), completions: [] };
+              return { record: structuredClone(snapshot.records[index]), completions: structuredClone(episodeCompletions.filter(item => item.recordId === previous.id)) };
             }
             case 'set_next_episode': {
               requireKeys(command, args, ['expectedRev', 'nextEpisode', 'recordId']);
@@ -532,18 +539,27 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               if (index < 0) throw new Error('episode_record_missing');
               const previous = snapshot.records[index];
               if ((previous.rev ?? 0) !== args.expectedRev) throw new Error('stale_episode_progress');
+              if (previous.isLocked) throw new Error('episode_record_locked');
+              if (previous.mediaType === '电影') throw new Error('episode_tracking_unsupported_media');
+              const total = previous.totalEpisodes;
+              if (typeof total !== 'number' || !Number.isInteger(total) || total <= 0) throw new Error('episode_total_missing');
+              if (!previous.episodeTrackingEnabled) throw new Error('episode_tracking_not_enabled');
               const current = previous.nextEpisode;
               const target = args.nextEpisode as number | null;
+              if (target !== null && (!Number.isInteger(target) || target < 1 || target > total)) throw new Error('episode_out_of_range');
+              if (episodeCompletions.some(item => item.recordId === previous.id && item.episodeNumber > total) || (typeof current === 'number' && current > total)) throw new Error('episode_total_mismatch');
+              if (current === target) return { record: structuredClone(previous), completions: structuredClone(episodeCompletions.filter(item => item.recordId === previous.id)) };
               if (typeof current === 'number' && (target === null || target > current)) {
-                const boundary = target === null ? (previous.totalEpisodes as number) : target - 1;
+                const boundary = target === null ? total : target - 1;
                 for (let episode = current; episode <= boundary; episode += 1) {
                   const existing = episodeCompletions.find(item => item.recordId === previous.id && item.episodeNumber === episode);
                   const completedAt = episode === boundary ? new Date().toISOString() : null;
                   if (!existing) episodeCompletions.push({ id: `${previous.id}-${episode}`, recordId: previous.id, episodeNumber: episode, completedAt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), rev: 1, revActor: 'mock-device' });
-                  else if (existing.completedAt === null && completedAt) existing.completedAt = completedAt;
+                  else if (existing.completedAt === null && completedAt) { existing.completedAt = completedAt; existing.updatedAt = completedAt; existing.rev += 1; existing.revActor = 'mock-device'; }
                 }
               }
-              snapshot.records[index] = { ...previous, nextEpisode: target, status: target === null ? '已看' : '在看', rev: (previous.rev ?? 0) + 1, revActor: 'mock-device' };
+              const now = new Date().toISOString();
+              snapshot.records[index] = { ...previous, nextEpisode: target, status: target === null ? '已看' : '在看', startDate: target === null ? previous.startDate : previous.startDate || now.slice(0, 10), endDate: target === null ? previous.endDate || now.slice(0, 10) : previous.endDate, updatedAt: now, rev: (previous.rev ?? 0) + 1, revActor: 'mock-device' };
               recordsGeneration += 1; queueOutbox('episode-progress');
               return { record: structuredClone(snapshot.records[index]), completions: structuredClone(episodeCompletions.filter(item => item.recordId === previous.id)) };
             }

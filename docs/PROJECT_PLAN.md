@@ -530,7 +530,9 @@ WatchTracker-Android-New/
 
 退出标准：不配置网络凭据也能完成核心片库流程；关键业务 Rust/前端测试通过。
 
-M1.2（当前批次）边界：移动片库使用独立的移动工具栏、筛选 Sheet、列表/海报墙、只读详情和全屏表单；偏好键为 `mobile_library_preferences_v1`，不持久化搜索、滚动或草稿。所有移动写入在不改变 Rust CRUD/schema 的前提下 reload 并比较 `rev`/锁定状态，明确不是原子 CAS。TMDB、同步、SAF、收藏集、逐集业务和物理真机/低版本矩阵留到后续批次。
+M1.2（已完成）边界：移动片库使用独立的移动工具栏、筛选 Sheet、列表/海报墙、只读详情和全屏表单；偏好键为 `mobile_library_preferences_v1`，不持久化搜索、滚动或草稿。普通移动 CRUD 在不改变 Rust CRUD/schema 的前提下 reload 并比较 `rev`/锁定状态，明确不是原子 CAS。
+
+M1.3（当前批次）边界：移动片库为非电影且具有合法 `totalEpisodes` 的记录提供显式逐集跟踪。列表只保留“完成本集”等高频动作，详情提供选择初始下一集、完成、跳集、回退、原子完结、逐集历史及增集后继续追更。所有逐集写入复用 Rust `enable_episode_tracking` / `set_next_episode` 的原子事务和 `expectedRev`；UI 只采用 Rust 返回的持久化记录与历史，stale/missing/locked 均 reload 且不显示乐观成功。旧文本 `progress` 原样保留，锁定记录严格只读。本批次不改变 schema/migration，也不接入 TMDB、同步 UI、SAF、Keystore、收藏集或高级筛选。
 
 ### M2：迁移、导入与恢复（5～8 个工作日）
 

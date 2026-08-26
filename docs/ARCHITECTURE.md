@@ -11,17 +11,33 @@ at explicit adapter boundaries.
 `src/platform/runtime.ts` is the single runtime decision point. Android is
 selected only when a Tauri runtime and Android user agent are both present.
 Desktop Tauri and browser/Playwright use the compatibility `App` shell. The
-Android path enters `MobileApp`, whose M1.1 shell uses a replaceable tab entry,
-a real form history entry, safe-area-aware layout and the existing Rust-backed
-local record repository. The library is the mobile root: native Back returns an
-explicit Activity-exit action there, without traversing stale browser history.
+Android path enters `MobileApp`, whose M1 shell uses a replaceable tab entry,
+real detail/form history entries, safe-area-aware layout and the existing
+Rust-backed local record repository. The library is the mobile root: native
+Back returns an explicit Activity-exit action there, without traversing stale
+browser history. Filter/dirty-form overlays consume Back before route history.
 The form explicitly disables TMDB and collection capabilities on Android until
 their platform adapters are complete; desktop defaults remain unchanged.
 
-The M1.1 shell exposes library, discovery, collections, statistics, and
-settings entry points. The latter four are deliberate no-op development
-placeholders. Local add/edit/delete is real; filters, episode redesign, TMDB,
-SAF, Keystore production integration and WebDAV are outside M1.1.
+The shell exposes library, discovery, collections, statistics, and settings
+entry points. The latter four are deliberate no-op development placeholders.
+M1.2 local add/edit/delete, filters and mobile preferences are real. Their
+mobile stale check is a reload-and-compare guard around unchanged CRUD and is
+not an atomic CAS.
+
+M1.3 episode writes have a stronger boundary. Only non-film records with a
+positive integer `totalEpisodes` expose mobile episode controls. The mobile
+repository invokes the existing Rust `enable_episode_tracking` and
+`set_next_episode` commands with the displayed `expectedRev`; it never derives
+episode history from legacy `progress` and never updates episode state
+optimistically. Success state comes from the Rust command's persisted
+`EpisodeTracking` result. Stale, missing and locked failures reload the Rust
+source of truth and keep a safe, visible Chinese failure message. List cards
+offer the current-episode completion shortcut; detail owns enable, jump,
+retreat, atomic finish, history and resume-after-total-growth controls. Locked
+episode surfaces are read-only. This adds no schema, migration or Android
+native bridge change; existing cold-start, route and Back contracts remain in
+force.
 
 ## Platform boundaries
 
