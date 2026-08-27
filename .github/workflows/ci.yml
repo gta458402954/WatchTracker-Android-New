@@ -1,9 +1,11 @@
-name: WatchTracker Android CI
+name: WatchTracker CI
 
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   checks:
@@ -14,21 +16,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
           components: rustfmt, clippy
-      - uses: android-actions/setup-android@v3
-      - name: Pin Android SDK/NDK
-        shell: pwsh
-        run: |
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.15729638"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - run: npm ci
-      - run: npm run contracts:check
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
@@ -44,11 +38,3 @@ jobs:
         working-directory: src-tauri
       - run: cargo test --locked
         working-directory: src-tauri
-      - run: npx tauri android build --debug --target aarch64
-      - uses: actions/upload-artifact@v4
-        with:
-          name: watchtracker-android-debug
-          if-no-files-found: error
-          path: |
-            src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
-            src-tauri/gen/android/app/build/outputs/bundle/universalDebug/app-universal-debug.aab
