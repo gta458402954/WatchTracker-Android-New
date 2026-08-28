@@ -23,7 +23,7 @@ describe('WebDAV target display formatting', () => {
     assert.equal(display.safeUrl, 'https://dav.example.test:8443/team/library');
   });
 
-  test('never includes credentials, queries, or fragments', () => {
+test('never includes credentials, queries, or fragments', () => {
     const display = formatWebDavTargetUrl('https://user:secret@example.test/private/?token=secret#section');
     assert.equal(display.summary, 'example.test · /private');
     assert.equal(display.safeUrl, 'https://example.test/private');
@@ -39,4 +39,11 @@ describe('WebDAV target display formatting', () => {
     assert.equal(invalidUrl.summary, 'not a url');
     assert.doesNotMatch(JSON.stringify(invalidUrl), /token|secret/);
   });
+});
+
+test('sanitizes mobile WebDAV display even when userinfo and secret URL parts are supplied', () => {
+  const value = formatWebDavTargetUrl('https://mobile-user:mobile-password@example.test/dav/phone?token=secret#private');
+  assert.equal(value.safeUrl, 'https://example.test/dav/phone');
+  assert.equal(value.summary, 'example.test · /dav/phone');
+  assert.doesNotMatch(JSON.stringify(value), /mobile-password|token=secret|private/);
 });

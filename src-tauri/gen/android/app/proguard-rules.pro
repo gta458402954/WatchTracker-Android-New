@@ -5,6 +5,10 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
+# Rust reaches this adapter through the application ClassLoader/JNI. Keep the
+# stable class and method names even if a future release enables minification.
+-keep class com.watchtracker.android.AndroidSecretStore { *; }
+
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
 # class:

@@ -259,7 +259,8 @@ export async function resolveSyncConflict(id: string, resolution: SyncConflictRe
 
 export interface SyncTargetDescriptor { id: string; normalizedUrl: string; username: string; createdAt: string; lastActivatedAt: string; }
 export interface SyncTargetRegistry { version: 1; activeTargetId: string | null; targetEpoch: number; targets: SyncTargetDescriptor[]; }
-export interface ActiveSyncConnection { targetId: string; targetEpoch: number; url: string; username: string; credentialAvailable: boolean; }
+export type CredentialConnectionState = 'protected' | 'missing' | 'reentry-required' | 'unavailable';
+export interface ActiveSyncConnection { targetId: string; targetEpoch: number; url: string; username: string; credentialAvailable: boolean; credentialState: CredentialConnectionState; }
 
 export const getSyncTargets = (): Promise<SyncTargetRegistry> => invoke('get_sync_targets');
 export const getActiveSyncConnection = (): Promise<ActiveSyncConnection | null> => invoke('get_active_sync_connection');

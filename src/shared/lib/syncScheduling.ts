@@ -21,6 +21,10 @@ export function classifySyncFailure(error?: string): SyncFailureDisposition {
     || value.includes('unsupported_remote_schema')
     || value.includes('legacy_remote_changed')
     || value.includes('未配置凭据')
+    || value.includes('credential_reentry_required')
+    || value.includes('credential_missing')
+    || value.includes('credential_store_unavailable')
+    || value.includes('credential_store_unsupported')
     || /HTTP Error:\s*(401|403)\b/.test(value)
   ) return 'blocked';
   return 'retry';

@@ -27,6 +27,9 @@ test('sync failures distinguish retry, local races, and user blockers', () => {
   assert.equal(classifySyncFailure('conditional_write_unsupported'), 'blocked');
   assert.equal(classifySyncFailure('conditional_validator_rejected'), 'blocked');
   assert.equal(classifySyncFailure('unsupported_remote_schema'), 'blocked');
+  assert.equal(classifySyncFailure('credential_reentry_required'), 'blocked');
+  assert.equal(classifySyncFailure('credential_missing'), 'blocked');
+  assert.equal(classifySyncFailure('credential_store_unavailable'), 'blocked');
 });
 
 test('retry delay uses the approved bounded ladder and deterministic jitter', () => {

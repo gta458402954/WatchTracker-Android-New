@@ -28,6 +28,8 @@ export interface MockIpcOptions {
   omitGetEtag?: boolean;
   webdavFailureStatus?: number;
   webdavFailureCount?: number;
+  webdavSyncFailureCount?: number;
+  webdavCredentialState?: 'protected' | 'missing' | 'reentry-required' | 'unavailable';
   databaseCompatibilityIssue?: {
     code: 'unsupported_newer_database' | 'v19_downgrade_failed';
     detectedVersion: number;
@@ -61,7 +63,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, databaseCompatibilityIssue, recoveryPoints, failSettingWrites }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -83,8 +85,14 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       const recoveryRecords: Record<string, WatchRecord[]> = {};
       let recoverySequence = snapshot.recoveryPoints.length;
       let recordsGeneration = restoredRuntime?.recordsGeneration ?? 0;
+      const seededCredential = String(snapshot.settings.webdav_creds || '').replace(/^encrypted:/, '');
+      const seededSeparator = seededCredential.indexOf(':');
+      let storedWebdavUsername = seededSeparator >= 0 ? seededCredential.slice(0, seededSeparator) : 'user';
+      let vaultPassword: string | null = seededSeparator >= 0 ? seededCredential.slice(seededSeparator + 1) : (snapshot.settings.webdav_creds ? 'mock-protected-secret' : null);
+      let credentialState = webdavCredentialState ?? (vaultPassword ? 'protected' : 'missing');
       let activeTargetId: string | null = snapshot.settings.webdav_creds ? 'a'.repeat(64) : null;
       let targetEpoch = activeTargetId ? 1 : 0;
+      const savedTargets: Array<{ id: string; normalizedUrl: string; username: string; createdAt: string; lastActivatedAt: string }> = activeTargetId ? [{ id: activeTargetId, normalizedUrl: String(snapshot.settings.webdav_url || ''), username: storedWebdavUsername, createdAt: new Date().toISOString(), lastActivatedAt: new Date().toISOString() }] : [];
       const outbox: SyncOutboxState = (() => {
         if (restoredRuntime) return structuredClone(restoredRuntime.outbox);
         try { return JSON.parse(snapshot.settings.sync_outbox_v1 || 'null') || {
@@ -101,6 +109,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       let v3Etag: string | null = webdavV3Etag;
       let remainingPreconditionFailures = webdavPreconditionFailures;
       let remainingWebdavFailures = webdavFailureCount;
+      let remainingSyncFailures = webdavSyncFailureCount;
       let shouldMutateLocalDuringPut = mutateLocalDuringPut;
       let tombstones: SyncTombstoneV3[] = (() => {
         try { return JSON.parse(snapshot.settings.sync_tombstones || '[]'); } catch { return []; }
@@ -129,6 +138,11 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
         snapshot.settings.sync_scheduler_v1 = JSON.stringify(scheduler);
         sessionStorage.setItem('__WATCHTRACKER_SYNC_RUNTIME__', JSON.stringify({ recordsGeneration, outbox, scheduler }));
         sessionStorage.setItem('__WATCHTRACKER_CONTROLLED_RECORDS__', JSON.stringify(snapshot.records));
+      };
+
+      const verifySyncContext = (targetId: unknown, epoch: unknown) => {
+        const expectedEpoch = activeTargetId ? targetEpoch : null;
+        if (targetId !== activeTargetId || epoch !== expectedEpoch) throw new Error('stale_sync_target');
       };
 
       const queueOutbox = (reason: string) => {
@@ -180,11 +194,15 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
           `http://${protocol}.localhost/${encodeURIComponent(filePath)}`,
         invoke: async (command, rawArgs = {}) => {
           const args = structuredClone(rawArgs);
+          const recordedArgs = structuredClone(args);
+          if (command === 'activate_sync_target' && recordedArgs.input) (recordedArgs.input as Record<string, unknown>).password = '[REDACTED]';
+          if (command === 'probe_webdav_request' && recordedArgs.request) (recordedArgs.request as Record<string, unknown>).password = '[REDACTED]';
+          if (command === 'save_tmdb_credential') recordedArgs.secret = '[REDACTED]';
           snapshot.calls.push({
             command,
             args: command === 'webdav_request'
-              ? structuredClone(args.request as Record<string, unknown>)
-              : args,
+              ? structuredClone(recordedArgs.request as Record<string, unknown>)
+              : recordedArgs,
           });
 
           switch (command) {
@@ -623,6 +641,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               };
             case 'set_auto_sync_paused':
               requireKeys(command, args, ['paused', 'targetEpoch', 'targetId']);
+              verifySyncContext(args.targetId, args.targetEpoch);
               scheduler.paused = args.paused as boolean;
               if (!scheduler.paused) scheduler.nextAttemptAt = null;
               persistRuntime();
@@ -636,6 +655,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               };
             case 'record_sync_failure':
               requireKeys(command, args, ['code', 'nextAttemptAt', 'targetEpoch', 'targetId']);
+              verifySyncContext(args.targetId, args.targetEpoch);
               scheduler.consecutiveFailures += 1;
               scheduler.lastAttemptAt = new Date().toISOString();
               scheduler.lastErrorCode = args.code as string;
@@ -741,6 +761,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
             }
             case 'resolve_sync_conflict': {
               requireKeys(command, args, ['id', 'resolution', 'targetEpoch', 'targetId']);
+              verifySyncContext(args.targetId, args.targetEpoch);
               const conflicts = JSON.parse(snapshot.settings.sync_v3_conflicts || '[]') as SyncConflictV3[];
               const conflict = conflicts.find(item => item.id === args.id);
               if (!conflict) throw new Error('Sync conflict not found');
@@ -797,35 +818,43 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               return null;
             case 'get_active_sync_connection': {
               requireKeys(command, args, []);
-              if (!activeTargetId || !snapshot.settings.webdav_creds) return null;
-              const decrypted = String(snapshot.settings.webdav_creds).replace(/^encrypted:/, '');
-              const separator = decrypted.indexOf(':');
+              if (!activeTargetId) return null;
               return {
                 targetId: activeTargetId, targetEpoch, url: snapshot.settings.webdav_url,
-                username: decrypted.slice(0, separator), credentialAvailable: true,
+                username: storedWebdavUsername,
+                credentialAvailable: credentialState === 'protected' && Boolean(vaultPassword),
+                credentialState,
               };
             }
             case 'get_sync_targets':
               requireKeys(command, args, []);
               return {
                 version: 1, activeTargetId, targetEpoch,
-                targets: activeTargetId ? [{ id: activeTargetId, normalizedUrl: snapshot.settings.webdav_url, username: 'user', createdAt: new Date().toISOString(), lastActivatedAt: new Date().toISOString() }] : [],
+                targets: structuredClone(savedTargets),
               };
             case 'activate_sync_target': {
               requireKeys(command, args, ['input']);
               const input = args.input as { url: string; username: string; password: string };
-              if (!activeTargetId) targetEpoch += 1;
-              activeTargetId = 'a'.repeat(64);
+              const existingIdentity = savedTargets.find(target => target.normalizedUrl === input.url && target.username === input.username);
+              const nextTargetId = existingIdentity?.id ?? String.fromCharCode(97 + Math.min(savedTargets.length, 25)).repeat(64);
+              if (activeTargetId !== nextTargetId) targetEpoch += 1;
+              activeTargetId = nextTargetId;
               snapshot.settings.webdav_url = input.url;
-              snapshot.settings.webdav_creds = `encrypted:${input.username}:${input.password}`;
-              return { version: 1, activeTargetId, targetEpoch, targets: [{ id: activeTargetId, normalizedUrl: input.url, username: input.username, createdAt: new Date().toISOString(), lastActivatedAt: new Date().toISOString() }] };
+              snapshot.settings.webdav_creds = 'androidkeystore:v1';
+              storedWebdavUsername = input.username; vaultPassword = input.password; credentialState = 'protected';
+              const now = new Date().toISOString();
+              const existing = savedTargets.find(target => target.id === activeTargetId);
+              if (existing) { existing.normalizedUrl = input.url; existing.username = input.username; existing.lastActivatedAt = now; }
+              else savedTargets.push({ id: activeTargetId, normalizedUrl: input.url, username: input.username, createdAt: now, lastActivatedAt: now });
+              return { version: 1, activeTargetId, targetEpoch, targets: structuredClone(savedTargets) };
             }
             case 'disconnect_sync_target':
               requireKeys(command, args, []);
               activeTargetId = null;
               targetEpoch += 1;
+              vaultPassword = null; credentialState = 'missing';
               snapshot.settings.webdav_creds = '';
-              return { version: 1, activeTargetId, targetEpoch, targets: [] };
+              return { version: 1, activeTargetId, targetEpoch, targets: structuredClone(savedTargets) };
             case 'set_setting':
               requireKeys(command, args, ['key', 'value']);
               if (failSettingWrites) throw new Error('Injected setting write failure');
@@ -868,6 +897,10 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               requireKeys(command, args, ['request']);
               {
               const request = args.request as Record<string, unknown>;
+              if (command === 'webdav_request' && remainingSyncFailures > 0) {
+                remainingSyncFailures -= 1;
+                return { status: webdavFailureStatus, body: null, etag: null };
+              }
               if (remainingWebdavFailures > 0) {
                 remainingWebdavFailures -= 1;
                 return { status: webdavFailureStatus, body: null, etag: null };
@@ -940,6 +973,8 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       omitGetEtag: options.omitGetEtag ?? false,
       webdavFailureStatus: options.webdavFailureStatus ?? 503,
       webdavFailureCount: options.webdavFailureCount ?? 0,
+      webdavSyncFailureCount: options.webdavSyncFailureCount ?? 0,
+      webdavCredentialState: options.webdavCredentialState,
       databaseCompatibilityIssue: options.databaseCompatibilityIssue ?? null,
       recoveryPoints: options.recoveryPoints ?? [],
       failSettingWrites: options.failSettingWrites ?? false,

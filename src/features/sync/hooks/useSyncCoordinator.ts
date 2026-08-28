@@ -29,6 +29,7 @@ function safeFailureCode(error?: string): string {
     'conditional_validator_rejected',
     'unsupported_remote_schema', 'legacy_remote_changed',
     'episode_sync_upgrade_required', 'episode_completion_conflict',
+    'credential_reentry_required', 'credential_missing', 'credential_store_unavailable',
   ].find(code => value.includes(code));
   if (known) return known;
   const http = value.match(/HTTP Error:\s*(\d{3})/);
@@ -42,6 +43,7 @@ export function useSyncCoordinator(
   onBackgroundError?: (message: string) => void,
 ) {
   const [syncRuntime, setSyncRuntime] = useState<SyncRuntimeState | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
   const syncInFlightRef = useRef<Promise<SyncResult> | null>(null);
   const wakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeDueAtRef = useRef<number | null>(null);
@@ -81,6 +83,7 @@ export function useSyncCoordinator(
     }
     const task = syncToWebDAV();
     syncInFlightRef.current = task;
+    setIsSyncing(true);
     try {
       const result = await task;
       if (result.ok) {
@@ -119,7 +122,10 @@ export function useSyncCoordinator(
       queueAutomaticRef.current('retry', Math.max(0, Date.parse(nextAttemptAt) - Date.now()));
       return { ok: false, error: message };
     } finally {
-      if (syncInFlightRef.current === task) syncInFlightRef.current = null;
+      if (syncInFlightRef.current === task) {
+        syncInFlightRef.current = null;
+        setIsSyncing(false);
+      }
       if (rerunRequestedRef.current) {
         rerunRequestedRef.current = false;
         queueAutomaticRef.current('retry', 0);
@@ -214,12 +220,15 @@ export function useSyncCoordinator(
     const onFocus = () => void checkFocusPull();
     const onVisibility = () => { if (document.visibilityState === 'visible') void checkFocusPull(); };
     const onOnline = () => queueAutomatic('online', 0, true);
+    const onAndroidResume = () => { if (startedRef.current) queueAutomatic('focus', 0, true); };
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);
+    window.addEventListener('watchtracker:android-resume', onAndroidResume);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('watchtracker:android-resume', onAndroidResume);
       document.removeEventListener('visibilitychange', onVisibility);
       if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -251,6 +260,7 @@ export function useSyncCoordinator(
 
   return {
     syncRuntime,
+    isSyncing,
     isSyncPaused: syncRuntime?.scheduler.paused ?? false,
     startCoordinator,
     scheduleLocalWrite,

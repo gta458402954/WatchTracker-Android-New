@@ -72,6 +72,7 @@ pub struct ActiveSyncConnection {
     pub url: String,
     pub username: String,
     pub credential_available: bool,
+    pub credential_state: String,
 }
 
 fn invalid(message: impl Into<String>) -> AppError {
@@ -261,15 +262,41 @@ pub fn activate(
     paths: &AppPaths,
     input: ActivateTargetInput,
 ) -> Result<SyncTargetRegistry, AppError> {
+    activate_with_secret_writer(
+        conn,
+        paths,
+        input,
+        |transaction, key, logical, username, password| {
+            crate::secret_store::save_setting_secret(transaction, key, logical, username, password)
+        },
+    )
+}
+
+fn activate_with_secret_writer<F>(
+    conn: &mut Connection,
+    paths: &AppPaths,
+    input: ActivateTargetInput,
+    save_secret: F,
+) -> Result<SyncTargetRegistry, AppError>
+where
+    F: FnOnce(
+        &Connection,
+        &str,
+        &crate::secret_store::LogicalSecret,
+        &str,
+        &str,
+    ) -> Result<(), AppError>,
+{
     let url = normalize_url(&input.url)?;
     let username = input.username.trim().to_string();
     if username.is_empty() || input.password.is_empty() {
         return Err(invalid("invalid_sync_target_credentials"));
     }
-    let mut registry = match ensure_migrated(conn, paths) {
-        Ok(registry) => registry,
+    let (mut registry, replacement_migration) = match ensure_migrated(conn, paths) {
+        Ok(registry) => (registry, false),
         Err(error) if error.to_string().contains("target_migration_required") => {
-            migrate_with_replacement_credentials(conn, paths, &url, &username)?
+            recovery_points::create(conn, paths, "target-migration")?;
+            (replacement_registry(&url, &username), true)
         }
         Err(error) => return Err(error),
     };
@@ -277,7 +304,17 @@ pub fn activate(
     let switching = registry.active_target_id.as_deref() != Some(&id);
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let transaction = conn.transaction()?;
-    crate::secret_store::save_setting_secret(
+    if replacement_migration {
+        for (legacy, suffix) in LEGACY_SCOPED_KEYS {
+            if *legacy == "webdav_creds" {
+                continue;
+            }
+            if let Some(value) = get_setting_tx(&transaction, legacy)? {
+                set_setting_tx(&transaction, &scoped_key(&id, suffix), &value)?;
+            }
+        }
+    }
+    save_secret(
         &transaction,
         &scoped_key(&id, "credentials"),
         &crate::secret_store::LogicalSecret::WebDav(id.clone()),
@@ -305,6 +342,12 @@ pub fn activate(
         registry.active_target_id = Some(id.clone());
     }
     save_registry(&transaction, &registry)?;
+    if replacement_migration {
+        for (legacy, _) in LEGACY_SCOPED_KEYS {
+            transaction.execute("DELETE FROM settings WHERE key = ?1", [legacy])?;
+        }
+        transaction.execute("DELETE FROM settings WHERE key = 'webdav_url'", [])?;
+    }
     if switching {
         let generation = get_setting_generation(&transaction)?;
         let staging =
@@ -333,16 +376,10 @@ pub fn activate(
     Ok(registry)
 }
 
-fn migrate_with_replacement_credentials(
-    conn: &mut Connection,
-    paths: &AppPaths,
-    url: &str,
-    username: &str,
-) -> Result<SyncTargetRegistry, AppError> {
-    recovery_points::create(conn, paths, "target-migration")?;
+fn replacement_registry(url: &str, username: &str) -> SyncTargetRegistry {
     let id = target_id(url, username);
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let registry = SyncTargetRegistry {
+    SyncTargetRegistry {
         version: 1,
         active_target_id: Some(id.clone()),
         target_epoch: 1,
@@ -353,23 +390,7 @@ fn migrate_with_replacement_credentials(
             created_at: now.clone(),
             last_activated_at: now,
         }],
-    };
-    let transaction = conn.transaction()?;
-    for (legacy, suffix) in LEGACY_SCOPED_KEYS {
-        if *legacy == "webdav_creds" {
-            continue;
-        }
-        if let Some(value) = get_setting_tx(&transaction, legacy)? {
-            set_setting_tx(&transaction, &scoped_key(&id, suffix), &value)?;
-        }
     }
-    save_registry(&transaction, &registry)?;
-    for (legacy, _) in LEGACY_SCOPED_KEYS {
-        transaction.execute("DELETE FROM settings WHERE key = ?1", [legacy])?;
-    }
-    transaction.execute("DELETE FROM settings WHERE key = 'webdav_url'", [])?;
-    transaction.commit()?;
-    Ok(registry)
 }
 
 fn get_setting_generation(conn: &Connection) -> Result<i64, AppError> {
@@ -378,7 +399,12 @@ fn get_setting_generation(conn: &Connection) -> Result<i64, AppError> {
 
 pub fn disconnect(conn: &mut Connection, paths: &AppPaths) -> Result<SyncTargetRegistry, AppError> {
     let mut registry = ensure_migrated(conn, paths)?;
-    if registry.active_target_id.is_some() {
+    if let Some(active_id) = registry.active_target_id.clone() {
+        crate::secret_store::clear_setting_secret(
+            conn,
+            &scoped_key(&active_id, "credentials"),
+            &crate::secret_store::LogicalSecret::WebDav(active_id),
+        )?;
         registry.active_target_id = None;
         registry.target_epoch = registry
             .target_epoch
@@ -402,30 +428,29 @@ pub fn credentials(
         .iter()
         .find(|target| &target.id == id)
         .ok_or_else(|| invalid("invalid_sync_target_registry"))?;
-    // Android currently has no production secret-store adapter.  Treat the
-    // target as offline/unconfigured so app startup remains local and ready;
-    // credential configuration is intentionally deferred to M1/M2.
-    #[cfg(target_os = "android")]
-    {
-        return Ok(Some(ActiveSyncConnection {
-            target_id: id.clone(),
-            target_epoch: registry.target_epoch,
-            url: target.normalized_url.clone(),
-            username: target.username.clone(),
-            credential_available: false,
-        }));
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let available = resolve_target_secret(conn, target)?.is_some();
-        Ok(Some(ActiveSyncConnection {
-            target_id: id.clone(),
-            target_epoch: registry.target_epoch,
-            url: target.normalized_url.clone(),
-            username: target.username.clone(),
-            credential_available: available,
-        }))
-    }
+    let (available, state) = match resolve_target_secret(conn, target) {
+        Ok(Some(_)) => (true, "protected"),
+        Ok(None) => (false, "missing"),
+        Err(error) if error.to_string().contains("credential_reentry_required") => {
+            (false, "reentry-required")
+        }
+        Err(error) if error.to_string().contains("credential_missing") => (false, "missing"),
+        Err(error)
+            if error.to_string().contains("credential_store_unavailable")
+                || error.to_string().contains("credential_store_unsupported") =>
+        {
+            (false, "unavailable")
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(Some(ActiveSyncConnection {
+        target_id: id.clone(),
+        target_epoch: registry.target_epoch,
+        url: target.normalized_url.clone(),
+        username: target.username.clone(),
+        credential_available: available,
+        credential_state: state.to_string(),
+    }))
 }
 
 fn resolve_target_secret(
@@ -625,6 +650,118 @@ mod tests {
             .points
             .iter()
             .any(|point| point.reason == "target-migration"));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn target_activation_keeps_the_previous_target_when_secure_write_fails() {
+        let mut conn = connection();
+        let current = target('a');
+        let original = SyncTargetRegistry {
+            version: 1,
+            active_target_id: Some(current.id.clone()),
+            target_epoch: 8,
+            targets: vec![current],
+        };
+        save_registry(&conn, &original).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "watchtracker-target-secure-rollback-{}",
+            std::process::id()
+        ));
+        let paths = AppPaths::resolve_from(None, &root).unwrap();
+        let error = activate_with_secret_writer(
+            &mut conn,
+            &paths,
+            ActivateTargetInput {
+                url: "https://new.example/dav/".into(),
+                username: "new-user".into(),
+                password: "never-persist".into(),
+            },
+            |_, _, _, _, _| Err(invalid("credential_store_unavailable")),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("credential_store_unavailable"));
+        assert_eq!(registry(&conn).unwrap().unwrap(), original);
+        assert!(conn
+            .prepare("SELECT value FROM settings WHERE value LIKE '%never-persist%'")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replacement_migration_rolls_back_every_database_change_when_secure_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "watchtracker-target-replacement-rollback-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = AppPaths::resolve_from(None, &root).unwrap();
+        let mut conn = Connection::open(paths.database()).unwrap();
+        db::setup_db(&conn).unwrap();
+        set_setting_tx(
+            &conn,
+            "webdav_creds",
+            crate::secret_store::WINDOWS_SECRET_REFERENCE,
+        )
+        .unwrap();
+        set_setting_tx(&conn, "webdav_url", "https://legacy.example/dav/").unwrap();
+        set_setting_tx(&conn, "sync_v3_remote_etag", "\"legacy-etag\"").unwrap();
+        set_setting_tx(&conn, "sync_outbox_v1", "legacy-outbox").unwrap();
+
+        let error = activate_with_secret_writer(
+            &mut conn,
+            &paths,
+            ActivateTargetInput {
+                url: "https://replacement.example/dav/".into(),
+                username: "replacement-user".into(),
+                password: "never-persist".into(),
+            },
+            |_, _, _, _, _| Err(invalid("credential_store_unavailable")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("credential_store_unavailable"));
+        assert!(registry(&conn).unwrap().is_none());
+        assert_eq!(
+            get_setting_tx(&conn, "webdav_creds").unwrap().as_deref(),
+            Some(crate::secret_store::WINDOWS_SECRET_REFERENCE)
+        );
+        assert_eq!(
+            get_setting_tx(&conn, "webdav_url").unwrap().as_deref(),
+            Some("https://legacy.example/dav/")
+        );
+        assert_eq!(
+            get_setting_tx(&conn, "sync_v3_remote_etag")
+                .unwrap()
+                .as_deref(),
+            Some("\"legacy-etag\"")
+        );
+        assert_eq!(
+            get_setting_tx(&conn, "sync_outbox_v1").unwrap().as_deref(),
+            Some("legacy-outbox")
+        );
+        let scoped_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'sync_target::%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scoped_count, 0);
+        assert!(conn
+            .prepare("SELECT value FROM settings WHERE value LIKE '%never-persist%'")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
         drop(conn);
         let _ = std::fs::remove_dir_all(root);
     }

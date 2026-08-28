@@ -31,17 +31,17 @@ test('Android runtime renders the mobile shell and local CRUD form', async ({ pa
   await expect(page.getByText('移动端测试记录')).toBeVisible();
 
   await page.getByRole('button', { name: '设置' }).click();
-  await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
-  await expect(page.getByText('此功能正在开发中')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '同步设置' })).toBeVisible();
+  await expect(page.getByText('WebDAV 密码由 Android Keystore 保护，不会回显到页面。')).toBeVisible();
   expect(await page.evaluate(() => window.__WATCHTRACKER_ANDROID_BACK__?.() ?? 'exit')).toBe('history');
   await page.evaluate(() => history.back());
   await expect(page.getByRole('heading', { name: '我的片库' })).toBeVisible();
 });
 
-test('all five mobile entries are visible placeholders without writes', async ({ page }) => {
+test('unfinished mobile entries remain placeholders while settings is functional', async ({ page }) => {
   await setupMockIpc(page);
   await page.goto('/');
-  for (const label of ['发现', '收藏', '统计', '设置']) {
+  for (const label of ['发现', '收藏', '统计']) {
     await page.getByRole('button', { name: label }).click();
     await expect(page.getByRole('heading', { name: label })).toBeVisible();
     await expect(page.getByText('此功能正在开发中')).toBeVisible();

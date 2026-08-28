@@ -20,6 +20,7 @@
     "android:smoke": "node scripts/android-m0-device-smoke.mjs",
     "android:m12-smoke": "node scripts/android-m12-device-smoke.mjs",
     "android:m13-smoke": "node scripts/android-m13-device-smoke.mjs",
+    "android:m14-smoke": "node scripts/android-m14-device-smoke.mjs",
     "check:m0": "npm run check && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "build:portable": "node scripts/build-portable.mjs",
     "tauri": "tauri",

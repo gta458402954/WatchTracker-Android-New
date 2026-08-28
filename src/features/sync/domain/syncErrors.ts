@@ -28,6 +28,12 @@ export function syncFailureMessage(error?: string): string | null {
       return '两端为同一集记录了不同完成时间，已停止上传以避免覆盖。';
     case 'collections_sync_upgrade_required':
       return '收藏集尚未获准升级云端同步格式；本地数据已保留。';
+    case 'credential_reentry_required':
+      return '安全凭据已失效，请重新输入 WebDAV 密码；本地片库仍可使用。';
+    case 'credential_missing':
+      return '未找到安全凭据，请重新输入 WebDAV 密码；本地片库仍可使用。';
+    case 'credential_store_unavailable':
+      return '系统安全凭据存储暂不可用；本地片库仍可使用。';
     default:
       return null;
   }

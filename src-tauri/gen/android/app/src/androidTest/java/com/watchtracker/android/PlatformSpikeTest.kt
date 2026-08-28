@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.security.KeyStore
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import org.junit.Assert.assertArrayEquals
@@ -15,6 +16,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
 
 /** M0 executable proof for capabilities that must stay behind Android adapters. */
 @RunWith(AndroidJUnit4::class)
@@ -65,5 +67,37 @@ class PlatformSpikeTest {
         assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
         assertTrue(intent.categories?.contains(Intent.CATEGORY_OPENABLE) == true)
         assertEquals("application/json", intent.type)
+    }
+
+    @Test
+    fun productionSecretStoreEncryptsAtRestRejectsTamperingAndDeletes() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val target = "WatchTracker/v1/webdav/${"a".repeat(64)}"
+        val plaintext = "m14-device-password-${System.nanoTime()}".toByteArray()
+        try {
+            assertEquals(0, AndroidSecretStore.write(context, target, "device-user", plaintext.copyOf()))
+            val targetDigest = MessageDigest.getInstance("SHA-256").digest(target.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            val stored = File(context.filesDir, "secure-vault-v1").listFiles()
+                ?.singleOrNull { it.name == "$targetDigest.json" }
+            assertTrue(stored?.isFile == true)
+            val atRest = stored!!.readBytes()
+            assertTrue(!atRest.toString(Charsets.UTF_8).contains(plaintext.toString(Charsets.UTF_8)))
+
+            val restored = AndroidSecretStore.read(context, target)
+            assertEquals(1, restored.first().toInt())
+            assertArrayEquals(plaintext, restored.copyOfRange(1, restored.size))
+
+            val envelope = JSONObject(stored.readText())
+            envelope.put("target", "tampered-aad-binding")
+            stored.writeText(envelope.toString())
+            assertEquals(2, AndroidSecretStore.read(context, target).first().toInt())
+
+            assertEquals(0, AndroidSecretStore.delete(context, target))
+            assertEquals(0, AndroidSecretStore.read(context, target).first().toInt())
+        } finally {
+            AndroidSecretStore.delete(context, target)
+            plaintext.fill(0)
+        }
     }
 }

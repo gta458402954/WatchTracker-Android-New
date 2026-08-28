@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-pub const SECRET_REFERENCE: &str = "wincred:v1";
+pub const WINDOWS_SECRET_REFERENCE: &str = "wincred:v1";
+pub const ANDROID_SECRET_REFERENCE: &str = "androidkeystore:v1";
+// Kept as a compatibility name for existing Windows-focused tests.
+#[cfg(test)]
+pub const SECRET_REFERENCE: &str = WINDOWS_SECRET_REFERENCE;
 const MIGRATION_JOURNAL_KEY: &str = "credential_migration_v1";
 const SECURITY_STATE_KEY: &str = "credential_security_state_v1";
 const MAX_SECRET_BYTES: usize = 2048;
@@ -24,7 +28,7 @@ struct MigrationJournal {
 #[serde(rename_all = "camelCase")]
 struct SecurityState {
     version: u8,
-    protected_by: &'static str,
+    protected_by: String,
     history_warning_required: bool,
 }
 
@@ -123,6 +127,37 @@ fn app_error(code: impl Into<String>) -> AppError {
     AppError::General(code.into())
 }
 
+fn platform_secret_reference() -> &'static str {
+    #[cfg(target_os = "android")]
+    return ANDROID_SECRET_REFERENCE;
+    #[cfg(not(target_os = "android"))]
+    WINDOWS_SECRET_REFERENCE
+}
+
+fn platform_protection_name() -> &'static str {
+    #[cfg(target_os = "android")]
+    return "android-keystore-aes-gcm";
+    #[cfg(not(target_os = "android"))]
+    "windows-credential-manager"
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SecretReferenceKind {
+    Current,
+    ForeignPlatform,
+    Legacy,
+}
+
+fn classify_secret_reference(value: &str, current: &str) -> SecretReferenceKind {
+    if value == current {
+        SecretReferenceKind::Current
+    } else if value == WINDOWS_SECRET_REFERENCE || value == ANDROID_SECRET_REFERENCE {
+        SecretReferenceKind::ForeignPlatform
+    } else {
+        SecretReferenceKind::Legacy
+    }
+}
+
 fn source_format(value: &str) -> &'static str {
     if value.starts_with("portable:v1:") {
         "portable:v1"
@@ -155,7 +190,7 @@ fn write_journal(
 fn finish_migration(conn: &Connection) -> Result<(), AppError> {
     let state = serde_json::to_string(&SecurityState {
         version: 1,
-        protected_by: "windows-credential-manager",
+        protected_by: platform_protection_name().to_string(),
         history_warning_required: true,
     })
     .map_err(|_| app_error("credential_security_state_invalid"))?;
@@ -174,7 +209,15 @@ pub fn resolve_or_migrate<F>(
 where
     F: FnOnce(&str) -> Result<String, AppError>,
 {
-    resolve_or_migrate_with_store(&WindowsSecretStore, conn, key, logical, username, extract)
+    resolve_or_migrate_with_store(
+        &PlatformSecretStore,
+        conn,
+        key,
+        logical,
+        username,
+        extract,
+        platform_secret_reference(),
+    )
 }
 
 fn resolve_or_migrate_with_store<F>(
@@ -184,6 +227,7 @@ fn resolve_or_migrate_with_store<F>(
     logical: &LogicalSecret,
     username: &str,
     extract: F,
+    secret_reference: &str,
 ) -> Result<Option<Zeroizing<String>>, AppError>
 where
     F: FnOnce(&str) -> Result<String, AppError>,
@@ -191,14 +235,20 @@ where
     let Some(value) = get_setting_tx(conn, key)?.filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    if value == SECRET_REFERENCE {
-        let secret = read_secret(store, logical)
-            .map_err(app_error)?
-            .ok_or_else(|| app_error("credential_missing"))?;
-        if get_setting_tx(conn, MIGRATION_JOURNAL_KEY)?.is_some_and(|value| !value.is_empty()) {
-            finish_migration(conn)?;
+    match classify_secret_reference(&value, secret_reference) {
+        SecretReferenceKind::Current => {
+            let secret = read_secret(store, logical)
+                .map_err(app_error)?
+                .ok_or_else(|| app_error("credential_missing"))?;
+            if get_setting_tx(conn, MIGRATION_JOURNAL_KEY)?.is_some_and(|value| !value.is_empty()) {
+                finish_migration(conn)?;
+            }
+            return Ok(Some(secret));
         }
-        return Ok(Some(secret));
+        SecretReferenceKind::ForeignPlatform => {
+            return Err(app_error("credential_reentry_required"));
+        }
+        SecretReferenceKind::Legacy => {}
     }
     write_journal(conn, logical, &value, "planned")?;
     let decrypted = crate::auth::decrypt(&value).map_err(|_| {
@@ -213,7 +263,7 @@ where
     write_secret(store, logical, username, &secret).map_err(app_error)?;
     write_journal(conn, logical, &value, "vault_verified")?;
     // The old value is replaced only after a verified vault round-trip.
-    set_setting_tx(conn, key, SECRET_REFERENCE)?;
+    set_setting_tx(conn, key, secret_reference)?;
     finish_migration(conn)?;
     Ok(Some(secret))
 }
@@ -225,9 +275,9 @@ pub fn save_setting_secret(
     username: &str,
     secret: &str,
 ) -> Result<(), AppError> {
-    let store = WindowsSecretStore;
+    let store = PlatformSecretStore;
     write_secret(&store, logical, username, secret).map_err(app_error)?;
-    set_setting_tx(conn, key, SECRET_REFERENCE)?;
+    set_setting_tx(conn, key, platform_secret_reference())?;
     Ok(())
 }
 
@@ -236,17 +286,17 @@ pub fn clear_setting_secret(
     key: &str,
     logical: &LogicalSecret,
 ) -> Result<(), AppError> {
-    let store = WindowsSecretStore;
+    let store = PlatformSecretStore;
     delete_secret(&store, logical).map_err(app_error)?;
     set_setting_tx(conn, key, "")?;
     Ok(())
 }
 
 #[cfg(windows)]
-pub struct WindowsSecretStore;
+pub struct PlatformSecretStore;
 
 #[cfg(windows)]
-impl SecretStore for WindowsSecretStore {
+impl SecretStore for PlatformSecretStore {
     fn write_raw(&self, target_name: &str, username: &str, value: &[u8]) -> Result<(), String> {
         use windows_sys::Win32::Foundation::GetLastError;
         use windows_sys::Win32::Security::Credentials::{
@@ -319,11 +369,11 @@ impl SecretStore for WindowsSecretStore {
     }
 }
 
-#[cfg(not(windows))]
-pub struct WindowsSecretStore;
+#[cfg(all(not(windows), not(target_os = "android")))]
+pub struct PlatformSecretStore;
 
-#[cfg(not(windows))]
-impl SecretStore for WindowsSecretStore {
+#[cfg(all(not(windows), not(target_os = "android")))]
+impl SecretStore for PlatformSecretStore {
     fn write_raw(&self, _: &str, _: &str, _: &[u8]) -> Result<(), String> {
         Err("credential_store_unsupported".into())
     }
@@ -332,6 +382,176 @@ impl SecretStore for WindowsSecretStore {
     }
     fn delete_raw(&self, _: &str) -> Result<(), String> {
         Err("credential_store_unsupported".into())
+    }
+}
+
+#[cfg(target_os = "android")]
+pub struct PlatformSecretStore;
+
+#[cfg(target_os = "android")]
+impl PlatformSecretStore {
+    const JNI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn with_env<T>(
+        operation: impl FnOnce(&mut jni::JNIEnv<'_>, &jni::objects::JObject<'_>) -> Result<T, String>
+            + Send
+            + 'static,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let queued = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wry::prelude::dispatch(move |env, activity, _webview| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    operation(env, activity)
+                }))
+                .unwrap_or_else(|_| Err("credential_store_unavailable".to_string()));
+                if result.is_err() {
+                    Self::clear_exception(env);
+                }
+                let _ = sender.send(result);
+            });
+        }));
+        if queued.is_err() {
+            return Err("credential_store_unavailable".to_string());
+        }
+        receiver
+            .recv_timeout(Self::JNI_TIMEOUT)
+            .map_err(|_| "credential_store_unavailable".to_string())?
+    }
+
+    fn clear_exception(env: &mut jni::JNIEnv<'_>) {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+    }
+
+    fn adapter_class<'local, 'context>(
+        env: &mut jni::JNIEnv<'local>,
+        context: &jni::objects::JObject<'context>,
+    ) -> Result<jni::objects::JClass<'local>, String> {
+        use jni::objects::{JClass, JValue};
+        // Native async commands may run on a thread whose FindClass loader is
+        // not the application loader. Resolve through Context explicitly.
+        let loader = env
+            .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .and_then(|value| value.l())
+            .map_err(|_| "credential_store_unavailable".to_string())?;
+        let name = env
+            .new_string("com.watchtracker.android.AndroidSecretStore")
+            .map_err(|_| "credential_store_unavailable".to_string())?;
+        let class = env
+            .call_method(
+                loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )
+            .and_then(|value| value.l())
+            .map_err(|_| "credential_store_unavailable".to_string())?;
+        Ok(JClass::from(class))
+    }
+}
+
+#[cfg(target_os = "android")]
+impl SecretStore for PlatformSecretStore {
+    fn write_raw(&self, target_name: &str, username: &str, value: &[u8]) -> Result<(), String> {
+        use jni::objects::JValue;
+        let target_name = target_name.to_string();
+        let username = username.to_string();
+        let value = Zeroizing::new(value.to_vec());
+        Self::with_env(move |env, context| {
+            let class = Self::adapter_class(env, context)?;
+            let target = env
+                .new_string(target_name)
+                .map_err(|_| "credential_store_unavailable".to_string())?;
+            let username = env
+                .new_string(username)
+                .map_err(|_| "credential_store_unavailable".to_string())?;
+            let bytes = env
+                .byte_array_from_slice(&value)
+                .map_err(|_| "credential_store_unavailable".to_string())?;
+            let result = env.call_static_method(
+                class,
+                "write",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;[B)I",
+                &[
+                    JValue::Object(context),
+                    JValue::Object(&target),
+                    JValue::Object(&username),
+                    JValue::Object(&bytes),
+                ],
+            );
+            match result.and_then(|value| value.i()) {
+                Ok(0) => Ok(()),
+                _ => {
+                    Self::clear_exception(env);
+                    Err("credential_store_unavailable".into())
+                }
+            }
+        })
+    }
+
+    fn read_raw(&self, target_name: &str) -> Result<Option<Vec<u8>>, String> {
+        use jni::objects::{JByteArray, JValue};
+        let target_name = target_name.to_string();
+        Self::with_env(move |env, context| {
+            let class = Self::adapter_class(env, context)?;
+            let target = env
+                .new_string(target_name)
+                .map_err(|_| "credential_store_unavailable".to_string())?;
+            let result = env.call_static_method(
+                class,
+                "read",
+                "(Landroid/content/Context;Ljava/lang/String;)[B",
+                &[JValue::Object(context), JValue::Object(&target)],
+            );
+            let object = match result.and_then(|value| value.l()) {
+                Ok(value) => value,
+                Err(_) => {
+                    Self::clear_exception(env);
+                    return Err("credential_store_unavailable".into());
+                }
+            };
+            let array = JByteArray::from(object);
+            let bytes = Zeroizing::new(
+                env.convert_byte_array(&array)
+                    .map_err(|_| "credential_store_unavailable".to_string())?,
+            );
+            let zeros = vec![0_i8; bytes.len()];
+            let _ = env.set_byte_array_region(&array, 0, &zeros);
+            match bytes.split_first() {
+                Some((&0, _)) => Ok(None),
+                Some((&1, value)) => Ok(Some(value.to_vec())),
+                Some((&2, _)) => Err("credential_reentry_required".into()),
+                _ => Err("credential_store_unavailable".into()),
+            }
+        })
+    }
+
+    fn delete_raw(&self, target_name: &str) -> Result<(), String> {
+        use jni::objects::JValue;
+        let target_name = target_name.to_string();
+        Self::with_env(move |env, context| {
+            let class = Self::adapter_class(env, context)?;
+            let target = env
+                .new_string(target_name)
+                .map_err(|_| "credential_store_unavailable".to_string())?;
+            let result = env.call_static_method(
+                class,
+                "delete",
+                "(Landroid/content/Context;Ljava/lang/String;)I",
+                &[JValue::Object(context), JValue::Object(&target)],
+            );
+            match result.and_then(|value| value.i()) {
+                Ok(0) => Ok(()),
+                _ => {
+                    Self::clear_exception(env);
+                    Err("credential_store_unavailable".into())
+                }
+            }
+        })
     }
 }
 
@@ -400,17 +620,37 @@ mod tests {
     }
 
     #[test]
+    fn deleting_one_logical_secret_does_not_affect_another() {
+        let store = MemoryStore::default();
+        let webdav = LogicalSecret::WebDav("c".repeat(64));
+        let tmdb = LogicalSecret::Tmdb;
+        write_secret(&store, &webdav, "user", "webdav-secret").unwrap();
+        write_secret(&store, &tmdb, "tmdb", "tmdb-secret").unwrap();
+        delete_secret(&store, &webdav).unwrap();
+        assert!(read_secret(&store, &webdav).unwrap().is_none());
+        assert_eq!(
+            read_secret(&store, &tmdb).unwrap().unwrap().as_str(),
+            "tmdb-secret"
+        );
+    }
+
+    #[test]
     fn portable_legacy_value_is_verified_before_database_switch() {
         let source = crate::auth::encrypt("legacy-secret", "test").unwrap();
         let conn = database(&source);
         let store = MemoryStore::default();
         let logical = LogicalSecret::Tmdb;
-        let value =
-            resolve_or_migrate_with_store(&store, &conn, "secret", &logical, "tmdb", |value| {
-                Ok(value.to_string())
-            })
-            .unwrap()
-            .unwrap();
+        let value = resolve_or_migrate_with_store(
+            &store,
+            &conn,
+            "secret",
+            &logical,
+            "tmdb",
+            |value| Ok(value.to_string()),
+            SECRET_REFERENCE,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(value.as_str(), "legacy-secret");
         assert_eq!(
             get_setting_tx(&conn, "secret").unwrap().as_deref(),
@@ -439,6 +679,7 @@ mod tests {
             &LogicalSecret::Tmdb,
             "tmdb",
             |value| Ok(value.to_string()),
+            SECRET_REFERENCE,
         )
         .unwrap_err();
         assert!(error.to_string().contains("credential_store_unavailable"));
@@ -464,12 +705,33 @@ mod tests {
             &LogicalSecret::Tmdb,
             "tmdb",
             |value| Ok(value.to_string()),
+            SECRET_REFERENCE,
         )
         .unwrap_err();
         assert!(error.to_string().contains("credential_missing"));
         assert_eq!(
             get_setting_tx(&conn, "secret").unwrap().as_deref(),
             Some(SECRET_REFERENCE)
+        );
+    }
+
+    #[test]
+    fn platform_references_are_explicit_and_windows_reference_remains_compatible() {
+        assert_eq!(
+            classify_secret_reference(WINDOWS_SECRET_REFERENCE, WINDOWS_SECRET_REFERENCE),
+            SecretReferenceKind::Current
+        );
+        assert_eq!(
+            classify_secret_reference(ANDROID_SECRET_REFERENCE, WINDOWS_SECRET_REFERENCE),
+            SecretReferenceKind::ForeignPlatform
+        );
+        assert_eq!(
+            classify_secret_reference(WINDOWS_SECRET_REFERENCE, ANDROID_SECRET_REFERENCE),
+            SecretReferenceKind::ForeignPlatform
+        );
+        assert_eq!(
+            classify_secret_reference("machine_bound:v1:value", ANDROID_SECRET_REFERENCE),
+            SecretReferenceKind::Legacy
         );
     }
 }

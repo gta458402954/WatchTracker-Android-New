@@ -5,11 +5,13 @@ WatchTracker Android is the mobile shell rebuilt from the V18 data and
 the UI and Tauri 2 with Rust/SQLite for the local database. Android's minimum
 SDK is 26 and the M0 build target is arm64.
 
-## Current M0 boundary
+## Current milestone boundary
 
-M0 is complete as a technical baseline. The Android 16 emulator evidence is
-recorded in [docs/M0_VERIFICATION.md](docs/M0_VERIFICATION.md). Physical-device
-Alpha validation is still pending and is not represented as complete here.
+M0 through M1.4 are complete for the current Alpha path. M1.4 brings the
+high-value mobile sync MVP forward without declaring the full M3 reliability
+Beta complete. Android 16 emulator evidence is recorded in
+[docs/M1_4_VERIFICATION.md](docs/M1_4_VERIFICATION.md); physical-device and
+multi-version matrices remain pending.
 
 - Offline local CRUD is the supported path. SQLite schema V18 and atomic
   `WatchRecord` insert/get/update/delete operations are retained.
@@ -17,10 +19,17 @@ Alpha validation is still pending and is not represented as complete here.
   desktop portable-data mode.
 - The `poster://` protocol is restricted to cached poster filenames inside the
   app's poster directory.
-- Keystore and SAF are verified as platform Spikes. A production Android
-  secret-store adapter is not implemented yet, so TMDB/WebDAV credentials
-  cannot be configured on Android. WebDAV is currently a transport GET Spike
-  only; credential configuration is an M1/M2 prerequisite.
+- Mobile library CRUD, lock/status operations and atomic episode tracking work
+  offline and queue the existing target-scoped sync outbox.
+- WebDAV settings use read-only Probe before activation. Passwords are guarded
+  by Android Keystore AES-GCM and are not returned to React after saving.
+- Android reuses the desktop reliability core: `records-v3.json`, payload
+  V3～V6, ETag/conditional PUT, 412 retry, three-way merge, tombstones,
+  generation, staging, publish intent and persistent conflicts.
+- Startup, local write, network recovery, foreground resume and manual sync are
+  supported. Sync failure never blocks the local library. Background
+  WorkManager execution remains outside M1.4.
+- SAF remains a platform Spike; product import/export is still planned for M2.
 
 ## Development
 
@@ -29,6 +38,7 @@ npm ci
 npm run check:m0
 npm run android:init       # only when regenerating the Tauri Android shell
 npm run android:build
+npm run android:m14-smoke # controlled WebDAV + real Tauri/Keystore device path
 ```
 
 The M0 gate includes contract generation, TypeScript typecheck, ESLint, Node
@@ -59,6 +69,6 @@ install that arm64 file after such a Gradle build, or run
 `npm run android:build` again before installing the universal file. Do not
 assume the universal APK changed just because an arm64 Gradle task completed.
 
-See [docs/M0_VERIFICATION.md](docs/M0_VERIFICATION.md) and
+See [docs/M1_4_VERIFICATION.md](docs/M1_4_VERIFICATION.md) and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reproducible checks,
 platform boundaries, and known environment limitations.

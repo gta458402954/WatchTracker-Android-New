@@ -10,6 +10,8 @@ import { publicFailureMessage } from '../shared/lib/feedback';
 import { useMobileNavigation, type AndroidBackAction, type MobileRoute } from '../platform/navigation';
 import type { EpisodeTracking } from '../shared/lib/database.ts';
 import type { MobileEpisodeAction } from '../features/watchlist/mobileEpisodeTracking.ts';
+import { useSyncCoordinator } from '../features/sync/hooks/useSyncCoordinator.ts';
+import MobileSyncSettingsPage from '../features/settings/components/MobileSyncSettingsPage.tsx';
 
 declare global { interface Window { __WATCHTRACKER_ANDROID_BACK__?: () => AndroidBackAction; } }
 type InitializationState = 'loading' | 'ready' | 'error';
@@ -22,16 +24,21 @@ function PlaceholderPage({ route }: { route: Exclude<MobileRoute, 'library' | 'f
 export default function MobileApp() {
   const navigation = useMobileNavigation();
   const { notices, notify, dismiss } = useNotifications();
-  const repository = useMobileRecordRepository(() => undefined);
+  const scheduleLocalWriteRef = useRef<() => void | Promise<void>>(() => undefined);
+  const repository = useMobileRecordRepository(() => scheduleLocalWriteRef.current());
   const { records, reloadRecords, addRecord, updateMobileRecord, deleteMobileRecord, changeMobileEpisode } = repository;
+  const onBackgroundSyncError = useCallback((message: string) => notify('warning', message), [notify]);
+  const coordinator = useSyncCoordinator(30, 15, reloadRecords, onBackgroundSyncError);
+  const { scheduleLocalWrite, startCoordinator, syncNow, syncRuntime, isSyncing, toggleSyncPause, notifySyncConfigurationChanged } = coordinator;
+  useEffect(() => { scheduleLocalWriteRef.current = scheduleLocalWrite; }, [scheduleLocalWrite]);
   const [initialization, setInitialization] = useState<InitializationState>('loading');
   const initializationPromise = useRef<Promise<void> | null>(null);
   const loadRecords = useCallback(() => {
     if (initializationPromise.current) return initializationPromise.current;
-    const pending = (async () => { try { await new Promise(resolve => window.setTimeout(resolve, 1500)); await reloadRecords(); setInitialization('ready'); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
+    const pending = (async () => { try { await new Promise(resolve => window.setTimeout(resolve, 1500)); await reloadRecords(); setInitialization('ready'); void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步'))); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
     initializationPromise.current = pending;
     return pending;
-  }, [reloadRecords]);
+  }, [onBackgroundSyncError, reloadRecords, startCoordinator]);
   useEffect(() => { // Loading crosses the Rust IPC boundary; readiness is updated after await.
     void loadRecords();
   }, [loadRecords]);
@@ -70,7 +77,7 @@ export default function MobileApp() {
     notify('success', message);
     return result.tracking;
   }, [changeMobileEpisode, notify]);
-  const page = useMemo(() => { if (initialization === 'loading') return <div className="mobile-loading" role="status">正在读取本地片库…</div>; if (initialization === 'error') return <div className="mobile-error" role="alert"><h1>无法读取本地数据</h1><p>本地数据库未被当作空数据处理，请稍后重试。</p><button type="button" className="mobile-primary-button" onClick={() => { setInitialization('loading'); void loadRecords(); }}>重试</button></div>; if (navigation.route === 'library' || navigation.route === 'detail' || navigation.route === 'form') return <MobileLibraryPage route={navigation.route} records={records} detailId={navigation.detailId} formMode={navigation.formMode} onDetail={record => navigation.navigateDetail(record.id)} onForm={openForm} onBack={onBack} onAdd={saveNew} onUpdate={saveUpdate} onDelete={remove} onLock={lock} onStatus={status} onEpisode={episode} onNotify={notify} />; return <PlaceholderPage route={navigation.route} />; }, [episode, initialization, loadRecords, lock, navigation, notify, onBack, openForm, records, remove, saveNew, saveUpdate, status]);
+  const page = useMemo(() => { if (initialization === 'loading') return <div className="mobile-loading" role="status">正在读取本地片库…</div>; if (initialization === 'error') return <div className="mobile-error" role="alert"><h1>无法读取本地数据</h1><p>本地数据库未被当作空数据处理，请稍后重试。</p><button type="button" className="mobile-primary-button" onClick={() => { setInitialization('loading'); void loadRecords(); }}>重试</button></div>; if (navigation.route === 'library' || navigation.route === 'detail' || navigation.route === 'form') return <MobileLibraryPage route={navigation.route} records={records} detailId={navigation.detailId} formMode={navigation.formMode} onDetail={record => navigation.navigateDetail(record.id)} onForm={openForm} onBack={onBack} onAdd={saveNew} onUpdate={saveUpdate} onDelete={remove} onLock={lock} onStatus={status} onEpisode={episode} onNotify={notify} />; if (navigation.route === 'settings') return <MobileSyncSettingsPage runtime={syncRuntime} isSyncing={isSyncing} onSyncNow={syncNow} onTogglePause={toggleSyncPause} onConfigurationChanged={notifySyncConfigurationChanged} onSyncWorkQueued={scheduleLocalWrite} onReloadRecords={reloadRecords} notify={notify} />; return <PlaceholderPage route={navigation.route} />; }, [episode, initialization, isSyncing, loadRecords, lock, navigation, notify, notifySyncConfigurationChanged, onBack, openForm, records, reloadRecords, remove, saveNew, saveUpdate, scheduleLocalWrite, status, syncNow, syncRuntime, toggleSyncPause]);
   const immersive = navigation.route === 'detail' || navigation.route === 'form';
   return <div className="mobile-shell"><NotificationRegion notices={notices} onDismiss={dismiss} />{!immersive && <header className="mobile-topbar"><span className="mobile-brand-mark" aria-hidden="true">◈</span><span>WatchTracker</span><span className="mobile-offline-badge">离线优先</span></header>}<main className={`mobile-content ${immersive ? 'mobile-content-immersive' : ''}`}><ErrorBoundary>{page}</ErrorBoundary></main>{!immersive && <><button type="button" className="mobile-fab" aria-label="添加记录" onClick={() => openForm('new')}><span aria-hidden="true">＋</span></button><nav className="mobile-bottom-nav" aria-label="主导航">{tabs.map(tab => <button key={tab.route} type="button" className="mobile-nav-item" aria-current={navigation.route === tab.route ? 'page' : undefined} onClick={() => navigation.navigate(tab.route)}><span className="mobile-nav-icon" aria-hidden="true">{tab.icon}</span><span>{tab.label}</span></button>)}</nav></>}</div>;
 }

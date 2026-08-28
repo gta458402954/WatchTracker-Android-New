@@ -50,6 +50,14 @@ class MainActivity : TauriActivity() {
     super.onWebViewCreate(webView)
   }
 
+  override fun onResume() {
+    super.onResume()
+    appWebView?.evaluateJavascript(
+      "window.dispatchEvent(new Event('watchtracker:android-resume'))",
+      null,
+    )
+  }
+
   override fun onDestroy() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
       systemBackCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }

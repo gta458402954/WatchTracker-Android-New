@@ -532,7 +532,22 @@ WatchTracker-Android-New/
 
 M1.2（已完成）边界：移动片库使用独立的移动工具栏、筛选 Sheet、列表/海报墙、只读详情和全屏表单；偏好键为 `mobile_library_preferences_v1`，不持久化搜索、滚动或草稿。普通移动 CRUD 在不改变 Rust CRUD/schema 的前提下 reload 并比较 `rev`/锁定状态，明确不是原子 CAS。
 
-M1.3（当前批次）边界：移动片库为非电影且具有合法 `totalEpisodes` 的记录提供显式逐集跟踪。列表只保留“完成本集”等高频动作，详情提供选择初始下一集、完成、跳集、回退、原子完结、逐集历史及增集后继续追更。所有逐集写入复用 Rust `enable_episode_tracking` / `set_next_episode` 的原子事务和 `expectedRev`；UI 只采用 Rust 返回的持久化记录与历史，stale/missing/locked 均 reload 且不显示乐观成功。旧文本 `progress` 原样保留，锁定记录严格只读。本批次不改变 schema/migration，也不接入 TMDB、同步 UI、SAF、Keystore、收藏集或高级筛选。
+M1.3（已完成）边界：移动片库为非电影且具有合法 `totalEpisodes` 的记录提供显式逐集跟踪。列表只保留“完成本集”等高频动作，详情提供选择初始下一集、完成、跳集、回退、原子完结、逐集历史及增集后继续追更。所有逐集写入复用 Rust `enable_episode_tracking` / `set_next_episode` 的原子事务和 `expectedRev`；UI 只采用 Rust 返回的持久化记录与历史，stale/missing/locked 均 reload 且不显示乐观成功。旧文本 `progress` 原样保留，锁定记录严格只读。本批次不改变 schema/migration，也不接入 TMDB、同步 UI、SAF、Keystore、收藏集或高级筛选。
+
+### M1.4：Mobile Sync MVP（已完成）
+
+为提前交付“Android 更新观看进度并同步到桌面”这一高价值路径，路线优先级在 M1.3 后插入移动同步 MVP。该阶段不是新协议，也不代表完整 M3 已完成。
+
+交付：
+
+- Android Keystore AES-GCM 正式凭据适配器；密码不回到 WebView，也不以明文进入 SQLite、普通文件或日志。
+- 移动 repository 的所有本地写入接入现有 `useSyncCoordinator`，逐集记录和 `episodeCompletions` 共用原有 outbox。
+- 移动同步设置：只读 Probe 后确认激活、立即同步、暂停/恢复、清除凭据、状态/outbox/conflict 展示和最小冲突解决。
+- 启动、本地写入、联网恢复、Android 前台恢复和手动同步触发；本地片库就绪不依赖同步成功。
+- 完整复用 `records-v3.json`、payload V3～V6、ETag/conditional PUT、412 retry、three-way merge、tombstone、generation、staging、publish intent 与 target ID/epoch 隔离。
+- 受控本机 WebDAV 的 Android M1.4 smoke，验证 Keystore 重启复用、跨端逐集进度、前台合并、412、离线 outbox、清除凭据和敏感信息边界。
+
+退出标准：同一 WebDAV 目标上的桌面种子可由 Android 拉取；Android 完成本集后记录和逐集历史可靠发布；网络或凭据失败不阻塞本地 CRUD；M1.4 自动化与 Android 设备门禁通过。证据见 `docs/M1_4_VERIFICATION.md`。
 
 ### M2：迁移、导入与恢复（5～8 个工作日）
 
@@ -547,6 +562,8 @@ M1.3（当前批次）边界：移动片库为非电影且具有合法 `totalEpi
 退出标准：记录数量和关键字段核对一致；失败迁移不修改活动数据库。
 
 ### M3：跨端可靠同步 Beta（8～12 个工作日）
+
+M1.4 只提前复用了此阶段的可靠同步核心和移动主路径。M3 仍保留为完整 Beta，继续覆盖完整设备并发矩阵、更完整冲突 UX、多 target 全矩阵、崩溃恢复矩阵、后续 lifecycle/后台扩展及更广泛系统版本与真机验证。
 
 交付：
 
