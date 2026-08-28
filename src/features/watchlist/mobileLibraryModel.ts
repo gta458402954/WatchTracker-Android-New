@@ -1,13 +1,12 @@
 import { MEDIA_TYPE_VALUES, STATUS_VALUES, type MediaType, type Status, type WatchRecord } from '../../shared/types/watchRecord.generated.ts';
 import { displayTitlesOf } from '../../shared/lib/displayTitle.ts';
 import { mediaTypeOf } from '../../shared/lib/classification.ts';
-import { filterRecordsByQuery, normalizeWatchlistQuery, type SortBy, type ViewMode, type WatchlistQueryV1 } from '../../shared/lib/watchlistQuery.ts';
+import { filterRecordsByQuery, normalizeWatchlistQuery, type SortBy, type WatchlistQueryV1 } from '../../shared/lib/watchlistQuery.ts';
 
 export const MOBILE_LIBRARY_PREFERENCES_KEY = 'mobile_library_preferences_v1';
 export type MobileSortBy = Extract<SortBy, 'createdAt' | 'endDate' | 'releaseYear' | 'rating'>;
 export interface MobileLibraryPreferences {
   version: 1;
-  viewMode: ViewMode;
   sortBy: MobileSortBy;
   mediaTypes: MediaType[];
   statuses: Status[];
@@ -15,7 +14,7 @@ export interface MobileLibraryPreferences {
 }
 
 export const DEFAULT_MOBILE_LIBRARY_PREFERENCES: MobileLibraryPreferences = {
-  version: 1, viewMode: 'list', sortBy: 'createdAt', mediaTypes: [], statuses: [], lock: 'all',
+  version: 1, sortBy: 'createdAt', mediaTypes: [], statuses: [], lock: 'all',
 };
 
 export function normalizeMobilePreferences(value: unknown): MobileLibraryPreferences {
@@ -23,11 +22,10 @@ export function normalizeMobilePreferences(value: unknown): MobileLibraryPrefere
   if (candidate.version !== 1) return { ...DEFAULT_MOBILE_LIBRARY_PREFERENCES };
   const sortBy: MobileSortBy = ['createdAt', 'endDate', 'releaseYear', 'rating'].includes(candidate.sortBy ?? '')
     ? candidate.sortBy as MobileSortBy : 'createdAt';
-  const viewMode: ViewMode = candidate.viewMode === 'poster' ? 'poster' : 'list';
   const mediaTypes = Array.isArray(candidate.mediaTypes) ? candidate.mediaTypes.filter((v): v is MediaType => MEDIA_TYPE_VALUES.includes(v as MediaType)) : [];
   const statuses = Array.isArray(candidate.statuses) ? candidate.statuses.filter((v): v is Status => STATUS_VALUES.includes(v as Status)) : [];
   const lock = candidate.lock === 'locked' || candidate.lock === 'unlocked' ? candidate.lock : 'all';
-  return { version: 1, viewMode, sortBy, mediaTypes: [...new Set(mediaTypes)], statuses: [...new Set(statuses)], lock };
+  return { version: 1, sortBy, mediaTypes: [...new Set(mediaTypes)], statuses: [...new Set(statuses)], lock };
 }
 
 export function mobileQueryFromPreferences(prefs: MobileLibraryPreferences): WatchlistQueryV1 {

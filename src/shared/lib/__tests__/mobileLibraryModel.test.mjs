@@ -12,6 +12,12 @@ describe('M1.2 mobile library model', () => {
     assert.deepEqual(prefs, DEFAULT_MOBILE_LIBRARY_PREFERENCES);
   });
 
+  test('ignores a legacy mobile poster mode while preserving valid version-one preferences', () => {
+    const prefs = normalizeMobilePreferences({ version: 1, viewMode: 'poster', sortBy: 'rating', mediaTypes: ['剧集'], statuses: ['在看'], lock: 'locked' });
+    assert.deepEqual(prefs, { version: 1, sortBy: 'rating', mediaTypes: ['剧集'], statuses: ['在看'], lock: 'locked' });
+    assert.equal('viewMode' in prefs, false);
+  });
+
   test('sorts null values last and uses stable deterministic ties', () => {
     const values = [record('b', { rating: 8, createdAt: 'same' }), record('a', { rating: 8, createdAt: 'same' }), record('c', { rating: null, createdAt: 'same' })];
     assert.deepEqual(sortMobileRecords(values, 'rating').map(item => item.id), ['a', 'b', 'c']);

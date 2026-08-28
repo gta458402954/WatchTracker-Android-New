@@ -14,11 +14,29 @@ test('M1.2 distinguishes library, search, and filter empty states', async ({ pag
   await page.getByRole('button', { name: '清空搜索' }).click(); await page.getByRole('button', { name: '打开筛选' }).click(); await page.locator('fieldset').filter({ hasText: '状态' }).locator('button.mobile-chip').filter({ hasText: '已看' }).click(); await page.getByRole('button', { name: '应用筛选' }).click(); await expect(page.locator('[data-empty-state="filter"]')).toBeVisible();
 });
 
-test('M1.2 persists view/sort/basic filters but not search', async ({ page }) => {
+test('M1.2 persists sort/basic filters but not search', async ({ page }) => {
   await setupMockIpc(page, { records: [record('电影一')] }); await page.goto('/');
-  await page.getByRole('textbox', { name: '搜索片库' }).fill('临时搜索'); await page.getByRole('combobox', { name: '排序' }).selectOption('rating'); await page.getByRole('button', { name: '海报' }).click(); await page.getByRole('button', { name: '打开筛选' }).click(); await page.getByRole('button', { name: '已锁定' }).click(); await page.getByRole('button', { name: '应用筛选' }).click();
+  await page.getByRole('textbox', { name: '搜索片库' }).fill('临时搜索'); await page.getByRole('combobox', { name: '排序' }).selectOption('rating'); await page.getByRole('button', { name: '打开筛选' }).click(); await page.getByRole('button', { name: '已锁定' }).click(); await page.getByRole('button', { name: '应用筛选' }).click();
   await expect(page.getByRole('textbox', { name: '搜索片库' })).toHaveValue('临时搜索');
   const calls = (await mockSnapshot(page)).calls.filter(call => call.command === 'set_setting'); expect(calls.some(call => String(call.args.key) === 'mobile_library_preferences_v1' && String(call.args.value).includes('rating'))).toBeTruthy(); expect(calls.some(call => String(call.args.value).includes('临时搜索'))).toBeFalsy();
+});
+
+test('M1.2 legacy poster preference falls back to the only list view without losing other preferences', async ({ page }) => {
+  const legacy = JSON.stringify({ version: 1, viewMode: 'poster', sortBy: 'rating', mediaTypes: ['剧集'], statuses: ['在看'], lock: 'locked' });
+  await setupMockIpc(page, {
+    records: [record('旧偏好记录', { mediaType: '剧集', status: '在看', isLocked: true, rating: 9 }), record('其他记录')],
+    settings: { mobile_library_preferences_v1: legacy },
+  });
+  await page.goto('/');
+  await expect(page.locator('.mobile-record-list')).toBeVisible();
+  await expect(page.locator('.mobile-poster-grid')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '打开 旧偏好记录' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开 其他记录' })).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: '排序' })).toHaveValue('rating');
+  await expect(page.getByRole('button', { name: '移除类型：剧集' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '移除状态：在看' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '移除锁定筛选' })).toBeVisible();
+  await expect(page.getByText('片库偏好版本不兼容，已使用默认设置。', { exact: true })).toHaveCount(0);
 });
 
 test('M1.2 detail, status, lock, unlock, and edit routes stay mobile-only', async ({ page }) => {
@@ -121,14 +139,14 @@ test('M1.2 record actions use a focused bottom sheet and preserve locked safety'
   await expect(lockedTrigger).toBeFocused();
 });
 
-test('M1.2 list cards retain poster fallback, primary quick action, and compact view toggle', async ({ page }) => {
+test('M1.2 list cards retain poster fallback and primary quick action as the only mobile library view', async ({ page }) => {
   await setupMockIpc(page, { records: [record('列表电影'), record('列表剧集', { mediaType: '剧集', totalEpisodes: 4, episodeTrackingEnabled: true, nextEpisode: 2, status: '在看' })] });
   await page.goto('/');
   await expect(page.locator('.mobile-record-thumbnail').first()).toBeVisible();
   await expect(page.locator('.mobile-poster-fallback').first()).toContainText('无图');
   await expect(page.getByRole('button', { name: '完成第 2 集' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '列表', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: '海报', exact: true }).click();
-  await expect(page.getByRole('button', { name: '海报', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.mobile-poster-grid')).toBeVisible();
+  await expect(page.getByRole('button', { name: '列表', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '海报', exact: true })).toHaveCount(0);
+  await expect(page.locator('.mobile-poster-grid')).toHaveCount(0);
+  await expect(page.locator('.mobile-record-list')).toBeVisible();
 });
