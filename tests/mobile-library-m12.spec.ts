@@ -51,5 +51,84 @@ test('M1.2 filter sheet focuses first control, traps both Tab directions, and re
 });
 
 test('M1.2 narrow layout keeps touch targets at least 48px', async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 740 }); await setupMockIpc(page, { records: [record('窄屏记录')] }); await page.goto('/'); const buttons = await page.locator('.mobile-library button').all(); for (const button of buttons) { const box = await button.boundingBox(); expect(box?.height ?? 0).toBeGreaterThanOrEqual(48); } await expect(page.locator('body')).not.toHaveCSS('overflow-x', 'scroll');
+  await page.setViewportSize({ width: 360, height: 740 }); await setupMockIpc(page, { records: [record('窄屏记录')] }); await page.goto('/'); const buttons = await page.locator('.mobile-library button').all(); for (const button of buttons) { const box = await button.boundingBox(); expect(box?.height ?? 0).toBeGreaterThanOrEqual(48); }
+  const horizontalOverflow = await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - window.innerWidth);
+  expect(horizontalOverflow).toBeLessThanOrEqual(0);
+});
+
+test('M1.2 library refinement compresses the header and keeps search/count semantics', async ({ page }) => {
+  await setupMockIpc(page, { records: [record('在看记录', { status: '在看' }), record('已看记录')] });
+  await page.goto('/');
+  await expect(page.locator('.mobile-topbar')).toHaveCount(0);
+  await expect(page.getByText('WatchTracker', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('离线优先', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('OFFLINE LIBRARY', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '我的片库' })).toBeVisible();
+  await expect(page.locator('.mobile-section-heading')).toContainText('2');
+  const search = page.getByRole('textbox', { name: '搜索片库' });
+  await search.fill('在看');
+  await expect(page.locator('.mobile-section-heading')).toContainText('1 / 2');
+  await expect(page.getByRole('button', { name: '清空搜索' })).toBeVisible();
+  await page.getByRole('button', { name: '清空搜索' }).click();
+  await expect(search).toHaveValue('');
+  await expect(page.locator('.mobile-section-heading')).toContainText('2');
+  await expect(page.locator('.mobile-search-row')).toHaveCount(1);
+  await expect(page.locator('.mobile-toolbar-row')).toHaveCount(1);
+  const sort = page.getByRole('combobox', { name: '排序' });
+  await expect(sort.locator('option')).toHaveText(['最新添加', '完成时间', '上映年份', '评分']);
+  await sort.selectOption('rating');
+  await expect(sort).toHaveValue('rating');
+  await page.getByRole('button', { name: '打开筛选' }).click();
+  await page.locator('fieldset').filter({ hasText: '状态' }).getByRole('button', { name: '在看' }).click();
+  await page.getByRole('button', { name: '应用筛选' }).click();
+  await expect(page.getByRole('button', { name: '移除状态：在看' })).toHaveText('在看 ×');
+  await expect(page.locator('.mobile-section-heading')).toContainText('1 / 2');
+});
+
+test('M1.2 record actions use a focused bottom sheet and preserve locked safety', async ({ page }) => {
+  await setupMockIpc(page, { records: [record('普通记录'), record('锁定记录', { isLocked: true })] });
+  await page.goto('/');
+  const ordinaryCard = page.locator('[data-record-id="普通记录"]');
+  await expect(ordinaryCard.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
+  await expect(ordinaryCard.getByRole('button', { name: '锁定', exact: true })).toHaveCount(0);
+  await expect(ordinaryCard.getByRole('button', { name: '删除', exact: true })).toHaveCount(0);
+  const trigger = page.getByRole('button', { name: '更多操作：普通记录' });
+  await trigger.click();
+  const sheet = page.getByRole('dialog', { name: '普通记录' });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByRole('button', { name: '编辑' })).toBeFocused();
+  for (const button of await sheet.getByRole('button').all()) { const box = await button.boundingBox(); expect(box?.height ?? 0).toBeGreaterThanOrEqual(48); }
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await page.getByRole('button', { name: '取消' }).click();
+  await expect(sheet).toHaveCount(0);
+  await trigger.click();
+  await page.mouse.click(4, 4);
+  await expect(sheet).toHaveCount(0);
+
+  const lockedTrigger = page.getByRole('button', { name: '更多操作：锁定记录' });
+  await lockedTrigger.click();
+  const lockedSheet = page.getByRole('dialog', { name: '锁定记录' });
+  await expect(lockedSheet.getByRole('button', { name: '解锁' })).toBeVisible();
+  await expect(lockedSheet.getByRole('button', { name: '编辑' })).toHaveCount(0);
+  await expect(lockedSheet.getByRole('button', { name: '删除' })).toHaveCount(0);
+  await page.evaluate(() => window.__WATCHTRACKER_ANDROID_BACK__?.());
+  await expect(lockedSheet).toHaveCount(0);
+  await expect(page).toHaveURL('#library');
+  await expect(lockedTrigger).toBeFocused();
+});
+
+test('M1.2 list cards retain poster fallback, primary quick action, and compact view toggle', async ({ page }) => {
+  await setupMockIpc(page, { records: [record('列表电影'), record('列表剧集', { mediaType: '剧集', totalEpisodes: 4, episodeTrackingEnabled: true, nextEpisode: 2, status: '在看' })] });
+  await page.goto('/');
+  await expect(page.locator('.mobile-record-thumbnail').first()).toBeVisible();
+  await expect(page.locator('.mobile-poster-fallback').first()).toContainText('无图');
+  await expect(page.getByRole('button', { name: '完成第 2 集' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '列表', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: '海报', exact: true }).click();
+  await expect(page.getByRole('button', { name: '海报', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.mobile-poster-grid')).toBeVisible();
 });

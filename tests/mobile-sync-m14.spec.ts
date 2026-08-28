@@ -151,7 +151,8 @@ test('M1.4 status, ordinary edit, and delete all notify the shared sync coordina
   await expect.poll(runtimeReads).toBeGreaterThan(before);
 
   before = await runtimeReads();
-  await page.getByRole('button', { name: '编辑' }).click();
+  await page.getByRole('button', { name: '更多操作：共享调度记录' }).click();
+  await page.getByRole('dialog', { name: '共享调度记录' }).getByRole('button', { name: '编辑' }).click();
   await page.getByLabel('备注').fill('mobile ordinary edit');
   await page.getByRole('button', { name: '保存修改' }).click();
   await expect(page.getByText('记录已更新。', { exact: true })).toBeVisible();
@@ -159,7 +160,8 @@ test('M1.4 status, ordinary edit, and delete all notify the shared sync coordina
 
   before = await runtimeReads();
   page.once('dialog', dialog => void dialog.accept());
-  await page.getByRole('button', { name: '删除' }).click();
+  await page.getByRole('button', { name: '更多操作：共享调度记录' }).click();
+  await page.getByRole('dialog', { name: '共享调度记录' }).getByRole('button', { name: '删除' }).click();
   await expect(page.getByText('记录已删除。', { exact: true })).toBeVisible();
   await expect.poll(runtimeReads).toBeGreaterThan(before);
 
