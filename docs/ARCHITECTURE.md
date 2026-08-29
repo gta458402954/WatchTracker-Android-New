@@ -95,11 +95,13 @@ result through the same coordinator.
   not create device identity, generation, outbox, staging, baseline, or
   recovery state. TypeScript then builds the desktop-compatible
   `formatVersion: 4` envelope from a top-level whitelist.
-- Large JSON crosses the WebView/Rust boundary once into an app-private
-  `export-staging` file. The Android bridge receives only a generated UUID
-  token and can resolve only that directory; it never accepts a source path.
-  Completion, cancellation, failure, app startup, and process teardown clean
-  staged files.
+- `get_local_export_snapshot` returns the typed entity snapshot from Rust to
+  the WebView. TypeScript builds and serializes the desktop-compatible V4
+  whitelist, then sends that JSON back to Rust once through
+  `stage_local_export`, which writes an app-private `export-staging` file. The
+  Android bridge receives only the generated UUID token and can resolve only
+  that directory; it never accepts an arbitrary source path. Completion,
+  cancellation, failure, app startup, and process teardown clean staged files.
 - The `poster://` protocol is registered in `src-tauri/src/lib.rs` and accepts
   one safe filename only; canonical poster bytes still pass the shared image
   signature and cache-size checks.

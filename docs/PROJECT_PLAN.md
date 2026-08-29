@@ -166,7 +166,7 @@ Android 采用五个一级入口和一个全局添加动作：
 ### 4.8 导入、导出与恢复
 
 - 导出复用桌面端 `formatVersion: 4`，包含记录、逐集历史、收藏集和成员关系。
-- 通过 Android Storage Access Framework 选择导入文件和导出目录。
+- 通过 Android Storage Access Framework 选择导入文件，并使用 `ACTION_CREATE_DOCUMENT` 选择导出文件的保存位置。
 - 导入前验证 schema、字段和值域并展示预览。
 - 高风险替换前自动创建恢复点。
 - 支持列出、保留、删除和恢复本地恢复点。
