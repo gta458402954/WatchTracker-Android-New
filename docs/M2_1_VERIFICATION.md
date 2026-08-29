@@ -67,13 +67,21 @@ not change the local database.
   includes 360×740 coverage for the settings page.
 - `npm run android:build`: PASS; the current universal debug APK was produced
   at `src-tauri/gen/android/app/build/outputs/apk/universal/debug/`.
-- `npm run android:test`: Kotlin and instrumentation compilation passed, but
-  device execution did not start because the connected physical device
-  rejected the test APK install with `INSTALL_FAILED_USER_RESTRICTED` (install
-  cancelled by user). This is an environment/device-policy result, not a test
-  failure; the four instrumentation cases remain device-execution pending.
-- System picker/save smoke: pending because the current device did not permit
-  installing the test build. No DocumentsUI coordinate automation was used.
+- `npm run android:test`: PASS (4/4) on physical device `25053RT47C`, Android
+  16. An initial ADB-daemon startup race failed non-zero before device
+  execution; restarting the configured SDK ADB daemon and rerunning the same
+  command completed all tests.
+- `npm run android:m12-smoke`: PASS.
+- `npm run android:m13-smoke`: PASS.
+- `npm run android:m14-smoke`: PASS. The installed APK SHA-256 matched the
+  just-built APK: `18E1B84C5EAD55047ED20807CE97E72172F33000CC77713128B571FDA4B37107`.
+- System picker/save smoke: PASS. The app opened DocumentsUI in Downloads with
+  the suggested `WatchTracker-backup-2026-08-29-231913.json` name; the user
+  confirmed Save. The resulting 2,412-byte file parsed as `formatVersion: 4`
+  with the exact six-key whitelist, 1 record, 3 episode completions, 0
+  collections, and 0 collection members. The library still contained the same
+  single visible record after export. DocumentsUI was not driven with fixed
+  coordinate automation.
 
 ## Remaining M2
 
