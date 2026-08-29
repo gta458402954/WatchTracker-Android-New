@@ -8,6 +8,7 @@ mod db_atomic_helpers;
 mod db_atomic_update;
 mod episode_history;
 mod error;
+mod local_export;
 mod metadata_identity;
 mod models;
 mod net;
@@ -99,6 +100,9 @@ pub fn run() {
             if let Err(error) = recovery_points::cleanup_temporary_files(&paths) {
                 log::warn!("Could not clean stale recovery-point temporary files: {error}");
             }
+            if let Err(error) = local_export::cleanup_stale(&paths) {
+                log::warn!("Could not clean stale local-export staging files: {error}");
+            }
             log::info!(
                 "Application starting with {} data root: {} (database: {}, posters: {}, backups: {})",
                 paths.mode().as_str(),
@@ -147,6 +151,9 @@ pub fn run() {
             commands::reorder_collection_members,
             commands::get_episode_tracking,
             commands::get_all_episode_completions,
+            commands::get_local_export_snapshot,
+            commands::stage_local_export,
+            commands::discard_local_export_stage,
             commands::enable_episode_tracking,
             commands::set_next_episode,
             commands::replace_library,

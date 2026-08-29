@@ -31,7 +31,8 @@ test('Android runtime renders the mobile shell and local CRUD form', async ({ pa
   await expect(page.getByText('移动端测试记录')).toBeVisible();
 
   await page.getByRole('button', { name: '设置' }).click();
-  await expect(page.getByRole('heading', { name: '同步设置' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '备份与恢复' })).toBeVisible();
   await expect(page.getByText('WebDAV 密码由 Android Keystore 保护，不会回显到页面。')).toBeVisible();
   expect(await page.evaluate(() => window.__WATCHTRACKER_ANDROID_BACK__?.() ?? 'exit')).toBe('history');
   await page.evaluate(() => history.back());

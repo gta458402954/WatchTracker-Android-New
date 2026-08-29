@@ -322,6 +322,30 @@ pub fn get_all_episode_completions(
 }
 
 #[tauri::command]
+pub fn get_local_export_snapshot(
+    state: State<DbState>,
+) -> Result<crate::local_export::LocalExportSnapshot, crate::error::AppError> {
+    let conn = lock_database(state.inner())?;
+    crate::local_export::snapshot(&conn)
+}
+
+#[tauri::command]
+pub fn stage_local_export(
+    paths: State<AppPaths>,
+    json: String,
+) -> Result<String, crate::error::AppError> {
+    crate::local_export::stage(paths.inner(), &json)
+}
+
+#[tauri::command]
+pub fn discard_local_export_stage(
+    paths: State<AppPaths>,
+    token: String,
+) -> Result<(), crate::error::AppError> {
+    crate::local_export::discard(paths.inner(), &token)
+}
+
+#[tauri::command]
 pub fn replace_library(
     state: State<DbState>,
     paths: State<AppPaths>,

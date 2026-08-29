@@ -33,7 +33,7 @@ const configured = {
 
 async function openSettings(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: '设置' }).click();
-  await expect(page.getByRole('heading', { name: '同步设置' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
 }
 
 test('M1.4 cold-starts the local library without credentials and renders real sync settings', async ({ page }) => {

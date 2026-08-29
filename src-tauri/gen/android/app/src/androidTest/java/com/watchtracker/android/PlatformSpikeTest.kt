@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
@@ -67,6 +68,18 @@ class PlatformSpikeTest {
         assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
         assertTrue(intent.categories?.contains(Intent.CATEGORY_OPENABLE) == true)
         assertEquals("application/json", intent.type)
+    }
+
+    @Test
+    fun safJsonExportIntentCreatesOpenableDocument() {
+        val fileName = "WatchTracker-backup-2026-08-29-173500.json"
+        val intent = AndroidDocumentExporter.buildCreateJsonDocumentIntent(fileName)
+        assertEquals(Intent.ACTION_CREATE_DOCUMENT, intent.action)
+        assertTrue(intent.categories?.contains(Intent.CATEGORY_OPENABLE) == true)
+        assertEquals("application/json", intent.type)
+        assertEquals(fileName, intent.getStringExtra(Intent.EXTRA_TITLE))
+        assertTrue(AndroidDocumentExporter.isContentDocumentUri(Uri.parse("content://documents/export.json")))
+        assertTrue(!AndroidDocumentExporter.isContentDocumentUri(Uri.parse("file:///data/user/0/com.watchtracker.android.debug/watchtracker.db")))
     }
 
     @Test

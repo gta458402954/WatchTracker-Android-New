@@ -37,6 +37,8 @@ export interface MockIpcOptions {
   } | null;
   recoveryPoints?: RecoveryPoint[];
   failSettingWrites?: boolean;
+  documentExportResult?: 'saved' | 'cancelled' | 'error';
+  documentExportDelayMs?: number;
 }
 
 export interface MockSnapshot {
@@ -49,6 +51,8 @@ export interface MockSnapshot {
   episodeCompletions: EpisodeCompletion[];
   collections: WatchCollection[];
   collectionMembers: CollectionMember[];
+  lastExportJson?: string;
+  exportedFileName?: string;
 }
 
 declare global {
@@ -58,12 +62,15 @@ declare global {
       invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
       convertFileSrc: (filePath: string, protocol?: string) => string;
     };
+    watchTrackerDocumentExport?: {
+      exportJsonDocument: (requestId: string, fileName: string, token: string) => void;
+    };
   }
 }
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -119,6 +126,25 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       let collectionMembers: CollectionMember[] = snapshot.collectionMembers;
       let collectionTombstones: CollectionTombstone[] = [];
       let collectionMemberTombstones: CollectionMemberTombstone[] = [];
+      const stagedExports = new Map<string, string>();
+
+      window.watchTrackerDocumentExport = {
+        exportJsonDocument: (requestId, fileName, token) => {
+          if (!stagedExports.has(token)) throw new Error('export_stage_missing');
+          window.setTimeout(() => {
+            stagedExports.delete(token);
+            if (documentExportResult === 'saved') snapshot.exportedFileName = fileName;
+            window.dispatchEvent(new CustomEvent('watchtracker:document-export-result', {
+              detail: {
+                requestId,
+                status: documentExportResult,
+                fileName,
+                ...(documentExportResult === 'error' ? { errorCode: 'injected_document_write_failure' } : {}),
+              },
+            }));
+          }, documentExportDelayMs);
+        },
+      };
 
       const bumpCollection = (collectionId: string) => {
         const index = collections.findIndex(item => item.id === collectionId);
@@ -512,6 +538,28 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
             case 'get_all_episode_completions':
               requireKeys(command, args, []);
               return structuredClone(episodeCompletions);
+            case 'get_local_export_snapshot':
+              requireKeys(command, args, []);
+              return {
+                records: structuredClone(snapshot.records),
+                episodeCompletions: structuredClone(episodeCompletions),
+                collections: structuredClone(collections),
+                collectionMembers: structuredClone(collectionMembers),
+              };
+            case 'stage_local_export': {
+              requireKeys(command, args, ['json']);
+              const json = args.json as string;
+              const envelope = JSON.parse(json) as { formatVersion?: number };
+              if (envelope.formatVersion !== 4) throw new Error('invalid_export_envelope');
+              const token = crypto.randomUUID();
+              stagedExports.set(token, json);
+              snapshot.lastExportJson = json;
+              return token;
+            }
+            case 'discard_local_export_stage':
+              requireKeys(command, args, ['token']);
+              stagedExports.delete(args.token as string);
+              return null;
             case 'replace_library': {
               requireKeys(command, args, ['episodeCompletions', 'records']);
               makeRecoveryPoint('import');
@@ -978,6 +1026,8 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       databaseCompatibilityIssue: options.databaseCompatibilityIssue ?? null,
       recoveryPoints: options.recoveryPoints ?? [],
       failSettingWrites: options.failSettingWrites ?? false,
+      documentExportResult: options.documentExportResult ?? 'saved',
+      documentExportDelayMs: options.documentExportDelayMs ?? 0,
     },
   );
 }

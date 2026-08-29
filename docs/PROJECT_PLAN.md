@@ -165,7 +165,7 @@ Android 采用五个一级入口和一个全局添加动作：
 
 ### 4.8 导入、导出与恢复
 
-- 导出包含记录、逐集历史、收藏集和成员关系的本地 JSON V3。
+- 导出复用桌面端 `formatVersion: 4`，包含记录、逐集历史、收藏集和成员关系。
 - 通过 Android Storage Access Framework 选择导入文件和导出目录。
 - 导入前验证 schema、字段和值域并展示预览。
 - 高风险替换前自动创建恢复点。
@@ -550,6 +550,13 @@ M1.3（已完成）边界：移动片库为非电影且具有合法 `totalEpisod
 退出标准：同一 WebDAV 目标上的桌面种子可由 Android 拉取；Android 完成本集后记录和逐集历史可靠发布；网络或凭据失败不阻塞本地 CRUD；M1.4 自动化与 Android 设备门禁通过。证据见 `docs/M1_4_VERIFICATION.md`。
 
 ### M2：迁移、导入与恢复（5～8 个工作日）
+
+分项状态：
+
+- [x] M2.1 Android 本地 JSON 导出（桌面 `formatVersion: 4`）与 SAF `ACTION_CREATE_DOCUMENT`。
+- [ ] M2.2 JSON 导入、schema 校验与预览。
+- [ ] M2.3 恢复点管理 UI 与 restore。
+- [ ] M2.4 数据库与缓存维护。
 
 交付：
 

@@ -8,6 +8,10 @@
 # Rust reaches this adapter through the application ClassLoader/JNI. Keep the
 # stable class and method names even if a future release enables minification.
 -keep class com.watchtracker.android.AndroidSecretStore { *; }
+-keep class com.watchtracker.android.AndroidDocumentExporter { *; }
+-keepclassmembers class com.watchtracker.android.MainActivity$* {
+    @android.webkit.JavascriptInterface <methods>;
+}
 
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface

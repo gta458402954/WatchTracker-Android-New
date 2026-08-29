@@ -21,7 +21,8 @@ their platform adapters are complete; desktop defaults remain unchanged.
 
 The shell exposes library, discovery, collections, statistics, and settings
 entry points. Discovery, collections, and statistics remain deliberate no-op
-development placeholders; settings now contains the M1.4 mobile sync surface.
+development placeholders; settings contains the M1.4 mobile sync surface and
+the M2.1 local-backup export card.
 M1.2 local add/edit/delete, filters and mobile preferences are real. Their
 mobile stale check is a reload-and-compare guard around unchanged CRUD and is
 not an atomic CAS.
@@ -80,9 +81,25 @@ result through the same coordinator.
   exceptions are cleared on errors and exposed only as safe credential state.
   Production instrumentation verifies write/read/delete, no plaintext at rest,
   and tamper/AAD failure. React sees availability/state only.
-- SAF is represented by a narrow `ACTION_OPEN_DOCUMENT` JSON intent in the same
-  instrumentation proof. URI permission and streaming import/export will be
-  added behind the platform adapter before M2.
+- The original M0 `ACTION_OPEN_DOCUMENT` instrumentation proof remains intact
+  for future import work. M2.1 export uses a separate
+  `AndroidDocumentExporter` boundary with `ACTION_CREATE_DOCUMENT`,
+  `CATEGORY_OPENABLE`, `application/json`, and `EXTRA_TITLE`. MainActivity owns
+  the asynchronous Activity Result and reports saved/cancelled/error to the
+  WebView. Only a `content://` result is accepted before `ContentResolver`
+  copies UTF-8 JSON to the selected URI; no storage permission or
+  public-directory path is used.
+- `get_local_export_snapshot` holds the one database mutex/connection while it
+  reads records, episode completions, collections, and collection members. It
+  deliberately bypasses sync snapshot migration/initialization, so export does
+  not create device identity, generation, outbox, staging, baseline, or
+  recovery state. TypeScript then builds the desktop-compatible
+  `formatVersion: 4` envelope from a top-level whitelist.
+- Large JSON crosses the WebView/Rust boundary once into an app-private
+  `export-staging` file. The Android bridge receives only a generated UUID
+  token and can resolve only that directory; it never accepts a source path.
+  Completion, cancellation, failure, app startup, and process teardown clean
+  staged files.
 - The `poster://` protocol is registered in `src-tauri/src/lib.rs` and accepts
   one safe filename only; canonical poster bytes still pass the shared image
   signature and cache-size checks.
@@ -97,7 +114,9 @@ result through the same coordinator.
 Every local insert/update/delete uses the existing explicit SQLite transaction
 and updates record/tombstone, generation, and outbox state together. Locked
 records are preserved during replacement. Unknown database versions and future
-payload schemas fail closed. Android must not introduce a schema fork.
+payload schemas fail closed. Android must not introduce a schema fork. Local
+export is outside the write path: it does not mutate library rows or enqueue
+sync work.
 
 ## Generated Android project
 

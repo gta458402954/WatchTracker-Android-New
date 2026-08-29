@@ -77,6 +77,16 @@ export const getEpisodeTracking = (recordId: string): Promise<EpisodeTracking> =
 export const getAllEpisodeCompletions = (): Promise<EpisodeCompletion[]> =>
   invoke('get_all_episode_completions');
 
+export interface LocalExportSnapshot {
+  records: WatchRecord[];
+  episodeCompletions: EpisodeCompletion[];
+  collections: WatchCollection[];
+  collectionMembers: CollectionMember[];
+}
+
+export const getLocalExportSnapshot = (): Promise<LocalExportSnapshot> =>
+  invoke('get_local_export_snapshot');
+
 export const enableEpisodeTracking = (recordId: string, initialNextEpisode: number, expectedRev: number): Promise<EpisodeTracking> =>
   invoke('enable_episode_tracking', { recordId, initialNextEpisode, expectedRev });
 

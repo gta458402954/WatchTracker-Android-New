@@ -4,6 +4,7 @@ import {
   getSyncRuntimeState,
   getSyncSnapshot,
   getSyncTargets,
+  getLocalExportSnapshot,
   resolveSyncConflict,
   type ActiveSyncConnection,
   type SyncRuntimeState,
@@ -21,6 +22,12 @@ import {
   type SyncTargetProbe,
 } from '../../../shared/lib/webdav.ts';
 import type { NoticeTone } from '../../../shared/lib/feedback.ts';
+import {
+  buildLocalBackupV4,
+  localBackupFileName,
+  serializeLocalBackupV4,
+} from '../../backup/localBackupV4.ts';
+import { exportJsonDocument } from '../../../platform/documentExport.ts';
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/%E5%BD%B1%E8%A7%86%E8%BF%BD%E8%B8%AA/';
 
@@ -79,6 +86,8 @@ export default function MobileSyncSettingsPage({
   const [probe, setProbe] = useState<SyncTargetProbe | null>(null);
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState<'probe' | 'activate' | 'sync' | 'clear' | 'pause' | 'resolve' | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportStatus, setExportStatus] = useState('');
 
   const refresh = useCallback(async () => {
     const [nextConnection, nextRegistry, nextRuntime, snapshot] = await Promise.all([
@@ -210,14 +219,53 @@ export default function MobileSyncSettingsPage({
     finally { setBusy(null); }
   };
 
+  const exportLocalData = async () => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    setExportStatus('正在准备导出…');
+    try {
+      const now = new Date();
+      const snapshot = await getLocalExportSnapshot();
+      const json = serializeLocalBackupV4(buildLocalBackupV4(snapshot, now));
+      const fileName = localBackupFileName(now);
+      setExportStatus('请选择保存位置…');
+      const result = await exportJsonDocument(fileName, json);
+      if (result.status === 'cancelled') {
+        setExportStatus('已取消导出。');
+        return;
+      }
+      setExportStatus(`已导出 ${result.fileName}`);
+      notify('success', '数据已导出。');
+    } catch (error) {
+      console.error('[MobileSettings.Export]', error instanceof Error ? error.message : 'unknown_error');
+      setExportStatus('数据导出失败。');
+      notify('error', '数据导出失败。');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   return <section className="mobile-sync-settings" aria-labelledby="mobile-sync-title">
     <header className="mobile-page-heading">
-      <div><h1 id="mobile-sync-title">同步设置</h1><p>WebDAV 密码由 Android Keystore 保护，不会回显到页面。</p></div>
+      <div><h1 id="mobile-sync-title">设置</h1><p>WebDAV 密码由 Android Keystore 保护，不会回显到页面。</p></div>
       <span className={`mobile-sync-state mobile-sync-state-${stateLabel === '错误' ? 'error' : 'normal'}`}>{stateLabel}</span>
     </header>
 
+    <div className="mobile-sync-card" data-testid="mobile-backup-export">
+      <h2>备份与恢复</h2>
+      <p className="mobile-sync-note">导出片库、逐集历史和收藏数据为 JSON 文件。</p>
+      <p className="mobile-sync-note">不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。</p>
+      <button
+        type="button"
+        className="mobile-primary-button"
+        disabled={exportBusy}
+        onClick={() => void exportLocalData()}
+      >{exportBusy ? '正在准备导出…' : '导出数据'}</button>
+      {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
+    </div>
+
     <div className="mobile-sync-card" data-testid="mobile-sync-runtime">
-      <h2>当前状态</h2>
+      <h2>WebDAV 同步</h2>
       <dl className="mobile-sync-facts">
         <div><dt>凭据</dt><dd>{credentialLabel(connection)}</dd></div>
         <div><dt>待上传</dt><dd>{liveRuntime?.outbox.pending ? '是' : '否'}</dd></div>
