@@ -554,7 +554,7 @@ M1.3（已完成）边界：移动片库为非电影且具有合法 `totalEpisod
 分项状态：
 
 - [x] M2.1 Android 本地 JSON 导出（桌面 `formatVersion: 4`）与 SAF `ACTION_CREATE_DOCUMENT`。
-- [ ] M2.2 JSON 导入、schema 校验与预览。
+- [x] M2.2 JSON 导入、schema/domain 校验、影响预览、stale guard、恢复点保护与原子替换。
 - [ ] M2.3 恢复点管理 UI 与 restore。
 - [ ] M2.4 数据库与缓存维护。
 

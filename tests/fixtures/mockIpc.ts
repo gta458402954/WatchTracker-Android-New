@@ -4,6 +4,7 @@ import type { CollectionMember, CollectionMemberTombstone, CollectionTombstone, 
 import type { TmdbMedia } from '../../src/shared/lib/classification';
 import type { RecoveryPoint, SyncOutboxState, SyncSchedulerState } from '../../src/shared/lib/database';
 import type { SyncConflictV3, SyncPayloadV3, SyncTombstoneV3 } from '../../src/shared/lib/syncMerge';
+import type { LocalImportPreview } from '../../src/features/backup/localImport';
 
 export interface MockIpcOptions {
   records?: WatchRecord[];
@@ -39,6 +40,14 @@ export interface MockIpcOptions {
   failSettingWrites?: boolean;
   documentExportResult?: 'saved' | 'cancelled' | 'error';
   documentExportDelayMs?: number;
+  documentImportResult?: 'selected' | 'cancelled' | 'error';
+  documentImportPreview?: Omit<LocalImportPreview, 'stageToken' | 'fileName'>;
+  documentImportRecords?: WatchRecord[];
+  documentImportEpisodeCompletions?: EpisodeCompletion[];
+  documentImportCollections?: WatchCollection[];
+  documentImportCollectionMembers?: CollectionMember[];
+  documentImportPreviewError?: string;
+  documentImportCommitError?: string;
 }
 
 export interface MockSnapshot {
@@ -65,12 +74,15 @@ declare global {
     watchTrackerDocumentExport?: {
       exportJsonDocument: (requestId: string, fileName: string, token: string) => void;
     };
+    watchTrackerDocumentImport?: {
+      selectJsonDocument: (requestId: string) => void;
+    };
   }
 }
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -127,6 +139,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       let collectionTombstones: CollectionTombstone[] = [];
       let collectionMemberTombstones: CollectionMemberTombstone[] = [];
       const stagedExports = new Map<string, string>();
+      const stagedImports = new Set<string>();
 
       window.watchTrackerDocumentExport = {
         exportJsonDocument: (requestId, fileName, token) => {
@@ -143,6 +156,25 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               },
             }));
           }, documentExportDelayMs);
+        },
+      };
+
+      window.watchTrackerDocumentImport = {
+        selectJsonDocument: (requestId) => {
+          window.setTimeout(() => {
+            const token = crypto.randomUUID();
+            if (documentImportResult === 'selected') stagedImports.add(token);
+            window.dispatchEvent(new CustomEvent('watchtracker:document-import-result', {
+              detail: {
+                requestId,
+                status: documentImportResult,
+                ...(documentImportResult === 'selected' ? {
+                  token, fileName: 'WatchTracker-backup-test.json', sizeBytes: documentImportPreview?.sizeBytes ?? 2048,
+                } : {}),
+                ...(documentImportResult === 'error' ? { errorCode: 'document_read_failed' } : {}),
+              },
+            }));
+          }, 0);
         },
       };
 
@@ -559,6 +591,49 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
             case 'discard_local_export_stage':
               requireKeys(command, args, ['token']);
               stagedExports.delete(args.token as string);
+              return null;
+            case 'preview_local_import': {
+              requireKeys(command, args, ['fileName', 'token']);
+              const token = args.token as string;
+              if (!stagedImports.has(token)) throw new Error('import_stage_missing');
+              if (documentImportPreviewError) {
+                stagedImports.delete(token);
+                throw new Error(documentImportPreviewError);
+              }
+              if (!documentImportPreview) throw new Error('invalid_json');
+              return {
+                ...structuredClone(documentImportPreview),
+                stageToken: token,
+                fileName: args.fileName,
+              };
+            }
+            case 'commit_local_import': {
+              requireKeys(command, args, ['expectedLibraryFingerprint', 'expectedStageSha256', 'token']);
+              const token = args.token as string;
+              if (!stagedImports.has(token)) throw new Error('import_stage_missing');
+              if (documentImportCommitError) throw new Error(documentImportCommitError);
+              makeRecoveryPoint('import');
+              snapshot.records = structuredClone(documentImportRecords);
+              episodeCompletions = structuredClone(documentImportEpisodeCompletions);
+              collections = structuredClone(documentImportCollections);
+              collectionMembers = structuredClone(documentImportCollectionMembers);
+              snapshot.episodeCompletions = episodeCompletions;
+              snapshot.collections = collections;
+              snapshot.collectionMembers = collectionMembers;
+              stagedImports.delete(token);
+              recordsGeneration += 1; queueOutbox('library-import-v3');
+              return {
+                recoveryPointId: snapshot.recoveryPoints[0].id,
+                recordCount: snapshot.records.length,
+                episodeCompletionCount: episodeCompletions.length,
+                collectionCount: collections.length,
+                collectionMemberCount: collectionMembers.length,
+                lockedPreservedCount: documentImportPreview.records.lockedPreserved,
+              };
+            }
+            case 'discard_local_import_stage':
+              requireKeys(command, args, ['token']);
+              stagedImports.delete(args.token as string);
               return null;
             case 'replace_library': {
               requireKeys(command, args, ['episodeCompletions', 'records']);
@@ -1028,6 +1103,14 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       failSettingWrites: options.failSettingWrites ?? false,
       documentExportResult: options.documentExportResult ?? 'saved',
       documentExportDelayMs: options.documentExportDelayMs ?? 0,
+      documentImportResult: options.documentImportResult ?? 'selected',
+      documentImportPreview: options.documentImportPreview ?? null,
+      documentImportRecords: options.documentImportRecords ?? [],
+      documentImportEpisodeCompletions: options.documentImportEpisodeCompletions ?? [],
+      documentImportCollections: options.documentImportCollections ?? [],
+      documentImportCollectionMembers: options.documentImportCollectionMembers ?? [],
+      documentImportPreviewError: options.documentImportPreviewError ?? null,
+      documentImportCommitError: options.documentImportCommitError ?? null,
     },
   );
 }

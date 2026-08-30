@@ -7,10 +7,10 @@ SDK is 26 and the M0 build target is arm64.
 
 ## Current milestone boundary
 
-M0 through M1.4 and M2.1 local JSON export are complete for the current Alpha
+M0 through M1.4 and M2.1–M2.2 local JSON backup/restore are complete for the current Alpha
 path. M1.4 brings the high-value mobile sync MVP forward without declaring the
-full M3 reliability Beta complete. M2.2 import and M2.3 recovery UI remain
-pending. Android 16 emulator evidence for M1.4 is recorded in
+full M3 reliability Beta complete. M2.3 recovery-point management/restore UI
+and M2.4 maintenance remain pending. Android 16 emulator evidence for M1.4 is recorded in
 [docs/M1_4_VERIFICATION.md](docs/M1_4_VERIFICATION.md); physical-device and
 multi-version matrices remain pending.
 
@@ -33,7 +33,11 @@ multi-version matrices remain pending.
 - Settings can export a desktop-compatible `formatVersion: 4` local backup by
   using Android SAF `ACTION_CREATE_DOCUMENT`. The export contains records,
   episode completions, collections, and collection members; it excludes
-  credentials and sync runtime. Import and recovery UI are not part of M2.1.
+  credentials and sync runtime. M2.2 imports only the strict V4 local-backup
+  envelope through SAF `ACTION_OPEN_DOCUMENT`, shows a read-only impact
+  preview, rejects stale previews, creates a recovery point, then atomically
+  replaces all four entity sets while preserving locked records. Recovery-point
+  management and restore UI are intentionally deferred to M2.3.
 
 ## Development
 
@@ -74,6 +78,7 @@ install that arm64 file after such a Gradle build, or run
 assume the universal APK changed just because an arm64 Gradle task completed.
 
 See [docs/M1_4_VERIFICATION.md](docs/M1_4_VERIFICATION.md),
-[docs/M2_1_VERIFICATION.md](docs/M2_1_VERIFICATION.md), and
+[docs/M2_1_VERIFICATION.md](docs/M2_1_VERIFICATION.md),
+[docs/M2_2_VERIFICATION.md](docs/M2_2_VERIFICATION.md), and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reproducible checks,
 platform boundaries, and known environment limitations.

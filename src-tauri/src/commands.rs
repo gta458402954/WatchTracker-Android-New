@@ -346,6 +346,46 @@ pub fn discard_local_export_stage(
 }
 
 #[tauri::command]
+pub fn preview_local_import(
+    state: State<DbState>,
+    paths: State<AppPaths>,
+    token: String,
+    file_name: String,
+) -> Result<crate::local_import::LocalImportPreview, crate::error::AppError> {
+    let conn = lock_database(state.inner())?;
+    crate::local_import::preview(&conn, paths.inner(), &token, &file_name)
+}
+
+#[tauri::command]
+pub fn commit_local_import(
+    state: State<DbState>,
+    paths: State<AppPaths>,
+    token: String,
+    expected_stage_sha256: String,
+    expected_library_fingerprint: String,
+) -> Result<crate::local_import::LocalImportResult, crate::error::AppError> {
+    // The application database mutex remains held across re-read, validation,
+    // freshness check, recovery snapshot and atomic replacement. Local edits
+    // and sync therefore cannot enter between the stale guard and replacement.
+    let mut conn = lock_database(state.inner())?;
+    crate::local_import::commit(
+        &mut conn,
+        paths.inner(),
+        &token,
+        &expected_stage_sha256,
+        &expected_library_fingerprint,
+    )
+}
+
+#[tauri::command]
+pub fn discard_local_import_stage(
+    paths: State<AppPaths>,
+    token: String,
+) -> Result<(), crate::error::AppError> {
+    crate::local_import::discard(paths.inner(), &token)
+}
+
+#[tauri::command]
 pub fn replace_library(
     state: State<DbState>,
     paths: State<AppPaths>,

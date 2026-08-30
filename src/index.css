@@ -169,6 +169,13 @@
   .mobile-sync-probe { margin-top: 12px; border: 1px solid #c7d2fe; border-radius: 12px; background: #eef2ff; padding: 12px; }
   .mobile-sync-probe p { margin: 0 0 10px; color: #3730a3; font-size: 12px; line-height: 1.55; }
   .mobile-sync-probe button { width: 100%; }
+  .mobile-import-button { width: 100%; min-height: 48px; margin-top: 10px; border-radius: 12px; font-size: 12px; font-weight: 800; }
+  .mobile-import-preview { min-width: 0; margin-top: 14px; border-top: 1px solid #e2e8f0; padding-top: 14px; }
+  .mobile-import-preview h3, .mobile-import-preview h4 { margin: 0 0 10px; color: #1e293b; font-size: 14px; font-weight: 900; }
+  .mobile-import-preview h4 { margin-top: 14px; }
+  .mobile-import-diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+  .mobile-import-diff div { min-width: 0; display: flex; justify-content: space-between; gap: 8px; border-radius: 10px; background: #f8fafc; padding: 9px 10px; color: #475569; font-size: 12px; }
+  .mobile-import-diff dd { margin: 0; color: #1e293b; font-weight: 900; }
   .mobile-sync-conflict { margin-top: 10px; border: 1px solid #fde68a; border-radius: 12px; background: #fffbeb; padding: 12px; }
   .mobile-sync-conflict h3 { margin: 0; color: #78350f; font-size: 14px; font-weight: 900; }
   .mobile-sync-conflict p { margin: 5px 0 0; color: #92400e; font-size: 11px; line-height: 1.5; }
