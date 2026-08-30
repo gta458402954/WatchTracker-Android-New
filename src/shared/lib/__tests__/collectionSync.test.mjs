@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { emptyCollectionState, mergeCollectionStates } from '../collectionSync.ts';
+import { collectionStateEquivalent, emptyCollectionState, mergeCollectionStates } from '../collectionSync.ts';
 import { parseSyncPayloadV3 } from '../syncMerge.ts';
 
 const collection = (fields = {}) => ({
@@ -14,6 +14,12 @@ const member = (fields = {}) => ({
 const state = (collections = [], collectionMembers = [], collectionTombstones = [], collectionMemberTombstones = []) => ({ collections, collectionMembers, collectionTombstones, collectionMemberTombstones });
 
 describe('TASK-D-UX-003 collection synchronization', () => {
+  test('collection equivalence ignores entity order but keeps member position semantic', () => {
+    const first = member({ id: 'm1', position: 0 });
+    const second = member({ id: 'm2', position: 1 });
+    assert.equal(collectionStateEquivalent(state([collection()], [first, second]), state([collection()], [second, first])), true);
+    assert.equal(collectionStateEquivalent(state([collection()], [first, second]), state([collection()], [second, { ...first, position: 2 }])), false);
+  });
   test('merges disjoint collection fields and stable memberships', () => {
     const base = state([collection()], [member()]);
     const local = state([collection({ name: '本机名称', normalizedName: '本机名称' })], [member()]);

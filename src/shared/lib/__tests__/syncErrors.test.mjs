@@ -7,7 +7,7 @@ test('sync errors map stable codes to safe Chinese messages', () => {
     'conditional_write_unsupported', 'conditional_validator_rejected', 'remote_busy',
     'stale_local_snapshot', 'stale_sync_target', 'target_migration_required',
     'unsupported_remote_schema', 'legacy_remote_changed', 'episode_sync_upgrade_required',
-    'episode_completion_conflict', 'collections_sync_upgrade_required',
+    'episode_completion_conflict', 'collections_sync_upgrade_required', 'sync_target_unavailable',
   ];
   for (const code of codes) {
     const message = syncFailureMessage(code);

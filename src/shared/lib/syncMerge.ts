@@ -71,6 +71,39 @@ export function syncValuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
 }
 
+function canonicalEntityArray<T extends { id: string }>(items: T[]): unknown[] {
+  return [...items].sort((left, right) => left.id.localeCompare(right.id)).map(stableValue);
+}
+
+/**
+ * Sync-only semantic comparison. Entity order in a payload is not state: the
+ * stable entity id is the identity, while every field (including position and
+ * revision fields) remains part of the comparison.
+ */
+export function syncSideEquivalent(left: SyncMergeSide, right: SyncMergeSide): boolean {
+  return syncValuesEqual(canonicalEntityArray(left.records), canonicalEntityArray(right.records))
+    && syncValuesEqual(canonicalEntityArray(left.tombstones), canonicalEntityArray(right.tombstones));
+}
+
+function normalizedBusinessValue(field: string, value: unknown): unknown {
+  if (OPTIONAL_DATE_FIELDS.has(field)
+    && (value === null || value === undefined || typeof value === 'string' && !value.trim())) return '';
+  return value;
+}
+
+function businessFieldEqual(field: string, left: unknown, right: unknown): boolean {
+  return syncValuesEqual(normalizedBusinessValue(field, left), normalizedBusinessValue(field, right));
+}
+
+function normalizeOptionalRecordDates(record: WatchRecord): WatchRecord {
+  return {
+    ...record,
+    startDate: normalizedBusinessValue('startDate', record.startDate) as string,
+    endDate: normalizedBusinessValue('endDate', record.endDate) as string,
+  };
+}
+
+
 function mapsOf(side: SyncMergeSide) {
   return {
     records: new Map(side.records.map(record => [record.id, record])),
@@ -331,6 +364,14 @@ export function parseSyncPayloadV3(value: unknown): SyncPayloadV3 {
 
 function completionKey(item: EpisodeCompletion): string {
   return `${item.recordId}\0${item.episodeNumber}`;
+}
+
+/** Episode identity follows the same record/episode key used by the merge. */
+export function episodeCompletionStateEquivalent(left: EpisodeCompletion[], right: EpisodeCompletion[]): boolean {
+  return syncValuesEqual(
+    [...left].sort((a, b) => completionKey(a).localeCompare(completionKey(b))).map(stableValue),
+    [...right].sort((a, b) => completionKey(a).localeCompare(completionKey(b))).map(stableValue),
+  );
 }
 
 /** Monotonic three-way merge for per-episode completion facts. */

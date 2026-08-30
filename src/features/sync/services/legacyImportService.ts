@@ -35,6 +35,7 @@ const defaultDependencies: LegacyImportDependencies = {
 async function probeWithDependencies(creds: WebDAVCreds, deps: LegacyImportDependencies): Promise<SyncTargetProbe> {
   const proxy = await deps.database.getSettingAsync('network_proxy');
   const v3 = await deps.transport.request('GET', creds, proxy, V3_RESOURCE);
+  if (v3.status === 409) throw new Error('sync_target_unavailable');
   if (v3.status === 200) {
     const payload = parseSyncPayloadV3(v3.body);
     return { kind: 'v3', recordCount: payload.records.length, revision: payload.revision };
@@ -46,6 +47,7 @@ async function probeWithDependencies(creds: WebDAVCreds, deps: LegacyImportDepen
     return { kind: 'legacy', recordCount: payload.records.length, revision: null };
   }
   if (legacy.status === 404) return { kind: 'empty', recordCount: 0, revision: null };
+  if (legacy.status === 409) throw new Error('sync_target_unavailable');
   throw new Error(`HTTP Error: ${legacy.status}`);
 }
 

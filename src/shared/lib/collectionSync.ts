@@ -28,6 +28,18 @@ function stateEqual(left: ReturnType<typeof entityState>, right: ReturnType<type
   return syncValuesEqual(left, right);
 }
 
+function canonicalEntityArray<T extends { id: string }>(items: T[]): unknown[] {
+  return [...items].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** Collection payload order is not semantic; member.position remains compared. */
+export function collectionStateEquivalent(left: CollectionSyncState, right: CollectionSyncState): boolean {
+  return syncValuesEqual(canonicalEntityArray(left.collections), canonicalEntityArray(right.collections))
+    && syncValuesEqual(canonicalEntityArray(left.collectionMembers), canonicalEntityArray(right.collectionMembers))
+    && syncValuesEqual(canonicalEntityArray(left.collectionTombstones), canonicalEntityArray(right.collectionTombstones))
+    && syncValuesEqual(canonicalEntityArray(left.collectionMemberTombstones), canonicalEntityArray(right.collectionMemberTombstones));
+}
+
 function mergeDisjoint<T extends Entity>(base: T, local: T, remote: T): T | null {
   const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
   const localChanged = [...keys].filter(key => !SYSTEM_FIELDS.has(key) && !syncValuesEqual((base as unknown as Record<string, unknown>)[key], (local as unknown as Record<string, unknown>)[key]));

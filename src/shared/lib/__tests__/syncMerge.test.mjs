@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { mergeEpisodeCompletions, mergeSyncStates, parseSyncPayloadV3 } from '../syncMerge.ts';
+import { episodeCompletionStateEquivalent, mergeEpisodeCompletions, mergeSyncStates, parseSyncPayloadV3, syncSideEquivalent } from '../syncMerge.ts';
 
 const now = '2026-08-02T00:00:00.000Z';
 function record(id, fields = {}) {
@@ -13,6 +13,12 @@ function record(id, fields = {}) {
 const side = (records = [], tombstones = []) => ({ records, tombstones });
 
 describe('TASK-D-SYNC-001 three-way merge', () => {
+  test('sync side equivalence ignores entity order but detects a field change', () => {
+    const first = record('a', { notes: 'same' });
+    const second = record('b', { notes: 'same' });
+    assert.equal(syncSideEquivalent(side([first, second]), side([second, first])), true);
+    assert.equal(syncSideEquivalent(side([first, second]), side([second, { ...first, notes: 'changed' }])), false);
+  });
   test('automatically merges different fields without using wall-clock order', () => {
     const base = record('same', { notes: 'base', platform: '' });
     const local = record('same', { notes: 'local', platform: '', updatedAt: '2020-01-01T00:00:00Z' });
@@ -113,5 +119,12 @@ describe('TASK-D-HISTORY-001 completion merge', () => {
     assert.throws(() => mergeEpisodeCompletions([], [known], [completion('2026-08-03T00:00:00.000Z')]), /episode_completion_conflict/);
     const remote = completion('2026-08-03T00:00:00.000Z');
     assert.equal(mergeEpisodeCompletions([], [known], [remote], () => 'remote')[0].completedAt, remote.completedAt);
+  });
+
+  test('episode completion equivalence uses domain identity instead of array order', () => {
+    const one = completion(now, { id: 'one', recordId: 'series', episodeNumber: 1 });
+    const two = completion(null, { id: 'two', recordId: 'series', episodeNumber: 2 });
+    assert.equal(episodeCompletionStateEquivalent([one, two], [two, one]), true);
+    assert.equal(episodeCompletionStateEquivalent([one, two], [{ ...two, completedAt: now } , one]), false);
   });
 });

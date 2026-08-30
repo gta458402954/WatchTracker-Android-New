@@ -28,6 +28,7 @@ export interface MockIpcOptions {
   omitPutEtag?: boolean;
   omitGetEtag?: boolean;
   webdavConditionalGet?: boolean;
+  webdavPropfindStatus?: number;
   omitConditionalGetEtag?: boolean;
   mutateLocalDuringConditionalGet?: boolean;
   webdavFailureStatus?: number;
@@ -85,7 +86,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, omitConditionalGetEtag, mutateLocalDuringConditionalGet, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, omitConditionalGetEtag, mutateLocalDuringConditionalGet, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -1074,6 +1075,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               }
               if (request.method === 'MKCOL') return { status: 405, body: null, etag: null };
               if (request.method === 'PROPFIND') {
+                if (webdavPropfindStatus !== null) return { status: webdavPropfindStatus, body: null, etag: null, text: null };
                 if (!snapshot.webdavV3Remote) return { status: 404, body: null, etag: null, text: null };
                 const value = v3Etag ? `<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:getetag>${v3Etag.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}</d:getetag></d:prop></d:propstat></d:response></d:multistatus>` : '<d:multistatus xmlns:d="DAV:" />';
                 return { status: 207, body: null, etag: null, text: value };
@@ -1152,6 +1154,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       omitPutEtag: options.omitPutEtag ?? false,
       omitGetEtag: options.omitGetEtag ?? false,
       webdavConditionalGet: options.webdavConditionalGet ?? false,
+      webdavPropfindStatus: options.webdavPropfindStatus ?? null,
       omitConditionalGetEtag: options.omitConditionalGetEtag ?? false,
       mutateLocalDuringConditionalGet: options.mutateLocalDuringConditionalGet ?? false,
       webdavFailureStatus: options.webdavFailureStatus ?? 503,

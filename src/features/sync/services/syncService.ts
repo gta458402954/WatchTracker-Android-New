@@ -13,15 +13,17 @@ import {
   mergeEpisodeCompletions,
   mergeSyncStates,
   parseSyncPayloadV3,
+  episodeCompletionStateEquivalent,
+  syncSideEquivalent,
   syncValuesEqual,
   type SyncMergeSide,
   type SyncPayloadV3,
 } from '../../../shared/lib/syncMerge.ts';
-import { emptyCollectionState, mergeCollectionStates, type CollectionSyncState } from '../../../shared/lib/collectionSync.ts';
+import { collectionStateEquivalent, emptyCollectionState, mergeCollectionStates, type CollectionSyncState } from '../../../shared/lib/collectionSync.ts';
 import { entityTag, strongEtag } from '../domain/entityTags.ts';
 import { buildSyncPayload, collectionSideOfPayload, legacyPayload, sideOfLegacy, sideOfPayload } from '../domain/syncPayload.ts';
 import { syncError } from '../domain/syncErrors.ts';
-import { assertEntityTag, conditionalValidatorForResource, contentFingerprint, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
+import { assertEntityTag, conditionalValidatorForResource, contentFingerprint, probeDavEntityTagForResource, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
 import type { WebDAVCreds, WebDavTransport } from '../infrastructure/webdavTransport.ts';
 import { webdavTransport } from '../infrastructure/webdavTransport.ts';
 import type { SyncResult } from './syncContracts.ts';
@@ -81,6 +83,32 @@ async function checkLegacyRemote(
   return previousFingerprint;
 }
 
+async function finishRemoteUnchanged(
+  snapshot: SyncSnapshot,
+  deps: SyncServiceDependencies,
+  creds: WebDAVCreds,
+  proxy: string | null,
+  storedConditionalEtag: string,
+): Promise<SyncResult> {
+  const legacyFingerprint = await checkLegacyRemote(
+    deps, creds, proxy, snapshot.v2SourceFingerprint,
+  );
+  await deps.database.recordSyncRemoteUnchanged({
+    targetId: snapshot.targetId,
+    targetEpoch: snapshot.targetEpoch,
+    expectedGeneration: snapshot.recordsGeneration,
+    expectedRemoteEtag: storedConditionalEtag,
+    v2SourceFingerprint: legacyFingerprint,
+  });
+  return {
+    ok: true,
+    records: snapshot.records,
+    conflicts: snapshot.conflicts,
+    conflictCount: snapshot.conflicts.length,
+    legacyImported: false,
+  };
+}
+
 async function syncWithDependencies(
   creds: WebDAVCreds,
   _ignoredRecords: WatchRecord[] | undefined,
@@ -106,6 +134,18 @@ async function syncWithDependencies(
     const storedConditionalEtag = conditionalPullEtag(snapshot);
 
     for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
+      if (storedConditionalEtag) {
+        const davEtag = await probeDavEntityTagForResource(
+          creds, proxy, V3_RESOURCE, deps.transport,
+        );
+        if (davEtag === storedConditionalEtag) {
+          console.info('[sync] clean preflight: PROPFIND same validator');
+          return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
+        }
+        console.info(`[sync] clean preflight: ${davEtag ? 'PROPFIND changed' : 'PROPFIND unavailable'}`);
+      } else {
+        console.info('[sync] clean preflight: normal full merge');
+      }
       const v3Response = await deps.transport.request(
         'GET', creds, proxy, V3_RESOURCE, null, null, storedConditionalEtag, null,
       );
@@ -121,25 +161,14 @@ async function syncWithDependencies(
 
       if (v3Response.status === 304) {
         if (!storedConditionalEtag) throw new Error('HTTP Error: 304');
-        legacyFingerprint = await checkLegacyRemote(
-          deps, creds, proxy, snapshot.v2SourceFingerprint,
-        );
-        await deps.database.recordSyncRemoteUnchanged({
-          targetId: snapshot.targetId,
-          targetEpoch: snapshot.targetEpoch,
-          expectedGeneration: snapshot.recordsGeneration,
-          expectedRemoteEtag: storedConditionalEtag,
-          v2SourceFingerprint: legacyFingerprint,
-        });
-        return {
-          ok: true,
-          records: snapshot.records,
-          conflicts: snapshot.conflicts,
-          conflictCount: snapshot.conflicts.length,
-          legacyImported: false,
-        };
+        console.info('[sync] clean preflight: HTTP conditional fallback 304');
+        return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
       } else if (v3Response.status === 200) {
         validator = await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport);
+        if (storedConditionalEtag && validator.etag === storedConditionalEtag) {
+          console.info('[sync] clean preflight: HTTP 200 same validator');
+          return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
+        }
         remotePayload = parseSyncPayloadV3(v3Response.body);
         remoteSide = sideOfPayload(remotePayload);
         remoteCollectionState = collectionSideOfPayload(remotePayload);
@@ -220,9 +249,13 @@ async function syncWithDependencies(
       const remoteCollections = { ...mergedCollections, collectionMembers: mergedCollections.collectionMembers.filter(item => remoteRecordIds.has(item.recordId)) };
       const localCompletions = mergedCompletions.filter(item => localRecordIds.has(item.recordId));
       const remoteCompletions = mergedCompletions.filter(item => remoteRecordIds.has(item.recordId));
-      const remoteChanged = !syncValuesEqual(merged.remote, remoteSide)
-        || !syncValuesEqual(remoteCompletions, remotePayload.episodeCompletions ?? [])
-        || !syncValuesEqual(remoteCollections, remoteCollectionState);
+      const remoteRecordsChanged = !syncSideEquivalent(merged.remote, remoteSide);
+      const remoteEpisodesChanged = !episodeCompletionStateEquivalent(remoteCompletions, remotePayload.episodeCompletions ?? []);
+      const remoteCollectionsChanged = !collectionStateEquivalent(remoteCollections, remoteCollectionState);
+      const remoteChanged = remoteRecordsChanged || remoteEpisodesChanged || remoteCollectionsChanged;
+      console.info('[sync] remote change classification', {
+        records: remoteRecordsChanged, episodes: remoteEpisodesChanged, collections: remoteCollectionsChanged,
+      });
       let confirmedPayload = remotePayload;
       let confirmedEtag = validator?.etag ?? null;
 
