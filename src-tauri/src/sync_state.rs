@@ -1,9 +1,9 @@
 use crate::app_paths::AppPaths;
 use crate::db;
 use crate::db_atomic_helpers::{
-    acknowledge_sync_outbox, get_records_generation, get_setting_tx, get_sync_outbox,
-    get_tombstones_tx, mark_local_records_mutated, mark_records_mutated, set_setting_tx,
-    set_sync_outbox, set_tombstones_tx, SyncOutbox, Tombstone,
+    acknowledge_sync_outbox, delete_setting_tx, get_records_generation, get_setting_tx,
+    get_sync_outbox, get_tombstones_tx, mark_local_records_mutated, mark_records_mutated,
+    set_setting_tx, set_sync_outbox, set_tombstones_tx, SyncOutbox, Tombstone,
 };
 use crate::error::AppError;
 use crate::models::WatchRecord;
@@ -118,7 +118,7 @@ pub struct SyncCommitInput {
     pub baseline: Value,
     #[serde(default)]
     pub conflicts: Vec<Value>,
-    pub remote_etag: String,
+    pub remote_etag: Option<String>,
     pub last_commit: Value,
     pub v2_source_fingerprint: Option<String>,
     #[serde(default)]
@@ -540,6 +540,30 @@ pub fn record_remote_unchanged(
     runtime_state(conn)
 }
 
+fn validate_commit_validator_state(
+    conn: &Connection,
+    remote_etag: Option<&str>,
+) -> Result<(), AppError> {
+    if let Some(remote_etag) = remote_etag {
+        if !crate::net::valid_entity_tag(remote_etag, true) {
+            return Err(AppError::General(
+                "conditional_write_unsupported".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let dirty = get_sync_outbox(conn)?.is_some_and(|outbox| outbox.pending)
+        || !crate::sync_staging::get_staging(conn)?.entries.is_empty()
+        || crate::sync_staging::get_publish_intent(conn)?.is_some();
+    if dirty {
+        return Err(AppError::General(
+            "conditional_write_unsupported".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn commit(
     conn: &mut Connection,
     paths: &AppPaths,
@@ -549,9 +573,7 @@ pub fn commit(
     if input.expected_generation < 0 || get_records_generation(conn)? != input.expected_generation {
         return Err(AppError::General("stale_local_snapshot".to_string()));
     }
-    if input.remote_etag.trim().is_empty() {
-        return Err(AppError::General("Missing remote ETag".to_string()));
-    }
+    validate_commit_validator_state(conn, input.remote_etag.as_deref())?;
     let records = prepare_import_batch(input.records)?;
     let existing_records = db::get_all_records(conn)?;
     let existing_tombstones = get_tombstones_tx(conn)?;
@@ -653,6 +675,7 @@ pub fn commit(
     if get_records_generation(&transaction)? != input.expected_generation {
         return Err(AppError::General("stale_local_snapshot".to_string()));
     }
+    validate_commit_validator_state(&transaction, input.remote_etag.as_deref())?;
     if business_state_changed {
         for id in &deletes {
             transaction.execute(
@@ -699,11 +722,12 @@ pub fn commit(
         &scoped_key(&transaction, CONFLICTS_KEY, "conflicts_v3")?,
         &conflicts,
     )?;
-    set_setting_tx(
-        &transaction,
-        &scoped_key(&transaction, ETAG_KEY, "remote_etag")?,
-        &input.remote_etag,
-    )?;
+    let remote_etag_key = scoped_key(&transaction, ETAG_KEY, "remote_etag")?;
+    if let Some(remote_etag) = input.remote_etag.as_deref() {
+        set_setting_tx(&transaction, &remote_etag_key, remote_etag)?;
+    } else {
+        delete_setting_tx(&transaction, &remote_etag_key)?;
+    }
     set_setting_tx(
         &transaction,
         &scoped_key(&transaction, LAST_COMMIT_KEY, "last_commit_v3")?,
@@ -894,11 +918,21 @@ mod tests {
                 }],
                 baseline: serde_json::json!({"schemaVersion": 3, "records": []}),
                 conflicts: vec![serde_json::json!({"id": "conflict"})],
-                remote_etag: "\"etag-1\"".into(),
+                remote_etag: Some("\"etag-1\"".into()),
                 last_commit: serde_json::json!({"commitId": "commit-1"}),
                 v2_source_fingerprint: Some("legacy-sha".into()),
                 acknowledge_outbox: true,
             }
+        }
+
+        fn recovery_count(&self) -> usize {
+            fs::read_dir(self.paths.backups())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str()) == Some("db")
+                })
+                .count()
         }
     }
 
@@ -931,6 +965,146 @@ mod tests {
         assert_eq!(state.remote_etag.as_deref(), Some("\"etag-1\""));
         assert_eq!(state.conflicts[0]["id"], "conflict");
         assert_eq!(state.v2_source_fingerprint.as_deref(), Some("legacy-sha"));
+    }
+
+    #[test]
+    fn pull_only_commit_without_validator_clears_etag_without_business_side_effects() {
+        let mut test = TestDatabase::new("validatorless-no-op");
+        let initial = test.input(0);
+        commit(&mut test.conn, &test.paths, initial).unwrap();
+        let before = snapshot(&test.conn).unwrap();
+        let backups_before = test.recovery_count();
+
+        let mut input = test.input(before.records_generation);
+        input.remote_etag = None;
+        let result = commit(&mut test.conn, &test.paths, input).unwrap();
+        let after = snapshot(&test.conn).unwrap();
+
+        assert_eq!(result.records_generation, before.records_generation);
+        assert_eq!(after.records_generation, before.records_generation);
+        assert!(after.remote_etag.is_none());
+        assert!(get_setting_tx(&test.conn, ETAG_KEY).unwrap().is_none());
+        assert_eq!(test.recovery_count(), backups_before);
+        assert!(!after.outbox.pending);
+        assert!(after.staging.entries.is_empty());
+        assert!(after.publish_intent.is_none());
+    }
+
+    #[test]
+    fn pull_only_commit_without_validator_applies_remote_state_and_keeps_recovery_rules() {
+        let mut test = TestDatabase::new("validatorless-remote-pull");
+        let initial = test.input(0);
+        commit(&mut test.conn, &test.paths, initial).unwrap();
+        let before = snapshot(&test.conn).unwrap();
+        let backups_before = test.recovery_count();
+
+        let mut input = test.input(before.records_generation);
+        input.records.push(TestDatabase::record("remote-only"));
+        input.baseline = serde_json::json!({
+            "schemaVersion": 3,
+            "commitId": "remote-only-commit",
+            "records": input.records.clone(),
+            "tombstones": input.tombstones.clone()
+        });
+        input.last_commit = serde_json::json!({"commitId": "remote-only-commit"});
+        input.remote_etag = None;
+        let result = commit(&mut test.conn, &test.paths, input).unwrap();
+        let after = snapshot(&test.conn).unwrap();
+
+        assert_eq!(result.records_generation, before.records_generation + 1);
+        assert_eq!(after.records_generation, before.records_generation + 1);
+        assert!(after
+            .records
+            .iter()
+            .any(|record| record.id == "remote-only"));
+        assert_eq!(
+            after.baseline.as_ref().unwrap()["commitId"],
+            "remote-only-commit"
+        );
+        assert_eq!(
+            after.last_commit.as_ref().unwrap()["commitId"],
+            "remote-only-commit"
+        );
+        assert!(after.remote_etag.is_none());
+        assert_eq!(test.recovery_count(), backups_before + 1);
+        assert!(!after.outbox.pending);
+    }
+
+    #[test]
+    fn pull_only_commit_without_validator_rejects_every_dirty_state() {
+        let mut pending = TestDatabase::new("validatorless-pending-outbox");
+        set_sync_outbox(
+            &pending.conn,
+            &SyncOutbox {
+                version: 1,
+                pending: true,
+                dirty_generation: 0,
+                reasons: vec!["record-update".into()],
+                first_queued_at: Some("2026-08-30T00:00:00.000Z".into()),
+                last_queued_at: Some("2026-08-30T00:00:00.000Z".into()),
+            },
+        )
+        .unwrap();
+        let mut pending_input = pending.input(0);
+        pending_input.remote_etag = None;
+        assert!(commit(&mut pending.conn, &pending.paths, pending_input)
+            .unwrap_err()
+            .to_string()
+            .contains("conditional_write_unsupported"));
+        assert!(get_sync_outbox(&pending.conn).unwrap().unwrap().pending);
+        assert_eq!(pending.recovery_count(), 0);
+
+        let mut staged = TestDatabase::new("validatorless-staging");
+        let staged_record = insert_record_atomic(
+            &mut staged.conn,
+            TestDatabase::record("staged"),
+            "fixture-device",
+        )
+        .unwrap();
+        set_sync_outbox(&staged.conn, &SyncOutbox::clean(1)).unwrap();
+        let mut staged_input = staged.input(1);
+        staged_input.records = vec![staged_record];
+        staged_input.remote_etag = None;
+        assert!(commit(&mut staged.conn, &staged.paths, staged_input)
+            .unwrap_err()
+            .to_string()
+            .contains("conditional_write_unsupported"));
+        assert!(!get_staging(&staged.conn).unwrap().entries.is_empty());
+
+        let mut publishing = TestDatabase::new("validatorless-publish-intent");
+        prepare_publish_intent(
+            &publishing.conn,
+            PreparePublishIntentInput {
+                target_id: None,
+                target_epoch: None,
+                commit_id: "pending-publish".into(),
+                previous_commit_id: None,
+                expected_generation: 0,
+                payload_fingerprint: "payload-sha".into(),
+            },
+        )
+        .unwrap();
+        let mut publishing_input = publishing.input(0);
+        publishing_input.remote_etag = None;
+        assert!(
+            commit(&mut publishing.conn, &publishing.paths, publishing_input)
+                .unwrap_err()
+                .to_string()
+                .contains("conditional_write_unsupported")
+        );
+        assert!(get_publish_intent(&publishing.conn).unwrap().is_some());
+    }
+
+    #[test]
+    fn commit_rejects_a_malformed_remote_validator() {
+        let mut test = TestDatabase::new("malformed-validator");
+        let mut input = test.input(0);
+        input.remote_etag = Some("malformed".into());
+        assert!(commit(&mut test.conn, &test.paths, input)
+            .unwrap_err()
+            .to_string()
+            .contains("conditional_write_unsupported"));
+        assert_eq!(test.recovery_count(), 0);
     }
 
     #[test]

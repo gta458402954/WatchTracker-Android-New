@@ -312,9 +312,9 @@ async function syncWithDependencies(
           confirmedPayload = verified;
           confirmedEtag = (await conditionalValidatorForResource(verification, creds, proxy, V3_RESOURCE, deps.transport)).etag;
         }
+        assertEntityTag(confirmedEtag);
       }
 
-      assertEntityTag(confirmedEtag);
       await deps.database.commitSyncResult({
         targetId: snapshot.targetId, targetEpoch: snapshot.targetEpoch, expectedGeneration: snapshot.recordsGeneration,
         records: merged.local.records, tombstones: merged.local.tombstones, episodeCompletions: localCompletions,

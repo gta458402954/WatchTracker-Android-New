@@ -23,6 +23,18 @@ WatchTracker 对坚果云主要使用 DAV `getetag` 作为 clean pull fast path�
 所有 WebDAV 服务都如此。PROPFIND 同样返回不可用时，仍保留 HTTP conditional GET
 fallback。
 
+如果完整 GET 成功并通过 payload/schema/domain 校验，但 GET 与后续 PROPFIND 都无法
+提供可靠 validator，客户端仍可接受不需要修改远端的纯拉取 merge。该提交会保存新的
+本地业务状态、baseline、conflicts、last commit、legacy fingerprint 和 scheduler 成功
+状态，同时把当前 target scoped `remoteEtag` 删除而不是保留旧值或写入占位值。由于
+快照中的 `remoteEtag` 随后为 `null`，下一次同步不会使用 clean conditional fast path，
+而会重新执行完整远端检查；未来重新取得可靠 validator 后才会恢复 fast path。
+
+这个降级只适用于 clean pull-only commit。只要 merge 需要 PUT，缺少可靠 validator 仍
+返回 `conditional_write_unsupported`，绝不执行无条件写入。Rust 提交边界还会在事务
+前和事务内复核 outbox 不 pending、staging 为空且不存在 publish intent，避免丢弃或
+确认任何待上传本地状态。
+
 所有 unchanged shortcut 都继续检查 legacy `records.json` guard；因此目标存在 legacy
 文件时仍可能下载 legacy body，并在 fingerprint 改变时报告 `legacy_remote_changed`。
 unchanged 路径只更新 scheduler 成功状态和必要的 legacy fingerprint，不合并或替换

@@ -880,13 +880,18 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
                 collectionMemberTombstones: CollectionMemberTombstone[];
                 baseline: SyncPayloadV3;
                 conflicts: SyncConflictV3[];
-                remoteEtag: string;
+                remoteEtag: string | null;
                 lastCommit: unknown;
                 v2SourceFingerprint: string | null;
                 acknowledgeOutbox: boolean;
               };
               if (input.targetId !== activeTargetId || input.targetEpoch !== (activeTargetId ? targetEpoch : null)) throw new Error('stale_sync_target');
               if (input.expectedGeneration !== recordsGeneration) throw new Error('stale_local_snapshot');
+              const currentStaging = JSON.parse(snapshot.settings.sync_staging_v1 || '{"entries":[]}') as { entries: unknown[] };
+              if (input.remoteEtag !== null && !validEntityTag(input.remoteEtag)) throw new Error('conditional_write_unsupported');
+              if (input.remoteEtag === null && (outbox.pending || currentStaging.entries.length > 0 || snapshot.settings.sync_publish_intent_v1)) {
+                throw new Error('conditional_write_unsupported');
+              }
               const businessStateChanged = JSON.stringify(snapshot.records) !== JSON.stringify(input.records)
                 || JSON.stringify(tombstones) !== JSON.stringify(input.tombstones)
                 || JSON.stringify(episodeCompletions) !== JSON.stringify(input.episodeCompletions)
@@ -908,7 +913,8 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               snapshot.settings.sync_tombstones = JSON.stringify(tombstones);
               snapshot.settings.sync_v3_baseline = JSON.stringify(input.baseline);
               snapshot.settings.sync_v3_conflicts = JSON.stringify(input.conflicts);
-              snapshot.settings.sync_v3_remote_etag = input.remoteEtag;
+              if (input.remoteEtag === null) delete snapshot.settings.sync_v3_remote_etag;
+              else snapshot.settings.sync_v3_remote_etag = input.remoteEtag;
               snapshot.settings.sync_v3_last_commit = JSON.stringify(input.lastCommit);
               const intent = snapshot.settings.sync_publish_intent_v1
                 ? JSON.parse(snapshot.settings.sync_publish_intent_v1) as { commitId: string }

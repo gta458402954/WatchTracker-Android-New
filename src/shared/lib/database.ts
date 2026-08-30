@@ -230,7 +230,7 @@ export interface SyncCommitInput {
   collectionMemberTombstones: CollectionMemberTombstone[];
   baseline: SyncPayloadV3;
   conflicts: SyncConflictV3[];
-  remoteEtag: string;
+  remoteEtag: string | null;
   lastCommit: unknown;
   v2SourceFingerprint: string | null;
   acknowledgeOutbox: boolean;

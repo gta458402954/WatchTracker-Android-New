@@ -175,6 +175,83 @@ test('@conditional-pull fallback 200 with same validator avoids merge and PUT', 
   expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
 });
 
+test('@conditional-pull validator unavailable accepts a semantic no-op pull and clears the stale ETag', async ({ page }) => {
+  const local = record('validatorless-no-op');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"server-current"',
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline, '"stored-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const first = await mockSnapshot(page);
+  expect(first.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  const commit = first.calls.find(call => call.command === 'commit_sync_result');
+  expect(commit?.args.input).toMatchObject({ remoteEtag: null });
+  expect(first.settings.sync_v3_remote_etag).toBeUndefined();
+  expect(first.recoveryPoints).toHaveLength(0);
+
+  const callCount = first.calls.length;
+  expect((await runSync(page)).ok).toBe(true);
+  const second = await mockSnapshot(page);
+  const nextCalls = second.calls.slice(callCount);
+  const nextV3Get = nextCalls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
+  expect(nextV3Get?.args.ifNoneMatch).toBeNull();
+  expect(nextCalls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+});
+
+test('@conditional-pull validator unavailable safely applies a remote-only pull without PUT', async ({ page }) => {
+  const local = record('validatorless-existing');
+  const remoteOnly = record('validatorless-remote-only');
+  const baseline = payload([local]);
+  const remote = payload([local, remoteOnly], {
+    revision: 2, commitId: 'validatorless-remote-commit', parentCommitId: baseline.commitId,
+  });
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: remote, webdavV3Etag: '"server-current"',
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline, '"stored-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.records.map(item => item.id)).toEqual([local.id, remoteOnly.id]);
+  expect(JSON.parse(snapshot.settings.sync_v3_baseline as string).commitId).toBe(remote.commitId);
+  expect(JSON.parse(snapshot.settings.sync_v3_last_commit as string).commitId).toBe(remote.commitId);
+  expect(snapshot.settings.sync_v3_remote_etag).toBeUndefined();
+  expect(snapshot.recoveryPoints).toHaveLength(1);
+});
+
+test('@conditional-pull validator unavailable still blocks a required local upload', async ({ page }) => {
+  const base = record('validatorless-dirty');
+  const local = record('validatorless-dirty', { notes: 'local pending change', rev: 2, revActor: 'local-device' });
+  const baseline = payload([base]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: null,
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: {
+      ...cleanConditionalSettings(baseline, '"stored-old"'),
+      sync_outbox_v1: JSON.stringify({
+        version: 1, pending: true, dirtyGeneration: 0, reasons: ['record-update'],
+        firstQueuedAt: '2026-08-30T00:00:00.000Z', lastQueuedAt: '2026-08-30T00:00:00.000Z',
+      }),
+    },
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'conditional_write_unsupported' });
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(JSON.parse(snapshot.settings.sync_outbox_v1 as string).pending).toBe(true);
+  expect(snapshot.records).toEqual([local]);
+});
+
 test('@conditional-pull semantic no-op ignores remote entity array order', async ({ page }) => {
   const first = record('semantic-first');
   const second = record('semantic-second');
