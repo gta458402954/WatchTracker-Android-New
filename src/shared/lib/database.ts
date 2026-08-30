@@ -3,6 +3,7 @@ import type { CollectionMember, CollectionMemberTombstone, CollectionTombstone, 
 import { errorMessage, type TmdbMedia, type TmdbSearchResponse } from './classification.ts';
 import { assertValidUpdateNumbers } from './updateValidation.ts';
 import type { SyncConflictV3, SyncPayloadV3, SyncTombstoneV3 } from './syncMerge';
+import type { LocalImportPreview, LocalImportResult } from '../../features/backup/localImport.ts';
 
 export async function getAllRecordsAsync(): Promise<WatchRecord[]> {
   return invoke('get_all_records');
@@ -86,6 +87,16 @@ export interface LocalExportSnapshot {
 
 export const getLocalExportSnapshot = (): Promise<LocalExportSnapshot> =>
   invoke('get_local_export_snapshot');
+
+export const previewLocalImport = (token: string, fileName: string): Promise<LocalImportPreview> =>
+  invoke('preview_local_import', { token, fileName });
+
+export const commitLocalImport = (preview: LocalImportPreview): Promise<LocalImportResult> =>
+  invoke('commit_local_import', {
+    token: preview.stageToken,
+    expectedStageSha256: preview.stageSha256,
+    expectedLibraryFingerprint: preview.currentLibraryFingerprint,
+  });
 
 export const enableEpisodeTracking = (recordId: string, initialNextEpisode: number, expectedRev: number): Promise<EpisodeTracking> =>
   invoke('enable_episode_tracking', { recordId, initialNextEpisode, expectedRev });

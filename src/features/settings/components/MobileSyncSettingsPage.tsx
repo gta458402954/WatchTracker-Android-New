@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   getActiveSyncConnection,
   getSyncRuntimeState,
   getSyncSnapshot,
   getSyncTargets,
   getLocalExportSnapshot,
+  previewLocalImport,
+  commitLocalImport,
   resolveSyncConflict,
   type ActiveSyncConnection,
   type SyncRuntimeState,
@@ -28,6 +30,13 @@ import {
   serializeLocalBackupV4,
 } from '../../backup/localBackupV4.ts';
 import { exportJsonDocument } from '../../../platform/documentExport.ts';
+import { discardImportedDocument, selectJsonDocument } from '../../../platform/documentImport.ts';
+import {
+  formatImportBytes,
+  localImportErrorCode,
+  localImportErrorMessage,
+  type LocalImportPreview,
+} from '../../backup/localImport.ts';
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/%E5%BD%B1%E8%A7%86%E8%BF%BD%E8%B8%AA/';
 
@@ -88,6 +97,17 @@ export default function MobileSyncSettingsPage({
   const [busy, setBusy] = useState<'probe' | 'activate' | 'sync' | 'clear' | 'pause' | 'resolve' | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportStatus, setExportStatus] = useState('');
+  const [importBusy, setImportBusy] = useState<'select' | 'preview' | 'commit' | null>(null);
+  const [importStatus, setImportStatus] = useState('');
+  const [importError, setImportError] = useState('');
+  const [importPreview, setImportPreview] = useState<LocalImportPreview | null>(null);
+  const pendingImportToken = useRef<string | null>(null);
+  const importCommitInFlight = useRef(false);
+
+  useEffect(() => () => {
+    const token = pendingImportToken.current;
+    if (token && !importCommitInFlight.current) void discardImportedDocument(token).catch(() => undefined);
+  }, []);
 
   const refresh = useCallback(async () => {
     const [nextConnection, nextRegistry, nextRuntime, snapshot] = await Promise.all([
@@ -245,6 +265,89 @@ export default function MobileSyncSettingsPage({
     }
   };
 
+  const clearPendingImport = async () => {
+    const token = pendingImportToken.current;
+    pendingImportToken.current = null;
+    setImportPreview(null);
+    if (token) await discardImportedDocument(token).catch(() => undefined);
+  };
+
+  const chooseImport = async () => {
+    if (importBusy) return;
+    await clearPendingImport();
+    setImportError(''); setImportStatus(''); setImportBusy('select');
+    try {
+      const selection = await selectJsonDocument();
+      if (selection.status === 'cancelled') {
+        setImportStatus('已取消导入。');
+        return;
+      }
+      pendingImportToken.current = selection.token;
+      setImportBusy('preview');
+      setImportStatus('正在安全验证备份…');
+      const preview = await previewLocalImport(selection.token, selection.fileName);
+      setImportPreview(preview);
+      setImportStatus('');
+    } catch (error) {
+      const token = pendingImportToken.current;
+      pendingImportToken.current = null;
+      if (token) await discardImportedDocument(token).catch(() => undefined);
+      setImportPreview(null);
+      setImportStatus('');
+      setImportError(localImportErrorMessage(error));
+      notify('error', '无法导入此备份。');
+    } finally {
+      setImportBusy(null);
+    }
+  };
+
+  const cancelImport = async () => {
+    if (importBusy) return;
+    setImportBusy('preview');
+    await clearPendingImport();
+    setImportError(''); setImportStatus('已取消导入。'); setImportBusy(null);
+  };
+
+  const confirmImport = async () => {
+    const preview = importPreview;
+    if (!preview || importBusy) return;
+    setImportBusy('commit'); setImportError(''); setImportStatus('正在导入…');
+    importCommitInFlight.current = true;
+    try {
+      const result = await commitLocalImport(preview);
+      pendingImportToken.current = null;
+      setImportPreview(null);
+      await onReloadRecords();
+      await onSyncWorkQueued();
+      setImportStatus(`数据已导入，共 ${result.recordCount} 条记录。已创建导入前恢复点。`);
+      notify('success', '数据已导入。');
+    } catch (error) {
+      const code = localImportErrorCode(error);
+      const message = localImportErrorMessage(error);
+      setImportError(message);
+      setImportStatus('');
+      if (code === 'import_preview_stale' || code === 'import_stage_changed') {
+        notify('warning', message);
+        const token = pendingImportToken.current;
+        if (token) {
+          try {
+            const refreshed = await previewLocalImport(token, preview.fileName);
+            setImportPreview(refreshed);
+          } catch (previewError) {
+            await clearPendingImport();
+            setImportError(localImportErrorMessage(previewError));
+          }
+        }
+      } else {
+        await clearPendingImport();
+        notify('error', '无法导入此备份。');
+      }
+    } finally {
+      importCommitInFlight.current = false;
+      setImportBusy(null);
+    }
+  };
+
   return <section className="mobile-sync-settings" aria-labelledby="mobile-sync-title">
     <header className="mobile-page-heading">
       <div><h1 id="mobile-sync-title">设置</h1><p>WebDAV 密码由 Android Keystore 保护，不会回显到页面。</p></div>
@@ -261,7 +364,42 @@ export default function MobileSyncSettingsPage({
         disabled={exportBusy}
         onClick={() => void exportLocalData()}
       >{exportBusy ? '正在准备导出…' : '导出数据'}</button>
+      <button
+        type="button"
+        className="mobile-quiet-button mobile-import-button"
+        disabled={importBusy !== null}
+        onClick={() => void chooseImport()}
+      >{importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}</button>
       {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
+      {importStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-import-status">{importStatus}</p>}
+      {importError && <p className="mobile-sync-error" role="alert" data-testid="mobile-import-error">{importError}</p>}
+      {importPreview && <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview">
+        <h3>导入预览</h3>
+        <dl className="mobile-sync-facts">
+          <div><dt>文件</dt><dd>{importPreview.fileName}</dd></div>
+          <div><dt>大小</dt><dd>{formatImportBytes(importPreview.sizeBytes)}</dd></div>
+          <div><dt>格式</dt><dd>V{importPreview.formatVersion}</dd></div>
+          <div><dt>导出时间</dt><dd>{new Date(importPreview.exportedAt).toLocaleString('zh-CN')}</dd></div>
+          <div><dt>记录</dt><dd>{importPreview.counts.records}</dd></div>
+          <div><dt>逐集历史</dt><dd>{importPreview.counts.episodeCompletions}</dd></div>
+          <div><dt>收藏集</dt><dd>{importPreview.counts.collections}</dd></div>
+          <div><dt>收藏成员</dt><dd>{importPreview.counts.collectionMembers}</dd></div>
+        </dl>
+        <h4>预计影响</h4>
+        <dl className="mobile-import-diff">
+          <div><dt>新增</dt><dd>{importPreview.records.added}</dd></div>
+          <div><dt>更新</dt><dd>{importPreview.records.updated}</dd></div>
+          <div><dt>删除</dt><dd>{importPreview.records.removed}</dd></div>
+          <div><dt>不变</dt><dd>{importPreview.records.unchanged}</dd></div>
+          <div><dt>锁定保护</dt><dd>{importPreview.records.lockedPreserved}</dd></div>
+          <div><dt>导入后记录</dt><dd>{importPreview.records.finalCount}</dd></div>
+        </dl>
+        <p className="mobile-sync-note">未锁定的当前数据可能被替换或删除。锁定记录及其逐集历史会受到保护；操作前会创建恢复点。</p>
+        <div className="mobile-sync-actions">
+          <button type="button" className="mobile-quiet-button" disabled={importBusy !== null} onClick={() => void cancelImport()}>取消导入</button>
+          <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>{importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}</button>
+        </div>
+      </section>}
     </div>
 
     <div className="mobile-sync-card" data-testid="mobile-sync-runtime">

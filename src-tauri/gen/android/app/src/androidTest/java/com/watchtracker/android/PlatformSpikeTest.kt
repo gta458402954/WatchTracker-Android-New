@@ -83,6 +83,16 @@ class PlatformSpikeTest {
     }
 
     @Test
+    fun productionSafJsonImportIntentOpensOpenableDocument() {
+        val intent = AndroidDocumentImporter.buildOpenJsonDocumentIntent()
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
+        assertTrue(intent.categories?.contains(Intent.CATEGORY_OPENABLE) == true)
+        assertEquals("application/json", intent.type)
+        assertTrue(AndroidDocumentImporter.isContentDocumentUri(Uri.parse("content://documents/backup.json")))
+        assertTrue(!AndroidDocumentImporter.isContentDocumentUri(Uri.parse("file:///sdcard/backup.json")))
+    }
+
+    @Test
     fun productionSecretStoreEncryptsAtRestRejectsTamperingAndDeletes() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val target = "WatchTracker/v1/webdav/${"a".repeat(64)}"

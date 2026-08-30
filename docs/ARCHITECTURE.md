@@ -81,14 +81,21 @@ result through the same coordinator.
   exceptions are cleared on errors and exposed only as safe credential state.
   Production instrumentation verifies write/read/delete, no plaintext at rest,
   and tamper/AAD failure. React sees availability/state only.
-- The original M0 `ACTION_OPEN_DOCUMENT` instrumentation proof remains intact
-  for future import work. M2.1 export uses a separate
+- The original M0 `ACTION_OPEN_DOCUMENT` instrumentation proof remains intact.
+  M2.1 export uses a separate
   `AndroidDocumentExporter` boundary with `ACTION_CREATE_DOCUMENT`,
   `CATEGORY_OPENABLE`, `application/json`, and `EXTRA_TITLE`. MainActivity owns
   the asynchronous Activity Result and reports saved/cancelled/error to the
   WebView. Only a `content://` result is accepted before `ContentResolver`
   copies UTF-8 JSON to the selected URI; no storage permission or
   public-directory path is used.
+- M2.2 production import is a separate `AndroidDocumentImporter` boundary.
+  MainActivity launches `ACTION_OPEN_DOCUMENT` with `CATEGORY_OPENABLE` and
+  `application/json`; only a returned `content://` URI is accepted. A background
+  executor streams through `ContentResolver` into app-private
+  `import-staging/<uuid>.tmp`, counts bytes against the 128 MiB cap, syncs and
+  renames to `<uuid>.json`. React receives only token, safe display name and
+  byte count. It never receives the untrusted JSON or an arbitrary path.
 - `get_local_export_snapshot` holds the one database mutex/connection while it
   reads records, episode completions, collections, and collection members. It
   deliberately bypasses sync snapshot migration/initialization, so export does
@@ -102,6 +109,20 @@ result through the same coordinator.
   Android bridge receives only the generated UUID token and can resolve only
   that directory; it never accepts an arbitrary source path. Completion,
   cancellation, failure, app startup, and process teardown clean staged files.
+- `local_import.rs` is the M2.2 authority. It accepts only the exact V4
+  top-level whitelist, validates RFC3339 metadata, typed records, episode
+  relationships, collections and members, and simulates the same
+  `replace_library_atomic` implementation on an in-memory SQLite copy. The
+  resulting preview includes four entity counts and record add/update/remove/
+  unchanged/locked-protected counts without touching the real database.
+- Preview binds the stage SHA-256 and a deterministic four-entity library
+  fingerprint. Confirm re-reads and revalidates the stage while holding the
+  single database mutex, checks both fingerprints, creates exactly one
+  pre-import recovery snapshot, and runs the existing transactional four-entity
+  replacement. That transaction retains locked records and their episode
+  history, increments local mutation state, and rebuilds existing sync staging.
+  This mutex scope prevents a local edit or sync from entering between the
+  freshness check, recovery snapshot and replacement.
 - The `poster://` protocol is registered in `src-tauri/src/lib.rs` and accepts
   one safe filename only; canonical poster bytes still pass the shared image
   signature and cache-size checks.
@@ -118,7 +139,9 @@ and updates record/tombstone, generation, and outbox state together. Locked
 records are preserved during replacement. Unknown database versions and future
 payload schemas fail closed. Android must not introduce a schema fork. Local
 export is outside the write path: it does not mutate library rows or enqueue
-sync work.
+sync work. Local import is a local mutation and enters the existing outbox and
+sync-staging path; it does not restore credentials, settings, baselines, ETags,
+conflicts or sync runtime.
 
 ## Generated Android project
 
