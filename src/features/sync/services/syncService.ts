@@ -164,8 +164,14 @@ async function syncWithDependencies(
         console.info('[sync] clean preflight: HTTP conditional fallback 304');
         return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
       } else if (v3Response.status === 200) {
-        validator = await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport);
-        if (storedConditionalEtag && validator.etag === storedConditionalEtag) {
+        try {
+          validator = await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport);
+        } catch (error) {
+          if (!String(error).includes('conditional_write_unsupported')) throw error;
+          console.info('[sync] clean preflight: validator unavailable; full merge without upload permission');
+          validator = null;
+        }
+        if (storedConditionalEtag && validator?.etag === storedConditionalEtag) {
           console.info('[sync] clean preflight: HTTP 200 same validator');
           return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
         }
@@ -260,6 +266,7 @@ async function syncWithDependencies(
       let confirmedEtag = validator?.etag ?? null;
 
       if (creating || remoteChanged) {
+        if (!creating && !validator) throw new Error('conditional_write_unsupported');
         const nextPayload = buildSyncPayload(remotePayload, merged.remote, remoteCompletions, remoteCollections, snapshot.deviceId, now, deps.uuid());
         if (remotePayload.schemaVersion === 3 && nextPayload.schemaVersion === 4
           && await deps.database.getSettingAsync('sync_v4_upgrade_confirmed') !== '1') {
