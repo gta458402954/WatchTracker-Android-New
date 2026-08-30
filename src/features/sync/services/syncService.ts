@@ -4,7 +4,9 @@ import {
   getSettingAsync,
   getSyncSnapshot,
   prepareSyncPublishIntent,
+  recordSyncRemoteUnchanged,
   setSettingAsync,
+  type SyncSnapshot,
 } from '../../../shared/lib/database.ts';
 import {
   emptySyncPayload,
@@ -16,7 +18,7 @@ import {
   type SyncPayloadV3,
 } from '../../../shared/lib/syncMerge.ts';
 import { emptyCollectionState, mergeCollectionStates, type CollectionSyncState } from '../../../shared/lib/collectionSync.ts';
-import { strongEtag } from '../domain/entityTags.ts';
+import { entityTag, strongEtag } from '../domain/entityTags.ts';
 import { buildSyncPayload, collectionSideOfPayload, legacyPayload, sideOfLegacy, sideOfPayload } from '../domain/syncPayload.ts';
 import { syncError } from '../domain/syncErrors.ts';
 import { assertEntityTag, conditionalValidatorForResource, contentFingerprint, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
@@ -29,7 +31,7 @@ const LEGACY_RESOURCE = 'records.json';
 const MAX_PRECONDITION_RETRIES = 3;
 
 export type SyncServiceDatabase = Pick<typeof import('../../../shared/lib/database.ts'),
-  'commitSyncResult' | 'getSettingAsync' | 'getSyncSnapshot' | 'prepareSyncPublishIntent' | 'setSettingAsync'>;
+  'commitSyncResult' | 'getSettingAsync' | 'getSyncSnapshot' | 'prepareSyncPublishIntent' | 'recordSyncRemoteUnchanged' | 'setSettingAsync'>;
 
 export interface SyncServiceDependencies {
   transport: WebDavTransport;
@@ -41,7 +43,7 @@ export interface SyncServiceDependencies {
 
 const defaultDependencies: SyncServiceDependencies = {
   transport: webdavTransport,
-  database: { commitSyncResult, getSettingAsync, getSyncSnapshot, prepareSyncPublishIntent, setSettingAsync },
+  database: { commitSyncResult, getSettingAsync, getSyncSnapshot, prepareSyncPublishIntent, recordSyncRemoteUnchanged, setSettingAsync },
   now: () => new Date(),
   uuid: () => crypto.randomUUID(),
   confirm: () => false,
@@ -51,6 +53,32 @@ function successful(status: number) { return status >= 200 && status < 300; }
 
 function confirmUpgrade(deps: SyncServiceDependencies, message: string): boolean {
   return deps.confirm(message);
+}
+
+export function conditionalPullEtag(snapshot: Pick<SyncSnapshot,
+  'baseline' | 'remoteEtag' | 'outbox' | 'publishIntent' | 'staging'>): string | null {
+  if (!snapshot.baseline || snapshot.outbox.pending || snapshot.publishIntent
+    || snapshot.staging.entries.length > 0) return null;
+  const stored = snapshot.remoteEtag;
+  return entityTag(stored) ? stored : null;
+}
+
+async function checkLegacyRemote(
+  deps: SyncServiceDependencies,
+  creds: WebDAVCreds,
+  proxy: string | null,
+  previousFingerprint: string | null,
+): Promise<string | null> {
+  const legacyResponse = await deps.transport.request('GET', creds, proxy, LEGACY_RESOURCE);
+  if (legacyResponse.status === 200) {
+    const currentFingerprint = legacyResponse.etag || await contentFingerprint(legacyResponse.body);
+    if (previousFingerprint && previousFingerprint !== currentFingerprint) {
+      throw new Error('legacy_remote_changed');
+    }
+    return currentFingerprint;
+  }
+  if (legacyResponse.status === 404) return 'missing';
+  return previousFingerprint;
 }
 
 async function syncWithDependencies(
@@ -75,9 +103,12 @@ async function syncWithDependencies(
       collectionMemberTombstones: snapshot.collectionMemberTombstones,
     };
     const rejectedValidatorFingerprints: string[] = [];
+    const storedConditionalEtag = conditionalPullEtag(snapshot);
 
     for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
-      const v3Response = await deps.transport.request('GET', creds, proxy, V3_RESOURCE);
+      const v3Response = await deps.transport.request(
+        'GET', creds, proxy, V3_RESOURCE, null, null, storedConditionalEtag, null,
+      );
       let remotePayload: SyncPayloadV3;
       let baseSide: SyncMergeSide;
       let remoteSide: SyncMergeSide;
@@ -88,7 +119,26 @@ async function syncWithDependencies(
       let legacyImported = false;
       let legacyFingerprint = snapshot.v2SourceFingerprint;
 
-      if (v3Response.status === 200) {
+      if (v3Response.status === 304) {
+        if (!storedConditionalEtag) throw new Error('HTTP Error: 304');
+        legacyFingerprint = await checkLegacyRemote(
+          deps, creds, proxy, snapshot.v2SourceFingerprint,
+        );
+        await deps.database.recordSyncRemoteUnchanged({
+          targetId: snapshot.targetId,
+          targetEpoch: snapshot.targetEpoch,
+          expectedGeneration: snapshot.recordsGeneration,
+          expectedRemoteEtag: storedConditionalEtag,
+          v2SourceFingerprint: legacyFingerprint,
+        });
+        return {
+          ok: true,
+          records: snapshot.records,
+          conflicts: snapshot.conflicts,
+          conflictCount: snapshot.conflicts.length,
+          legacyImported: false,
+        };
+      } else if (v3Response.status === 200) {
         validator = await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport);
         remotePayload = parseSyncPayloadV3(v3Response.body);
         remoteSide = sideOfPayload(remotePayload);
@@ -102,16 +152,9 @@ async function syncWithDependencies(
         baseCollectionState = snapshot.baseline
           ? collectionSideOfPayload(parseSyncPayloadV3(snapshot.baseline))
           : (recoverablePublishedIntent || sameDeviceBootstrap ? remoteCollectionState : emptyCollectionState());
-        const legacyResponse = await deps.transport.request('GET', creds, proxy, LEGACY_RESOURCE);
-        if (legacyResponse.status === 200) {
-          const currentFingerprint = legacyResponse.etag || await contentFingerprint(legacyResponse.body);
-          if (snapshot.v2SourceFingerprint && snapshot.v2SourceFingerprint !== currentFingerprint) {
-            throw new Error('legacy_remote_changed');
-          }
-          legacyFingerprint = currentFingerprint;
-        } else if (legacyResponse.status === 404) {
-          legacyFingerprint = 'missing';
-        }
+        legacyFingerprint = await checkLegacyRemote(
+          deps, creds, proxy, snapshot.v2SourceFingerprint,
+        );
       } else if (v3Response.status === 404) {
         creating = true;
         const legacyResponse = await deps.transport.request('GET', creds, proxy, LEGACY_RESOURCE);

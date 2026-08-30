@@ -241,6 +241,14 @@ export interface SyncCommitResult {
   recordCount: number;
 }
 
+export interface RemoteUnchangedInput {
+  targetId: string | null;
+  targetEpoch: number | null;
+  expectedGeneration: number;
+  expectedRemoteEtag: string;
+  v2SourceFingerprint: string | null;
+}
+
 export async function getSyncSnapshot(): Promise<SyncSnapshot> {
   return invoke('get_sync_snapshot');
 }
@@ -255,6 +263,10 @@ export async function setAutoSyncPaused(paused: boolean, targetId: string | null
 
 export async function recordSyncFailure(code: string, nextAttemptAt: string | null, targetId: string | null, targetEpoch: number | null): Promise<SyncRuntimeState> {
   return invoke('record_sync_failure', { code, nextAttemptAt, targetId, targetEpoch });
+}
+
+export async function recordSyncRemoteUnchanged(input: RemoteUnchangedInput): Promise<SyncRuntimeState> {
+  return invoke('record_sync_remote_unchanged', { input });
 }
 
 export async function commitSyncResult(input: SyncCommitInput): Promise<SyncCommitResult> {

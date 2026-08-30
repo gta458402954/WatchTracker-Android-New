@@ -133,6 +133,18 @@ pub struct SyncCommitResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteUnchangedInput {
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub target_epoch: Option<u64>,
+    pub expected_generation: i64,
+    pub expected_remote_etag: String,
+    pub v2_source_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SyncConflictResolution {
     Local,
@@ -462,6 +474,69 @@ pub fn record_failure(
     scheduler.last_error_code = Some(code.to_string());
     scheduler.next_attempt_at = next_attempt_at;
     set_scheduler_state(conn, &scheduler)?;
+    runtime_state(conn)
+}
+
+pub fn record_remote_unchanged(
+    conn: &mut Connection,
+    input: RemoteUnchangedInput,
+) -> Result<SyncRuntimeState, AppError> {
+    crate::sync_targets::verify_context(conn, input.target_id.as_deref(), input.target_epoch)?;
+    if input.expected_generation < 0
+        || !crate::net::valid_entity_tag(&input.expected_remote_etag, true)
+    {
+        return Err(AppError::General("Invalid remote ETag".to_string()));
+    }
+
+    let transaction = conn.transaction()?;
+    crate::sync_targets::verify_context(
+        &transaction,
+        input.target_id.as_deref(),
+        input.target_epoch,
+    )?;
+    if get_records_generation(&transaction)? != input.expected_generation {
+        return Err(AppError::General("stale_local_snapshot".to_string()));
+    }
+    let current_etag = get_setting_tx(
+        &transaction,
+        &scoped_key(&transaction, ETAG_KEY, "remote_etag")?,
+    )?;
+    if current_etag.as_deref() != Some(input.expected_remote_etag.as_str()) {
+        return Err(AppError::General("stale_remote_validator".to_string()));
+    }
+    let baseline_exists = get_setting_tx(
+        &transaction,
+        &scoped_key(&transaction, BASELINE_KEY, "baseline_v3")?,
+    )?
+    .is_some();
+    let clean_outbox = get_sync_outbox(&transaction)?.is_some_and(|outbox| !outbox.pending);
+    if !baseline_exists
+        || !clean_outbox
+        || !crate::sync_staging::get_staging(&transaction)?
+            .entries
+            .is_empty()
+        || crate::sync_staging::get_publish_intent(&transaction)?.is_some()
+    {
+        return Err(AppError::General("stale_local_snapshot".to_string()));
+    }
+
+    if let Some(fingerprint) = input.v2_source_fingerprint {
+        set_setting_tx(
+            &transaction,
+            &scoped_key(&transaction, V2_FINGERPRINT_KEY, "v2_source_fingerprint")?,
+            &fingerprint,
+        )?;
+    }
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut scheduler = scheduler_state(&transaction)?;
+    scheduler.consecutive_failures = 0;
+    scheduler.next_attempt_at = None;
+    scheduler.last_attempt_at = Some(now.clone());
+    scheduler.last_success_at = Some(now.clone());
+    scheduler.last_remote_check_at = Some(now);
+    scheduler.last_error_code = None;
+    set_scheduler_state(&transaction, &scheduler)?;
+    transaction.commit()?;
     runtime_state(conn)
 }
 
@@ -881,6 +956,162 @@ mod tests {
                 .count(),
             backups_before
         );
+    }
+
+    #[test]
+    fn unchanged_remote_records_only_scheduler_and_legacy_success_state() {
+        let mut test = TestDatabase::new("remote-unchanged");
+        let input = test.input(0);
+        commit(&mut test.conn, &test.paths, input).unwrap();
+        record_failure(
+            &test.conn,
+            "temporary",
+            Some("2026-09-01T00:00:00.000Z".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        let before = snapshot(&test.conn).unwrap();
+        let backups_before = fs::read_dir(test.paths.backups())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("db"))
+            .count();
+
+        let runtime = record_remote_unchanged(
+            &mut test.conn,
+            RemoteUnchangedInput {
+                target_id: None,
+                target_epoch: None,
+                expected_generation: before.records_generation,
+                expected_remote_etag: "\"etag-1\"".into(),
+                v2_source_fingerprint: Some("legacy-updated".into()),
+            },
+        )
+        .unwrap();
+        let after = snapshot(&test.conn).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&after.records).unwrap(),
+            serde_json::to_value(&before.records).unwrap()
+        );
+        assert_eq!(after.tombstones, before.tombstones);
+        assert_eq!(after.episode_completions, before.episode_completions);
+        assert_eq!(after.collections, before.collections);
+        assert_eq!(after.collection_members, before.collection_members);
+        assert_eq!(after.baseline, before.baseline);
+        assert_eq!(after.remote_etag, before.remote_etag);
+        assert_eq!(after.conflicts, before.conflicts);
+        assert_eq!(after.outbox, before.outbox);
+        assert_eq!(after.staging, before.staging);
+        assert_eq!(after.publish_intent, before.publish_intent);
+        assert_eq!(after.records_generation, before.records_generation);
+        assert_eq!(
+            after.v2_source_fingerprint.as_deref(),
+            Some("legacy-updated")
+        );
+        assert_eq!(runtime.scheduler.consecutive_failures, 0);
+        assert!(runtime.scheduler.next_attempt_at.is_none());
+        assert!(runtime.scheduler.last_error_code.is_none());
+        assert!(runtime.scheduler.last_attempt_at.is_some());
+        assert!(runtime.scheduler.last_success_at.is_some());
+        assert!(runtime.scheduler.last_remote_check_at.is_some());
+        assert_eq!(
+            fs::read_dir(test.paths.backups())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(
+                    |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("db")
+                )
+                .count(),
+            backups_before
+        );
+    }
+
+    #[test]
+    fn unchanged_remote_rejects_stale_generation_and_validator_without_writes() {
+        let mut test = TestDatabase::new("remote-unchanged-stale");
+        let input = test.input(0);
+        commit(&mut test.conn, &test.paths, input).unwrap();
+        let before = snapshot(&test.conn).unwrap();
+
+        let stale_generation = record_remote_unchanged(
+            &mut test.conn,
+            RemoteUnchangedInput {
+                target_id: None,
+                target_epoch: None,
+                expected_generation: before.records_generation - 1,
+                expected_remote_etag: "\"etag-1\"".into(),
+                v2_source_fingerprint: Some("must-not-write".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(stale_generation
+            .to_string()
+            .contains("stale_local_snapshot"));
+
+        let stale_validator = record_remote_unchanged(
+            &mut test.conn,
+            RemoteUnchangedInput {
+                target_id: None,
+                target_epoch: None,
+                expected_generation: before.records_generation,
+                expected_remote_etag: "\"different\"".into(),
+                v2_source_fingerprint: Some("must-not-write".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(stale_validator
+            .to_string()
+            .contains("stale_remote_validator"));
+        let after = snapshot(&test.conn).unwrap();
+        assert_eq!(after.records_generation, before.records_generation);
+        assert_eq!(after.v2_source_fingerprint, before.v2_source_fingerprint);
+        assert_eq!(after.scheduler, before.scheduler);
+    }
+
+    #[test]
+    fn unchanged_remote_rejects_a_stale_target_context() {
+        let mut test = TestDatabase::new("remote-unchanged-target");
+        let url = "https://target.example/dav/";
+        let username = "fixture";
+        let target_id = crate::sync_targets::target_id(url, username);
+        let registry = crate::sync_targets::SyncTargetRegistry {
+            version: 1,
+            active_target_id: Some(target_id.clone()),
+            target_epoch: 3,
+            targets: vec![crate::sync_targets::SyncTarget {
+                id: target_id.clone(),
+                normalized_url: url.into(),
+                username: username.into(),
+                created_at: "2026-08-30T00:00:00.000Z".into(),
+                last_activated_at: "2026-08-30T00:00:00.000Z".into(),
+            }],
+        };
+        set_setting_tx(
+            &test.conn,
+            crate::sync_targets::REGISTRY_KEY,
+            &serde_json::to_string(&registry).unwrap(),
+        )
+        .unwrap();
+        let mut input = test.input(0);
+        input.target_id = Some(target_id.clone());
+        input.target_epoch = Some(3);
+        commit(&mut test.conn, &test.paths, input).unwrap();
+        let generation = get_records_generation(&test.conn).unwrap();
+
+        let error = record_remote_unchanged(
+            &mut test.conn,
+            RemoteUnchangedInput {
+                target_id: Some(target_id),
+                target_epoch: Some(2),
+                expected_generation: generation,
+                expected_remote_etag: "\"etag-1\"".into(),
+                v2_source_fingerprint: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("stale_sync_target"));
     }
 
     #[test]

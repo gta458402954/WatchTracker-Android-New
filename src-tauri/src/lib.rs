@@ -174,6 +174,7 @@ pub fn run() {
             commands::disconnect_sync_target,
             commands::set_auto_sync_paused,
             commands::record_sync_failure,
+            commands::record_sync_remote_unchanged,
             commands::commit_sync_result,
             commands::prepare_sync_publish_intent,
             commands::resolve_sync_conflict,

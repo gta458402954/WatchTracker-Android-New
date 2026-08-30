@@ -29,59 +29,54 @@ fn validate_webdav_conditions(
     if_none_match: Option<&str>,
     if_dav_etag: Option<&str>,
 ) -> Result<(), crate::error::AppError> {
-    if (if_match.is_some() || if_none_match.is_some() || if_dav_etag.is_some()) && method != "PUT" {
-        return Err(crate::error::AppError::General(
-            "Conditional headers are only allowed for WebDAV PUT".to_string(),
-        ));
-    }
-    if [
+    let condition_count = [
         if_match.is_some(),
         if_none_match.is_some(),
         if_dav_etag.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
-    .count()
-        > 1
-    {
+    .count();
+    if condition_count > 1 {
         return Err(crate::error::AppError::General(
-            "WebDAV write preconditions cannot be combined".to_string(),
+            "WebDAV conditions cannot be combined".to_string(),
         ));
     }
-    if let Some(value) = if_match {
-        let valid = value.starts_with('"')
-            && value.ends_with('"')
-            && value.len() >= 2
-            && !value.starts_with("W/")
-            && !value.contains(['\r', '\n']);
-        if !valid {
-            return Err(crate::error::AppError::General(
-                "Invalid strong If-Match value".to_string(),
-            ));
+    match method {
+        "PUT" => {
+            if if_match.is_some_and(|value| !net::valid_entity_tag(value, false)) {
+                return Err(crate::error::AppError::General(
+                    "Invalid strong If-Match value".to_string(),
+                ));
+            }
+            if if_none_match.is_some_and(|value| value != "*") {
+                return Err(crate::error::AppError::General(
+                    "Invalid If-None-Match value".to_string(),
+                ));
+            }
+            if if_dav_etag.is_some_and(|value| !net::valid_entity_tag(value, true)) {
+                return Err(crate::error::AppError::General(
+                    "Invalid WebDAV entity tag".to_string(),
+                ));
+            }
+            Ok(())
         }
-    }
-    if if_none_match.is_some_and(|value| value != "*") {
-        return Err(crate::error::AppError::General(
-            "Invalid If-None-Match value".to_string(),
-        ));
-    }
-    if let Some(value) = if_dav_etag {
-        let opaque = value
-            .strip_prefix("W/\"")
-            .or_else(|| value.strip_prefix('"'))
-            .and_then(|rest| rest.strip_suffix('"'));
-        let valid = opaque.is_some_and(|inner| {
-            !inner.is_empty()
-                && !inner.contains('"')
-                && !inner.chars().any(|character| character.is_control())
-        });
-        if !valid {
-            return Err(crate::error::AppError::General(
-                "Invalid WebDAV entity tag".to_string(),
-            ));
+        "GET" => {
+            if if_match.is_some()
+                || if_dav_etag.is_some()
+                || if_none_match.is_some_and(|value| !net::valid_entity_tag(value, true))
+            {
+                return Err(crate::error::AppError::General(
+                    "Invalid conditional WebDAV GET".to_string(),
+                ));
+            }
+            Ok(())
         }
+        _ if condition_count == 0 => Ok(()),
+        _ => Err(crate::error::AppError::General(
+            "Conditional headers are not allowed for this WebDAV method".to_string(),
+        )),
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -551,6 +546,15 @@ pub fn record_sync_failure(
 }
 
 #[tauri::command]
+pub fn record_sync_remote_unchanged(
+    state: State<DbState>,
+    input: sync_state::RemoteUnchangedInput,
+) -> Result<sync_state::SyncRuntimeState, crate::error::AppError> {
+    let mut conn = lock_database(state.inner())?;
+    sync_state::record_remote_unchanged(&mut conn, input)
+}
+
+#[tauri::command]
 pub fn commit_sync_result(
     state: State<DbState>,
     paths: State<AppPaths>,
@@ -931,7 +935,12 @@ pub async fn probe_webdav_request(
     if !request.url.starts_with("http://") && !request.url.starts_with("https://") {
         return Err(crate::error::AppError::General("Invalid WebDAV URL".into()));
     }
-    validate_webdav_conditions(&request.method, None, None, None)?;
+    validate_webdav_conditions(
+        &request.method,
+        request.if_match.as_deref(),
+        request.if_none_match.as_deref(),
+        request.if_dav_etag.as_deref(),
+    )?;
     net::webdav_request(request)
         .await
         .map_err(crate::error::AppError::General)
@@ -942,17 +951,29 @@ mod command_tests {
     use super::validate_webdav_conditions;
 
     #[test]
-    fn webdav_condition_headers_accept_only_safe_put_preconditions() {
+    fn webdav_condition_headers_accept_only_safe_method_specific_values() {
         assert!(validate_webdav_conditions("PUT", Some("\"etag\""), None, None).is_ok());
         assert!(validate_webdav_conditions("PUT", None, Some("*"), None).is_ok());
         assert!(validate_webdav_conditions("PUT", None, None, Some("\"strong\"")).is_ok());
         assert!(validate_webdav_conditions("PUT", None, None, Some("W/\"weak\"")).is_ok());
         assert!(validate_webdav_conditions("PUT", Some("W/\"weak\""), None, None).is_err());
         assert!(validate_webdav_conditions("PUT", Some("\"bad\r\nheader\""), None, None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("\"etag\""), None).is_ok());
+        assert!(validate_webdav_conditions("GET", None, Some("W/\"etag\""), None).is_ok());
+        assert!(validate_webdav_conditions("GET", None, Some("*"), None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("unquoted"), None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("\"bad\r\nheader\""), None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("\"bad\u{1}header\""), None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("\"bad\"quote\""), None).is_err());
         assert!(validate_webdav_conditions("GET", Some("\"etag\""), None, None).is_err());
+        assert!(validate_webdav_conditions("GET", None, None, Some("\"etag\"")).is_err());
         assert!(validate_webdav_conditions("PROPFIND", None, None, None).is_ok());
+        assert!(validate_webdav_conditions("PROPFIND", None, Some("\"etag\""), None).is_err());
         assert!(
             validate_webdav_conditions("PUT", Some("\"etag\""), None, Some("W/\"weak\"")).is_err()
+        );
+        assert!(
+            validate_webdav_conditions("GET", Some("\"etag\""), Some("\"other\""), None).is_err()
         );
         assert!(
             validate_webdav_conditions("PUT", None, None, Some("W/\"bad\r\nheader\"")).is_err()

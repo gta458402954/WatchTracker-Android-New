@@ -27,6 +27,9 @@ export interface MockIpcOptions {
   mutateLocalDuringPut?: boolean;
   omitPutEtag?: boolean;
   omitGetEtag?: boolean;
+  webdavConditionalGet?: boolean;
+  omitConditionalGetEtag?: boolean;
+  mutateLocalDuringConditionalGet?: boolean;
   webdavFailureStatus?: number;
   webdavFailureCount?: number;
   webdavSyncFailureCount?: number;
@@ -82,7 +85,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, omitConditionalGetEtag, mutateLocalDuringConditionalGet, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -130,6 +133,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       let remainingWebdavFailures = webdavFailureCount;
       let remainingSyncFailures = webdavSyncFailureCount;
       let shouldMutateLocalDuringPut = mutateLocalDuringPut;
+      let shouldMutateLocalDuringConditionalGet = mutateLocalDuringConditionalGet;
       let tombstones: SyncTombstoneV3[] = (() => {
         try { return JSON.parse(snapshot.settings.sync_tombstones || '[]'); } catch { return []; }
       })();
@@ -214,6 +218,16 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
         outbox.lastQueuedAt = now;
         if (!outbox.reasons.includes(reason)) outbox.reasons = [...outbox.reasons.slice(-7), reason];
         persistRuntime();
+      };
+
+      const validEntityTag = (value: string) => {
+        const inner = value.startsWith('W/"') && value.endsWith('"')
+          ? value.slice(3, -1)
+          : value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : null;
+        return Boolean(inner) && [...(inner ?? '')].every(character => {
+          const code = character.charCodeAt(0);
+          return character !== '"' && code >= 32 && code !== 127;
+        });
       };
 
       const makeRecoveryPoint = (reason: RecoveryPoint['reason']) => {
@@ -792,6 +806,36 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
                 stagedCount: JSON.parse(snapshot.settings.sync_staging_v1 || '{"entries":[]}').entries.length,
                 publishPending: Boolean(snapshot.settings.sync_publish_intent_v1),
               };
+            case 'record_sync_remote_unchanged': {
+              requireKeys(command, args, ['input']);
+              const input = args.input as {
+                targetId: string | null; targetEpoch: number | null; expectedGeneration: number;
+                expectedRemoteEtag: string; v2SourceFingerprint: string | null;
+              };
+              if (input.targetId !== activeTargetId || input.targetEpoch !== (activeTargetId ? targetEpoch : null)) throw new Error('stale_sync_target');
+              if (input.expectedGeneration !== recordsGeneration) throw new Error('stale_local_snapshot');
+              if (!validEntityTag(input.expectedRemoteEtag)) throw new Error('Invalid remote ETag');
+              if (snapshot.settings.sync_v3_remote_etag !== input.expectedRemoteEtag) throw new Error('stale_remote_validator');
+              const staging = JSON.parse(snapshot.settings.sync_staging_v1 || '{"entries":[]}') as { entries: unknown[] };
+              if (!snapshot.settings.sync_v3_baseline || outbox.pending || staging.entries.length > 0 || snapshot.settings.sync_publish_intent_v1) {
+                throw new Error('stale_local_snapshot');
+              }
+              if (input.v2SourceFingerprint) snapshot.settings.sync_v2_source_fingerprint = input.v2SourceFingerprint;
+              const now = new Date().toISOString();
+              scheduler = {
+                ...scheduler, consecutiveFailures: 0, nextAttemptAt: null, lastAttemptAt: now,
+                lastSuccessAt: now, lastErrorCode: null, lastRemoteCheckAt: now,
+              };
+              persistRuntime();
+              return {
+                targetId: activeTargetId, targetEpoch: activeTargetId ? targetEpoch : null,
+                outbox: structuredClone(outbox), scheduler: structuredClone(scheduler),
+                conflictCount: JSON.parse(snapshot.settings.sync_v3_conflicts || '[]').length,
+                lastCommit: snapshot.settings.sync_v3_last_commit ? JSON.parse(snapshot.settings.sync_v3_last_commit) : null,
+                stagedCount: staging.entries.length,
+                publishPending: Boolean(snapshot.settings.sync_publish_intent_v1),
+              };
+            }
             case 'prepare_sync_publish_intent': {
               requireKeys(command, args, ['input']);
               const input = args.input as {
@@ -1036,6 +1080,19 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               }
               if (request.method === 'GET') {
                 if (String(request.url).endsWith('records-v3.json')) {
+                  if (webdavConditionalGet && request.ifNoneMatch === v3Etag) {
+                    if (shouldMutateLocalDuringConditionalGet) {
+                      shouldMutateLocalDuringConditionalGet = false;
+                      recordsGeneration += 1;
+                      if (snapshot.records[0]) {
+                        snapshot.records[0].notes = 'edited during conditional pull';
+                        snapshot.records[0].rev = (snapshot.records[0].rev ?? 0) + 1;
+                        snapshot.records[0].revActor = 'mock-device';
+                      }
+                      queueOutbox('record-update');
+                    }
+                    return { status: 304, body: null, etag: omitConditionalGetEtag ? null : v3Etag, text: null };
+                  }
                   return snapshot.webdavV3Remote
                     ? { status: 200, body: structuredClone(snapshot.webdavV3Remote), etag: omitGetEtag ? null : v3Etag }
                     : { status: 404, body: null, etag: null };
@@ -1094,6 +1151,9 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       mutateLocalDuringPut: options.mutateLocalDuringPut ?? false,
       omitPutEtag: options.omitPutEtag ?? false,
       omitGetEtag: options.omitGetEtag ?? false,
+      webdavConditionalGet: options.webdavConditionalGet ?? false,
+      omitConditionalGetEtag: options.omitConditionalGetEtag ?? false,
+      mutateLocalDuringConditionalGet: options.mutateLocalDuringConditionalGet ?? false,
       webdavFailureStatus: options.webdavFailureStatus ?? 503,
       webdavFailureCount: options.webdavFailureCount ?? 0,
       webdavSyncFailureCount: options.webdavSyncFailureCount ?? 0,
