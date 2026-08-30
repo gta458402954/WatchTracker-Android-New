@@ -32,7 +32,7 @@ function record(id: string, overrides: Partial<WatchRecord> = {}): WatchRecord {
   };
 }
 
-function payload(records: WatchRecord[]): SyncPayloadV3 {
+function payload(records: WatchRecord[], overrides: Partial<SyncPayloadV3> = {}): SyncPayloadV3 {
   return {
     schemaVersion: 3,
     documentId: 'sync-reliability-document',
@@ -43,6 +43,7 @@ function payload(records: WatchRecord[]): SyncPayloadV3 {
     committedAt: '2026-08-02T00:00:00.000Z',
     records,
     tombstones: [],
+    ...overrides,
   };
 }
 
@@ -103,6 +104,46 @@ test('@conditional-pull clean unchanged remote uses PROPFIND without v3 GET, com
   expect(scheduler.consecutiveFailures).toBe(0);
 });
 
+test('@conditional-pull PROPFIND same detects a concurrent local edit through narrow stale CAS', async ({ page }) => {
+  const local = record('propfind-toctou');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"propfind-etag"', mutateLocalDuringPropfind: true,
+    settings: cleanConditionalSettings(baseline, '"propfind-etag"'),
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'stale_local_snapshot', staleLocal: true });
+  const staleSnapshot = await mockSnapshot(page);
+  expect(staleSnapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+  expect(staleSnapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(staleSnapshot.records[0].notes).toBe('edited during PROPFIND');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const recovered = await mockSnapshot(page);
+  expect(recovered.webdavV3Remote?.records[0].notes).toBe('edited during PROPFIND');
+  expect(recovered.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(true);
+});
+
+test('@conditional-pull JianGuoYun unquoted GET ETag uses quoted DAV preflight', async ({ page }) => {
+  const local = record('jianguoyun-shape');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"dav-quoted"',
+    webdavGetEtag: 'dav-unquoted', webdavPropfindEtag: '"dav-quoted"',
+    settings: cleanConditionalSettings(baseline, '"dav-quoted"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'PROPFIND' && String(call.args.url).endsWith('records-v3.json'))).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'))).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+});
+
 test('@conditional-pull 304 without response ETag preserves the stored validator', async ({ page }) => {
   const local = record('conditional-no-response-etag');
   const baseline = payload([local]);
@@ -151,6 +192,59 @@ test('@conditional-pull semantic no-op ignores remote entity array order', async
   expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
 });
 
+test('@conditional-pull semantic no-op canonicalizes records, episodes, collections, and members', async ({ page }) => {
+  const first = record('canonical-first');
+  const second = record('canonical-second');
+  const completionFirst = { id: 'completion-first', recordId: first.id, episodeNumber: 1, completedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const completionSecond = { ...completionFirst, id: 'completion-second', recordId: second.id, episodeNumber: 2, completedAt: null };
+  const collectionFirst = { id: 'collection-first', name: 'First', normalizedName: 'first', description: null, sourceKind: 'manual' as const, sourceKey: null, collectionKind: 'manual' as const, orderMode: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const collectionSecond = { ...collectionFirst, id: 'collection-second', name: 'Second', normalizedName: 'second' };
+  const memberFirst = { id: 'member-first', collectionId: collectionFirst.id, recordId: first.id, position: 0, sourceKind: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const memberSecond = { ...memberFirst, id: 'member-second', collectionId: collectionSecond.id, recordId: second.id, position: 1 };
+  const recordTombstones = [{ id: 'tombstone-first', deletedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' }, { id: 'tombstone-second', deletedAt: '2026-01-02T00:00:00.000Z', rev: 1, revActor: 'fixture' }];
+  const baseline = payload([second, first], {
+    schemaVersion: 6, episodeCompletions: [completionSecond, completionFirst],
+    collections: [collectionSecond, collectionFirst], collectionMembers: [memberSecond, memberFirst],
+    collectionTombstones: [], collectionMemberTombstones: [], tombstones: [...recordTombstones].reverse(),
+  });
+  const remote = { ...baseline, revision: 2, commitId: 'canonical-order-change' };
+  await setupMockIpc(page, {
+    records: [second, first], episodeCompletions: [completionSecond, completionFirst],
+    collections: [collectionSecond, collectionFirst], collectionMembers: [memberSecond, memberFirst],
+    webdavV3Remote: remote, webdavV3Etag: '"canonical-new"', webdavPropfindStatus: 405,
+    settings: { ...cleanConditionalSettings(baseline, '"canonical-old"'), sync_v6_upgrade_confirmed: '1', sync_tombstones: JSON.stringify([...recordTombstones].reverse()) },
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
+});
+
+test('@conditional-pull real collection member position change produces a conditional PUT', async ({ page }) => {
+  const local = record('collection-sync-record');
+  const collection = { id: 'collection-sync', name: '同步收藏集', normalizedName: '同步收藏集', description: null, sourceKind: 'manual' as const, sourceKey: null, collectionKind: 'manual' as const, orderMode: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const baseMember = { id: 'collection-member-sync', collectionId: collection.id, recordId: local.id, position: 0, sourceKind: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const baseline = payload([local], { schemaVersion: 6, episodeCompletions: [], collections: [collection], collectionMembers: [baseMember], collectionTombstones: [], collectionMemberTombstones: [] });
+  const pendingMember = { ...baseMember, position: 2, rev: 2, revActor: 'fixture-local' };
+  const pendingOutbox = {
+    version: 1, pending: true, dirtyGeneration: 0, reasons: ['collection-member-update'], firstQueuedAt: '2026-01-01T00:00:00.000Z', lastQueuedAt: '2026-01-01T00:00:00.000Z',
+  };
+  await setupMockIpc(page, {
+    records: [local], collections: [collection], collectionMembers: [pendingMember],
+    webdavV3Remote: baseline, webdavV3Etag: '"collection-change"',
+    settings: { ...cleanConditionalSettings(baseline), sync_v6_upgrade_confirmed: '1', sync_outbox_v1: JSON.stringify(pendingOutbox) },
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const put = snapshot.calls.find(call => call.command === 'webdav_request' && call.args.method === 'PUT');
+  expect(put).toBeDefined();
+  expect(JSON.parse(String(put?.args.body)).collectionMembers[0].position).toBe(2);
+});
+
 test('@conditional-pull changed ETag returns 200 and merges the new remote payload', async ({ page }) => {
   const local = record('conditional-changed');
   const remoteOnly = record('conditional-remote-new');
@@ -166,7 +260,7 @@ test('@conditional-pull changed ETag returns 200 and merges the new remote paylo
   const snapshot = await mockSnapshot(page);
   const v3Get = snapshot.calls.find(call => call.command === 'webdav_request'
     && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
-  expect(v3Get?.args.ifNoneMatch).toBe('"old-etag"');
+  expect(v3Get?.args.ifNoneMatch).toBeNull();
   expect(snapshot.records.map(item => item.id)).toContain(remoteOnly.id);
   expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
 });

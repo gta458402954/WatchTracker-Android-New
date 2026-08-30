@@ -134,6 +134,7 @@ async function syncWithDependencies(
     const storedConditionalEtag = conditionalPullEtag(snapshot);
 
     for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
+      let useConditionalGetFallback = false;
       if (storedConditionalEtag) {
         const davEtag = await probeDavEntityTagForResource(
           creds, proxy, V3_RESOURCE, deps.transport,
@@ -142,12 +143,14 @@ async function syncWithDependencies(
           console.info('[sync] clean preflight: PROPFIND same validator');
           return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
         }
+        useConditionalGetFallback = !davEtag;
         console.info(`[sync] clean preflight: ${davEtag ? 'PROPFIND changed' : 'PROPFIND unavailable'}`);
       } else {
         console.info('[sync] clean preflight: normal full merge');
       }
       const v3Response = await deps.transport.request(
-        'GET', creds, proxy, V3_RESOURCE, null, null, storedConditionalEtag, null,
+        'GET', creds, proxy, V3_RESOURCE, null, null,
+        useConditionalGetFallback ? storedConditionalEtag : null, null,
       );
       let remotePayload: SyncPayloadV3;
       let baseSide: SyncMergeSide;
@@ -160,7 +163,7 @@ async function syncWithDependencies(
       let legacyFingerprint = snapshot.v2SourceFingerprint;
 
       if (v3Response.status === 304) {
-        if (!storedConditionalEtag) throw new Error('HTTP Error: 304');
+        if (!storedConditionalEtag || !useConditionalGetFallback) throw new Error('HTTP Error: 304');
         console.info('[sync] clean preflight: HTTP conditional fallback 304');
         return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
       } else if (v3Response.status === 200) {
