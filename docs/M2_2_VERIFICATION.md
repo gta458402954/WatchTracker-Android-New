@@ -84,9 +84,25 @@ Verified on 2026-08-30 from `feat/android-m22-import` before commit:
 - `npm run test:e2e`: pass (143/143, including M2.2 7/7 and M2.1 3/3).
 - `npm run android:build`: pass; the current universal Debug APK and AAB were
   produced from this working tree.
-- `adb devices -l`: no connected device/emulator. Consequently
-  `npm run android:test`, M1.2/M1.3/M1.4 device smoke, and the real DocumentsUI
-  import smoke remain pending rather than being reported as passed.
+- Android 16 `Medium_Phone` AVD: `npm run android:test` passed 5/5 after the
+  current Debug build. M1.2, M1.3, and M1.4 device smoke all passed; M1.4 also
+  verified the installed and built APK SHA-256 matched
+  `67ED274D0E7EDD406A29D1D8CD7DC1D368FBBCD0DF19B4E923363C4D671F7574`.
+- Real SAF round-trip: M2.1 saved
+  `WatchTracker-backup-2026-08-30-091327.json` (2,624 bytes) through
+  DocumentsUI. After local mutation, M2.2 opened `ACTION_OPEN_DOCUMENT` and a
+  human selected that file without coordinate automation. Preview reported 2
+  records, 1 completion, 0 collections/members, 1 update, 1 removal, 0
+  unchanged, 1 locked preservation, and final count 2. The live database still
+  held all 3 pre-import records and both local locked completions before
+  confirmation.
+- Confirm succeeded without WebDAV. The unlocked record returned to its backup
+  value, the extra record was removed, and the local locked record plus episode
+  2 and 3 completions were preserved. One new import recovery point was created
+  with record count 3; its SQLite bytes were opened independently,
+  `PRAGMA integrity_check` returned `ok`, and its rows contained the complete
+  pre-import three-record/two-completion state. Import staging was empty after
+  success and the app remained responsive.
 
 ## Repeatable gates
 
