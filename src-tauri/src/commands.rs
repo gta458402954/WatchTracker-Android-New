@@ -28,7 +28,18 @@ fn validate_webdav_conditions(
     if_match: Option<&str>,
     if_none_match: Option<&str>,
     if_dav_etag: Option<&str>,
+    range: Option<&str>,
 ) -> Result<(), crate::error::AppError> {
+    if range.is_some_and(|value| method != "GET" || !net::valid_range(value)) {
+        return Err(crate::error::AppError::General(
+            "webdav_range_invalid".to_string(),
+        ));
+    }
+    if range.is_some() && (if_match.is_some() || if_none_match.is_some() || if_dav_etag.is_some()) {
+        return Err(crate::error::AppError::General(
+            "webdav_range_invalid".to_string(),
+        ));
+    }
     let condition_count = [
         if_match.is_some(),
         if_none_match.is_some(),
@@ -902,11 +913,17 @@ pub async fn webdav_request(
             "Invalid WebDAV URL".to_string(),
         ));
     }
+    if request.range.is_some() && request.body.is_some() {
+        return Err(crate::error::AppError::General(
+            "webdav_range_invalid".to_string(),
+        ));
+    }
     validate_webdav_conditions(
         &request.method,
         request.if_match.as_deref(),
         request.if_none_match.as_deref(),
         request.if_dav_etag.as_deref(),
+        request.range.as_deref(),
     )?;
     net::webdav_request(net::WebDavRequest {
         method: request.method,
@@ -918,6 +935,7 @@ pub async fn webdav_request(
         if_match: request.if_match,
         if_none_match: request.if_none_match,
         if_dav_etag: request.if_dav_etag,
+        range: request.range,
     })
     .await
     .map_err(crate::error::AppError::General)
@@ -935,11 +953,17 @@ pub async fn probe_webdav_request(
     if !request.url.starts_with("http://") && !request.url.starts_with("https://") {
         return Err(crate::error::AppError::General("Invalid WebDAV URL".into()));
     }
+    if request.range.is_some() && request.body.is_some() {
+        return Err(crate::error::AppError::General(
+            "webdav_range_invalid".to_string(),
+        ));
+    }
     validate_webdav_conditions(
         &request.method,
         request.if_match.as_deref(),
         request.if_none_match.as_deref(),
         request.if_dav_etag.as_deref(),
+        request.range.as_deref(),
     )?;
     net::webdav_request(request)
         .await
@@ -952,33 +976,68 @@ mod command_tests {
 
     #[test]
     fn webdav_condition_headers_accept_only_safe_method_specific_values() {
-        assert!(validate_webdav_conditions("PUT", Some("\"etag\""), None, None).is_ok());
-        assert!(validate_webdav_conditions("PUT", None, Some("*"), None).is_ok());
-        assert!(validate_webdav_conditions("PUT", None, None, Some("\"strong\"")).is_ok());
-        assert!(validate_webdav_conditions("PUT", None, None, Some("W/\"weak\"")).is_ok());
-        assert!(validate_webdav_conditions("PUT", Some("W/\"weak\""), None, None).is_err());
-        assert!(validate_webdav_conditions("PUT", Some("\"bad\r\nheader\""), None, None).is_err());
-        assert!(validate_webdav_conditions("GET", None, Some("\"etag\""), None).is_ok());
-        assert!(validate_webdav_conditions("GET", None, Some("W/\"etag\""), None).is_ok());
-        assert!(validate_webdav_conditions("GET", None, Some("*"), None).is_err());
-        assert!(validate_webdav_conditions("GET", None, Some("unquoted"), None).is_err());
-        assert!(validate_webdav_conditions("GET", None, Some("\"bad\r\nheader\""), None).is_err());
-        assert!(validate_webdav_conditions("GET", None, Some("\"bad\u{1}header\""), None).is_err());
-        assert!(validate_webdav_conditions("GET", None, Some("\"bad\"quote\""), None).is_err());
-        assert!(validate_webdav_conditions("GET", Some("\"etag\""), None, None).is_err());
-        assert!(validate_webdav_conditions("GET", None, None, Some("\"etag\"")).is_err());
-        assert!(validate_webdav_conditions("PROPFIND", None, None, None).is_ok());
-        assert!(validate_webdav_conditions("PROPFIND", None, Some("\"etag\""), None).is_err());
+        assert!(validate_webdav_conditions("PUT", Some("\"etag\""), None, None, None).is_ok());
+        assert!(validate_webdav_conditions("PUT", None, Some("*"), None, None).is_ok());
+        assert!(validate_webdav_conditions("PUT", None, None, Some("\"strong\""), None).is_ok());
+        assert!(validate_webdav_conditions("PUT", None, None, Some("W/\"weak\""), None).is_ok());
+        assert!(validate_webdav_conditions("PUT", Some("W/\"weak\""), None, None, None).is_err());
         assert!(
-            validate_webdav_conditions("PUT", Some("\"etag\""), None, Some("W/\"weak\"")).is_err()
+            validate_webdav_conditions("PUT", Some("\"bad\r\nheader\""), None, None, None).is_err()
+        );
+        assert!(validate_webdav_conditions("GET", None, Some("\"etag\""), None, None).is_ok());
+        assert!(validate_webdav_conditions("GET", None, Some("W/\"etag\""), None, None).is_ok());
+        assert!(validate_webdav_conditions("GET", None, Some("*"), None, None).is_err());
+        assert!(validate_webdav_conditions("GET", None, Some("unquoted"), None, None).is_err());
+        assert!(
+            validate_webdav_conditions("GET", None, Some("\"bad\r\nheader\""), None, None).is_err()
         );
         assert!(
-            validate_webdav_conditions("GET", Some("\"etag\""), Some("\"other\""), None).is_err()
+            validate_webdav_conditions("GET", None, Some("\"bad\u{1}header\""), None, None)
+                .is_err()
         );
         assert!(
-            validate_webdav_conditions("PUT", None, None, Some("W/\"bad\r\nheader\"")).is_err()
+            validate_webdav_conditions("GET", None, Some("\"bad\"quote\""), None, None).is_err()
         );
-        assert!(validate_webdav_conditions("PUT", None, None, Some("unquoted")).is_err());
-        assert!(validate_webdav_conditions("PUT", None, None, Some("\"bad\r\nheader\"")).is_err());
+        assert!(validate_webdav_conditions("GET", Some("\"etag\""), None, None, None).is_err());
+        assert!(validate_webdav_conditions("GET", None, None, Some("\"etag\""), None).is_err());
+        assert!(validate_webdav_conditions("PROPFIND", None, None, None, None).is_ok());
+        assert!(
+            validate_webdav_conditions("PROPFIND", None, Some("\"etag\""), None, None).is_err()
+        );
+        assert!(validate_webdav_conditions("GET", None, None, None, Some("bytes=0-0")).is_ok());
+        assert!(
+            validate_webdav_conditions("GET", None, Some("\"etag\""), None, Some("bytes=0-0"))
+                .is_err()
+        );
+        assert!(validate_webdav_conditions("PUT", None, None, None, Some("bytes=0-0")).is_err());
+        assert!(validate_webdav_conditions("GET", None, None, None, Some("bytes=1-1")).is_err());
+        assert!(validate_webdav_conditions(
+            "GET",
+            None,
+            None,
+            None,
+            Some("bytes=0-0\r\nX-Evil: yes")
+        )
+        .is_err());
+        assert!(validate_webdav_conditions(
+            "PUT",
+            Some("\"etag\""),
+            None,
+            Some("W/\"weak\""),
+            None
+        )
+        .is_err());
+        assert!(
+            validate_webdav_conditions("GET", Some("\"etag\""), Some("\"other\""), None, None)
+                .is_err()
+        );
+        assert!(
+            validate_webdav_conditions("PUT", None, None, Some("W/\"bad\r\nheader\""), None)
+                .is_err()
+        );
+        assert!(validate_webdav_conditions("PUT", None, None, Some("unquoted"), None).is_err());
+        assert!(
+            validate_webdav_conditions("PUT", None, None, Some("\"bad\r\nheader\""), None).is_err()
+        );
     }
 }

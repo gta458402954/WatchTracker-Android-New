@@ -31,6 +31,10 @@ export interface MockIpcOptions {
   omitGetEtag?: boolean;
   webdavConditionalGet?: boolean;
   webdavPropfindStatus?: number;
+  webdavRangeStatus?: number | null;
+  webdavRangeEtag?: string | null;
+  webdavRangeContentRange?: string | null;
+  webdavRangeBodyLength?: number | null;
   omitConditionalGetEtag?: boolean;
   mutateLocalDuringConditionalGet?: boolean;
   mutateLocalDuringPropfind?: boolean;
@@ -89,7 +93,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -1104,6 +1108,16 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               }
               if (request.method === 'GET') {
                 if (String(request.url).endsWith('records-v3.json')) {
+                  if (request.range) {
+                    return {
+                      status: webdavRangeStatus ?? 503,
+                      body: null,
+                      etag: webdavRangeEtag === undefined ? getV3Etag : webdavRangeEtag,
+                      text: null,
+                      contentRange: webdavRangeContentRange === undefined ? 'bytes 0-0/1' : webdavRangeContentRange,
+                      rangeBodyLength: webdavRangeBodyLength === undefined ? 1 : webdavRangeBodyLength,
+                    };
+                  }
                   if (webdavConditionalGet && request.ifNoneMatch === getV3Etag) {
                     if (shouldMutateLocalDuringConditionalGet) {
                       shouldMutateLocalDuringConditionalGet = false;
@@ -1185,6 +1199,10 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       omitGetEtag: options.omitGetEtag ?? false,
       webdavConditionalGet: options.webdavConditionalGet ?? false,
       webdavPropfindStatus: options.webdavPropfindStatus ?? null,
+      webdavRangeStatus: options.webdavRangeStatus ?? null,
+      webdavRangeEtag: options.webdavRangeEtag,
+      webdavRangeContentRange: options.webdavRangeContentRange,
+      webdavRangeBodyLength: options.webdavRangeBodyLength,
       omitConditionalGetEtag: options.omitConditionalGetEtag ?? false,
       mutateLocalDuringConditionalGet: options.mutateLocalDuringConditionalGet ?? false,
       mutateLocalDuringPropfind: options.mutateLocalDuringPropfind ?? false,

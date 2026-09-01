@@ -508,6 +508,8 @@ pub struct WebDavResponse {
     pub body: Option<Value>,
     pub etag: Option<String>,
     pub text: Option<String>,
+    pub content_range: Option<String>,
+    pub range_body_length: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -522,6 +524,7 @@ pub struct WebDavRequest {
     pub if_match: Option<String>,
     pub if_none_match: Option<String>,
     pub if_dav_etag: Option<String>,
+    pub range: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -536,6 +539,7 @@ pub struct StoredWebDavRequest {
     pub if_match: Option<String>,
     pub if_none_match: Option<String>,
     pub if_dav_etag: Option<String>,
+    pub range: Option<String>,
 }
 
 fn etag_shape(value: Option<&str>) -> &'static str {
@@ -588,8 +592,38 @@ pub(crate) fn valid_entity_tag(value: &str, allow_weak: bool) -> bool {
         !inner.is_empty()
             && !inner.contains('"')
             && !inner.chars().any(|character| character.is_control())
-    })
+    })`r`n}`r`n`r`npub(crate) fn valid_range(value: &str) -> bool {
+    value == "bytes=0-0"
 }
+
+fn valid_range_content_range(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    let Some(total) = value.strip_prefix("bytes 0-0/") else {
+        return false;
+    };
+    !total.is_empty()
+        && total.bytes().all(|byte| byte.is_ascii_digit())
+        && total.bytes().any(|byte| byte != b'0')
+}
+
+async fn range_probe_body_length(mut response: reqwest::Response) -> Result<u64, String> {
+    if response.content_length().is_some_and(|length| length > 1) {
+        return Ok(2);
+    }
+    let mut length = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "network_body_read_failed".to_string())?
+    {
+        length = length.saturating_add(chunk.len() as u64);
+        if length > 1 {
+            return Ok(2);
+        }
+    }
+    Ok(length)
 }
 
 pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, String> {
@@ -598,6 +632,24 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         request.method,
         safe_url_for_log(&request.url)
     );
+    let is_range_probe = request.range.is_some();
+    if request
+        .range
+        .as_deref()
+        .is_some_and(|value| request.method != "GET" || !valid_range(value))
+    {
+        return Err("webdav_range_invalid".to_string());
+    }
+    if request.range.is_some() && request.body.is_some() {
+        return Err("webdav_range_invalid".to_string());
+    }
+    if request.range.is_some()
+        && (request.if_match.is_some()
+            || request.if_none_match.is_some()
+            || request.if_dav_etag.is_some())
+    {
+        return Err("webdav_range_invalid".to_string());
+    }
     if request.method == "PUT" {
         if let Some(value) = request.if_match.as_deref() {
             log::info!(
@@ -668,6 +720,10 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         req_builder = req_builder.header("If", format!("([{value}])"));
     }
 
+    if let Some(value) = request.range.as_deref() {
+        req_builder = req_builder.header(reqwest::header::RANGE, value);
+    }
+
     if request.method != "PROPFIND" {
         if let Some(b) = request.body {
             req_builder = req_builder
@@ -691,6 +747,46 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         .get(reqwest::header::ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let content_range = res
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    if request.method == "GET" && is_range_probe {
+        if status == reqwest::StatusCode::PARTIAL_CONTENT
+            && valid_range_content_range(content_range.as_deref())
+        {
+            let range_body_length = range_probe_body_length(res).await?;
+            log::info!(
+                "[WebDAV] Range probe completed with status {}; ETag shape: {}; body bytes: {}",
+                status.as_u16(),
+                etag_shape(etag.as_deref()),
+                range_body_length
+            );
+            return Ok(WebDavResponse {
+                status: status.as_u16(),
+                body: None,
+                etag,
+                text: None,
+                content_range,
+                range_body_length: Some(range_body_length),
+            });
+        }
+        log::info!(
+            "[WebDAV] Range probe unavailable with status {}; ETag shape: {}",
+            status.as_u16(),
+            etag_shape(etag.as_deref())
+        );
+        return Ok(WebDavResponse {
+            status: status.as_u16(),
+            body: None,
+            etag,
+            text: None,
+            content_range,
+            range_body_length: None,
+        });
+    }
 
     if request.method == "GET" && status == reqwest::StatusCode::NOT_MODIFIED {
         log::info!("[WebDAV] Conditional GET completed with 304");
@@ -699,6 +795,8 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
             body: None,
             etag,
             text: None,
+            content_range,
+            range_body_length: None,
         });
     }
 
@@ -720,6 +818,8 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
             body: Some(json),
             etag,
             text: None,
+            content_range,
+            range_body_length: None,
         });
     }
 
@@ -735,6 +835,8 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
             body: None,
             etag,
             text: Some(text),
+            content_range,
+            range_body_length: None,
         });
     }
 
@@ -750,12 +852,14 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         body: None,
         etag,
         text: None,
+        content_range,
+        range_body_length: None,
     })
 }
 
 #[cfg(test)]
-mod url_log_tests {
-    use super::safe_url_for_log;
+mod request_safety_tests {
+    use super::{safe_url_for_log, valid_range, valid_range_content_range};
 
     #[test]
     fn redacts_userinfo_query_and_fragment() {
@@ -770,5 +874,25 @@ mod url_log_tests {
     #[test]
     fn invalid_urls_have_constant_log_value() {
         assert_eq!(safe_url_for_log("not a URL?token=secret"), "<invalid-url>");
+    }
+
+    #[test]
+    fn range_request_is_exactly_one_safe_value() {
+        assert!(valid_range("bytes=0-0"));
+        assert!(!valid_range("bytes=1-1"));
+        assert!(!valid_range("bytes=0-1"));
+        assert!(!valid_range("bytes=0-0\r\nX-Evil: yes"));
+    }
+
+    #[test]
+    fn range_content_range_requires_a_non_empty_one_byte_span() {
+        assert!(valid_range_content_range(Some("bytes 0-0/1208148")));
+        assert!(valid_range_content_range(Some(" bytes 0-0/1 ")));
+        assert!(!valid_range_content_range(None));
+        assert!(!valid_range_content_range(Some("bytes 1-1/1208148")));
+        assert!(!valid_range_content_range(Some("bytes 0-1/1208148")));
+        assert!(!valid_range_content_range(Some("bytes 0-0/*")));
+        assert!(valid_range_content_range(Some("bytes 0-0/0001")));
+        assert!(!valid_range_content_range(Some("bytes 0-0/0")));
     }
 }

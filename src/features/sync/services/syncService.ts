@@ -20,7 +20,7 @@ import {
   type SyncPayloadV3,
 } from '../../../shared/lib/syncMerge.ts';
 import { collectionStateEquivalent, emptyCollectionState, mergeCollectionStates, type CollectionSyncState } from '../../../shared/lib/collectionSync.ts';
-import { entityTag, strongEtag } from '../domain/entityTags.ts';
+import { entityTag, normalizedEntityTag, strongEtag } from '../domain/entityTags.ts';
 import { buildSyncPayload, collectionSideOfPayload, legacyPayload, sideOfLegacy, sideOfPayload } from '../domain/syncPayload.ts';
 import { syncError } from '../domain/syncErrors.ts';
 import { assertEntityTag, conditionalValidatorForResource, contentFingerprint, probeDavEntityTagForResource, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
@@ -30,6 +30,7 @@ import type { SyncResult } from './syncContracts.ts';
 
 const V3_RESOURCE = 'records-v3.json';
 const LEGACY_RESOURCE = 'records.json';
+const RANGE_PROBE = 'bytes=0-0';
 const MAX_PRECONDITION_RETRIES = 3;
 
 export type SyncServiceDatabase = Pick<typeof import('../../../shared/lib/database.ts'),
@@ -52,6 +53,18 @@ const defaultDependencies: SyncServiceDependencies = {
 };
 
 function successful(status: number) { return status >= 200 && status < 300; }
+
+/**
+ * A ranged response is metadata only. It is never parsed as a sync payload
+ * and its validator is deliberately kept separate from PUT validation.
+ */
+function rangeProbeEtag(response: Awaited<ReturnType<WebDavTransport['request']>>): string | null {
+  if (response.status !== 206 || response.rangeBodyLength !== 1) return null;
+  const contentRange = response.contentRange?.trim() ?? '';
+  const completeLength = /^bytes 0-0\/([0-9]+)$/.exec(contentRange)?.[1];
+  if (!completeLength || !/[1-9]/.test(completeLength)) return null;
+  return normalizedEntityTag(response.etag);
+}
 
 function confirmUpgrade(deps: SyncServiceDependencies, message: string): boolean {
   return deps.confirm(message);
@@ -143,8 +156,25 @@ async function syncWithDependencies(
           console.info('[sync] clean preflight: PROPFIND same validator');
           return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
         }
-        useConditionalGetFallback = !davEtag;
-        console.info(`[sync] clean preflight: ${davEtag ? 'PROPFIND changed' : 'PROPFIND unavailable'}`);
+        if (davEtag) {
+          console.info('[sync] clean preflight: PROPFIND changed');
+        } else {
+          console.info('[sync] clean preflight: PROPFIND unavailable');
+          const rangeResponse = await deps.transport.request(
+            'GET', creds, proxy, V3_RESOURCE, null, null, null, null, RANGE_PROBE,
+          );
+          const rangeEtag = rangeProbeEtag(rangeResponse);
+          if (rangeEtag === storedConditionalEtag) {
+            console.info('[sync] clean preflight: RANGE same validator');
+            return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
+          }
+          if (rangeEtag) {
+            console.info('[sync] clean preflight: RANGE changed');
+          } else {
+            console.info('[sync] clean preflight: RANGE unavailable');
+            useConditionalGetFallback = true;
+          }
+        }
       } else {
         console.info('[sync] clean preflight: normal full merge');
       }

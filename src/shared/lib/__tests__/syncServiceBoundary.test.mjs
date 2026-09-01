@@ -23,14 +23,16 @@ test('WebDAV transport maps injected command calls without applying sync policy'
   });
 
   await transport.request('GET', { username: 'u', password: 'p', url: 'https://example.test/dav/' }, 'proxy', 'records-v3.json');
+  await transport.request('GET', { username: 'u', password: 'p', url: 'https://example.test/dav/' }, 'proxy', 'records-v3.json', null, null, null, null, 'bytes=0-0');
   await transport.request('PUT', { username: 'u', targetId: 'target', targetEpoch: 4, url: 'https://example.test/dav/' }, null, 'records-v3.json', '{}', '"old"');
 
   assert.equal(calls[0].command, 'probe_webdav_request');
   assert.equal(calls[0].args.request.url, 'https://example.test/dav/records-v3.json');
   assert.equal(calls[0].args.request.proxy, 'proxy');
-  assert.equal(calls[1].command, 'webdav_request');
-  assert.equal(calls[1].args.request.targetEpoch, 4);
-  assert.equal(calls[1].args.request.ifMatch, '"old"');
+  assert.equal(calls[1].args.request.range, 'bytes=0-0');
+  assert.equal(calls[2].command, 'webdav_request');
+  assert.equal(calls[2].args.request.targetEpoch, 4);
+  assert.equal(calls[2].args.request.ifMatch, '"old"');
 });
 
 test('sync service accepts injected transport/database and preserves create CAS flow', async () => {
