@@ -10,9 +10,10 @@
     "contracts:check": "node scripts/generate-contracts.mjs --check",
     "dev": "vite",
     "typecheck": "tsc -b --noEmit",
-    "test": "npm run contracts:check && node --test \"src/shared/lib/__tests__/*.test.mjs\" \"src/platform/__tests__/*.test.mjs\"",
+    "test:unit": "node --test \"src/shared/lib/__tests__/*.test.mjs\" \"src/platform/__tests__/*.test.mjs\"",
+    "test": "npm run contracts:check && npm run test:unit",
     "test:e2e": "playwright test",
-    "check": "npm run contracts:check && npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run contracts:check && npm run typecheck && npm run lint && npm run test:unit && npm run build",
     "build": "tsc -b && vite build",
     "android:init": "tauri android init --ci",
     "android:build": "tauri android build --debug --target aarch64",
@@ -25,6 +26,7 @@
     "build:portable": "node scripts/build-portable.mjs",
     "tauri": "tauri",
     "lint": "eslint .",
+    "gate:fast": "npm run contracts:check && npm run typecheck && npm run lint && npm run test:unit && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "preview": "vite preview"
   },
   "dependencies": {
