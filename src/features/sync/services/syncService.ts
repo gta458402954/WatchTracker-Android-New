@@ -163,6 +163,9 @@ async function syncWithDependencies(
           const rangeResponse = await deps.transport.request(
             'GET', creds, proxy, V3_RESOURCE, null, null, null, null, RANGE_PROBE,
           );
+          if (rangeResponse.status === 401 || rangeResponse.status === 403) {
+            throw new Error(`HTTP Error: ${rangeResponse.status}`);
+          }
           const rangeEtag = rangeProbeEtag(rangeResponse);
           if (rangeEtag === storedConditionalEtag) {
             console.info('[sync] clean preflight: RANGE same validator');

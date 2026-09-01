@@ -859,7 +859,29 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
 
 #[cfg(test)]
 mod request_safety_tests {
-    use super::{safe_url_for_log, valid_range, valid_range_content_range};
+    use super::{safe_url_for_log, valid_range, valid_range_content_range, webdav_request, WebDavRequest};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn noop_raw_waker() -> RawWaker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        unsafe fn no_op(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+
+    fn poll_ready<F: Future>(future: F) -> F::Output {
+        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        match Future::poll(Pin::as_mut(&mut future), &mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("expected WebDAV shape validation before network I/O"),
+        }
+    }
 
     #[test]
     fn redacts_userinfo_query_and_fragment() {
@@ -894,5 +916,23 @@ mod request_safety_tests {
         assert!(!valid_range_content_range(Some("bytes 0-0/*")));
         assert!(valid_range_content_range(Some("bytes 0-0/0001")));
         assert!(!valid_range_content_range(Some("bytes 0-0/0")));
+    }
+
+    #[test]
+    fn get_range_with_body_is_rejected_before_client_send() {
+        let result = poll_ready(webdav_request(WebDavRequest {
+            method: "GET".to_string(),
+            url: "not-a-real-url".to_string(),
+            username: "user".to_string(),
+            password: "password".to_string(),
+            body: Some("{}".to_string()),
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range: Some("bytes=0-0".to_string()),
+        }));
+
+        assert!(matches!(result, Err(error) if error == "webdav_range_invalid"));
     }
 }
