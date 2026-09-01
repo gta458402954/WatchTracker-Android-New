@@ -1,6 +1,38 @@
 name: WatchTracker Android Build
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "contracts/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.*"
+      - "postcss.config.*"
+      - "tailwind.config.*"
+      - ".github/workflows/android-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "contracts/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.*"
+      - "postcss.config.*"
+      - "tailwind.config.*"
+      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 jobs:
