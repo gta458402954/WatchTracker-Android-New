@@ -19,6 +19,19 @@ describe('TASK-D-SYNC-001 three-way merge', () => {
     assert.equal(syncSideEquivalent(side([first, second]), side([second, first])), true);
     assert.equal(syncSideEquivalent(side([first, second]), side([second, { ...first, notes: 'changed' }])), false);
   });
+
+  test('sync state comparisons normalize empty optional dates before classifying changes', () => {
+    const baseline = record('same', { endDate: '' });
+    const local = record('same', { endDate: null });
+    const remote = record('same', { endDate: '', notes: 'remote edit', rev: 2, revActor: 'remote' });
+    assert.equal(syncSideEquivalent(side([baseline]), side([local])), true);
+
+    const result = mergeSyncStates(side([baseline]), side([local]), side([remote]), 'device-a', now);
+    assert.equal(result.conflicts.length, 0);
+    assert.equal(result.local.records[0].notes, 'remote edit');
+    assert.equal(result.remote.records[0].rev, 2);
+    assert.equal(syncSideEquivalent(result.remote, side([remote])), true);
+  });
   test('automatically merges different fields without using wall-clock order', () => {
     const base = record('same', { notes: 'base', platform: '' });
     const local = record('same', { notes: 'local', platform: '', updatedAt: '2020-01-01T00:00:00Z' });

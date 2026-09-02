@@ -76,13 +76,19 @@ function canonicalEntityArray<T extends { id: string }>(items: T[]): unknown[] {
   return [...items].sort((left, right) => left.id.localeCompare(right.id)).map(stableValue);
 }
 
+function canonicalRecordArray(items: WatchRecord[]): unknown[] {
+  return [...items]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(record => stableValue(normalizeOptionalRecordDates(record)));
+}
+
 /**
  * Sync-only semantic comparison. Entity order in a payload is not state: the
- * stable entity id is the identity, while every field (including position and
- * revision fields) remains part of the comparison.
+ * stable entity id is the identity. Optional empty dates share one canonical
+ * value; every other field, including revision fields, remains significant.
  */
 export function syncSideEquivalent(left: SyncMergeSide, right: SyncMergeSide): boolean {
-  return syncValuesEqual(canonicalEntityArray(left.records), canonicalEntityArray(right.records))
+  return syncValuesEqual(canonicalRecordArray(left.records), canonicalRecordArray(right.records))
     && syncValuesEqual(canonicalEntityArray(left.tombstones), canonicalEntityArray(right.tombstones));
 }
 
@@ -124,7 +130,10 @@ function entityOf(
 }
 
 function entityEqual(left: Entity, right: Entity): boolean {
-  return syncValuesEqual(left.record, right.record)
+  const recordsEqual = left.record && right.record
+    ? syncValuesEqual(normalizeOptionalRecordDates(left.record), normalizeOptionalRecordDates(right.record))
+    : left.record === right.record;
+  return recordsEqual
     && syncValuesEqual(left.tombstone, right.tombstone);
 }
 
