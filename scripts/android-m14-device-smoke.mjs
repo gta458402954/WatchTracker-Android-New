@@ -35,6 +35,11 @@ const state = {
   authenticationFailures: 0,
   conditionalPuts: 0,
   unconditionalPuts: 0,
+  putRequests: 0,
+  propfindRequests: 0,
+  rangeProbes: 0,
+  fullV3Gets: 0,
+  propfindStatus: 207,
   preconditions: 0,
   force412: 0,
   mutateOn412: null,
@@ -143,14 +148,28 @@ function buildServer() {
       if (request.method === 'MKCOL') { response.writeHead(405); response.end(); return; }
       if (request.method === 'GET' && request.url?.endsWith('/records.json')) { response.writeHead(404); response.end(); return; }
       if (request.method === 'GET' && request.url?.endsWith('/records-v3.json')) {
+        if (request.headers.range) {
+          state.rangeProbes += 1;
+          if (request.headers.range !== 'bytes=0-0') { response.writeHead(416); response.end(); return; }
+          const body = Buffer.from(JSON.stringify(state.payload));
+          response.writeHead(206, {
+            'Content-Type': 'application/json', ETag: state.etag,
+            'Content-Range': `bytes 0-0/${body.length}`, 'Content-Length': '1',
+          });
+          response.end(body.subarray(0, 1)); return;
+        }
+        state.fullV3Gets += 1;
         response.writeHead(200, { 'Content-Type': 'application/json', ETag: state.etag }); response.end(JSON.stringify(state.payload)); return;
       }
       if (request.method === 'PROPFIND' && request.url?.endsWith('/records-v3.json')) {
+        state.propfindRequests += 1;
+        if (state.propfindStatus === 405) { response.writeHead(405); response.end(); return; }
         const escaped = state.etag.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
         response.writeHead(207, { 'Content-Type': 'application/xml' });
         response.end(`<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:getetag>${escaped}</d:getetag></d:prop></d:propstat></d:response></d:multistatus>`); return;
       }
       if (request.method === 'PUT' && request.url?.endsWith('/records-v3.json')) {
+        state.putRequests += 1;
         const body = await requestBody(request);
         const conditional = request.headers['if-match'] === state.etag
           || request.headers['if-none-match'] === '*'
@@ -333,6 +352,30 @@ async function main() {
   await waitFor(() => state.preconditions === 1 && state.payload.records[0]?.nextEpisode === 3 && state.payload.records[0]?.platform === 'desktop-platform', 'Case 7 conditional retry', 100, 250);
   assert(state.conditionalPuts > 0 && state.unconditionalPuts === 0, 'Case 7 performed an unconditional PUT');
 
+  stage('case 7a clean Range unchanged fast path');
+  state.propfindStatus = 405;
+  const unchangedBefore = {
+    range: state.rangeProbes, full: state.fullV3Gets, puts: state.putRequests,
+  };
+  await evaluate(`(async()=>{const wait=async fn=>{for(let i=0;i<80;i++){const v=fn();if(v)return v;await new Promise(r=>setTimeout(r,250));}throw new Error('range unchanged UI timeout');};const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));button('设置')?.click();await wait(()=>button('立即同步'));button('立即同步').click();return true;})()`);
+  await waitFor(() => state.rangeProbes > unchangedBefore.range, 'Case 7a Range unchanged probe', 80, 250);
+  await sleep(750);
+  assert(state.fullV3Gets === unchangedBefore.full, 'Case 7a Range unchanged performed a full V3 GET');
+  assert(state.putRequests === unchangedBefore.puts, 'Case 7a Range unchanged performed a PUT');
+
+  stage('case 7b Range changed followed by full V3 GET');
+  state.payload.records[0].notes = 'range-changed-pull';
+  state.payload.records[0].rev += 1;
+  state.payload.records[0].revActor = 'desktop-device';
+  bumpRemote();
+  const changedBefore = {
+    range: state.rangeProbes, full: state.fullV3Gets, puts: state.putRequests,
+  };
+  await evaluate(`(async()=>{const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));button('立即同步').click();return true;})()`);
+  await waitFor(() => state.rangeProbes > changedBefore.range && state.fullV3Gets > changedBefore.full, 'Case 7b Range changed full GET', 80, 250);
+  await waitFor(async () => (await evaluate(`window.__TAURI_INTERNALS__.invoke('get_all_records')`)).find(item => item.id === recordId)?.notes === 'range-changed-pull', 'Case 7b changed payload pull', 80, 250);
+  assert(state.putRequests === changedBefore.puts, 'Case 7b remote-only Range change performed a PUT');
+
   stage('case 8 offline local write and retained outbox');
   await stopServer();
   await evaluate(`(async()=>{const wait=async fn=>{for(let i=0;i<80;i++){const v=await fn();if(v)return v;await new Promise(r=>setTimeout(r,250));}throw new Error('offline episode timeout');};const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));await wait(()=>button('完成第 3 集'));button('完成第 3 集').click();await wait(async()=>{const rows=await window.__TAURI_INTERNALS__.invoke('get_all_records');return rows.find(item=>item.id===${JSON.stringify(recordId)})?.nextEpisode===null;});window.dispatchEvent(new Event('online'));return true;})()`);
@@ -359,7 +402,7 @@ async function main() {
   assert(!logcat.includes(password) && !/Authorization:\s*Basic/i.test(logcat), 'Case 10 secret or Basic authorization found in logcat');
 
   const device = runAdb(['shell', 'getprop', 'ro.product.model']); const android = runAdb(['shell', 'getprop', 'ro.build.version.release']);
-  console.log(`OK M1.4 cold=true keystore=true pull=true episode=true localWriteDebounce=true restart=true startupSync=true exactBasicAuth=true lifecycle=true merge=true precondition412=${state.preconditions} offlineOutbox=true clear=true sensitive=false conditionalPuts=${state.conditionalPuts} unconditionalPuts=${state.unconditionalPuts} apkSha256=${apkEvidence.localHash} installedSha256=${apkEvidence.installedHash} device=${device} android=${android}`);
+  console.log(`OK M1.4 cold=true keystore=true pull=true episode=true localWriteDebounce=true restart=true startupSync=true exactBasicAuth=true lifecycle=true merge=true rangeUnchanged=true rangeChanged=true precondition412=${state.preconditions} offlineOutbox=true clear=true sensitive=false propfindRequests=${state.propfindRequests} rangeProbes=${state.rangeProbes} fullV3Gets=${state.fullV3Gets} conditionalPuts=${state.conditionalPuts} unconditionalPuts=${state.unconditionalPuts} apkSha256=${apkEvidence.localHash} installedSha256=${apkEvidence.installedHash} device=${device} android=${android}`);
 }
 
 try {
