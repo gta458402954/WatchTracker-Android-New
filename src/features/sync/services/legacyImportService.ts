@@ -9,7 +9,7 @@ import { legacyPayload } from '../domain/syncPayload.ts';
 import { syncError } from '../domain/syncErrors.ts';
 import type { WebDAVCreds, WebDavTransport } from '../infrastructure/webdavTransport.ts';
 import { webdavTransport } from '../infrastructure/webdavTransport.ts';
-import { conditionalValidatorForResource, contentFingerprint } from '../infrastructure/conditionalWebdav.ts';
+import { contentFingerprint, readResourceWithBoundValidator } from '../infrastructure/conditionalWebdav.ts';
 import type { SyncResult } from './syncContracts.ts';
 
 const V3_RESOURCE = 'records-v3.json';
@@ -81,9 +81,14 @@ async function importWithDependencies(creds: WebDAVCreds, deps: LegacyImportDepe
   const proxy = await deps.database.getSettingAsync('network_proxy');
   try {
     const snapshot = await deps.database.getSyncSnapshot();
-    const v3Response = await deps.transport.request('GET', creds, proxy, V3_RESOURCE);
+    let v3Response = await deps.transport.request('GET', creds, proxy, V3_RESOURCE);
     if (v3Response.status !== 200) throw new Error(`HTTP Error: ${v3Response.status}`);
-    const v3Etag = (await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport)).etag;
+    const boundRead = await readResourceWithBoundValidator(
+      creds, proxy, V3_RESOURCE, deps.transport, v3Response,
+    );
+    v3Response = boundRead.response;
+    if (v3Response.status !== 200 || !boundRead.validator) throw new Error('conditional_write_unsupported');
+    const v3Etag = boundRead.validator.etag;
     const v3 = parseSyncPayloadV3(v3Response.body);
     const legacyResponse = await deps.transport.request('GET', creds, proxy, LEGACY_RESOURCE);
     if (legacyResponse.status !== 200) throw new Error(`HTTP Error: ${legacyResponse.status}`);
