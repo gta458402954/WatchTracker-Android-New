@@ -314,7 +314,10 @@ async function main() {
   const progress = await evaluate(`(async()=>{const wait=async fn=>{for(let i=0;i<80;i++){const value=await fn();if(value)return value;await new Promise(r=>setTimeout(r,250));}throw new Error('episode UI timeout');};const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));button('片库').click();await wait(()=>button('完成第 1 集'));button('完成第 1 集').click();await wait(async()=>{const rows=await window.__TAURI_INTERNALS__.invoke('get_all_records');return rows.find(item=>item.id===${JSON.stringify(recordId)})?.nextEpisode===2;});const before=await window.__TAURI_INTERNALS__.invoke('get_sync_runtime_state');return {pending:before.outbox.pending};})()`);
   assert(progress?.pending, 'Case 4 local episode write did not enter outbox');
   await waitFor(() => state.payload.records[0]?.nextEpisode === 2 && state.payload.episodeCompletions?.some(item => item.recordId === recordId && item.episodeNumber === 1), 'Case 4 local-write debounce publish', 180, 250);
-  const acknowledged = await evaluate(`window.__TAURI_INTERNALS__.invoke('get_sync_runtime_state')`);
+  const acknowledged = await waitFor(async () => {
+    const runtime = await evaluate(`window.__TAURI_INTERNALS__.invoke('get_sync_runtime_state')`);
+    return runtime.outbox.pending ? null : runtime;
+  }, 'Case 4 outbox acknowledgement', 80, 250);
   assert(!acknowledged.outbox.pending, 'Case 4 outbox was not acknowledged');
 
   const appArchive = runAdbBuffer(['exec-out', 'run-as', pkg, 'sh', '-c', 'tar -cf - files databases shared_prefs 2>/dev/null']);
@@ -378,7 +381,7 @@ async function main() {
 
   stage('case 8 offline local write and retained outbox');
   await stopServer();
-  await evaluate(`(async()=>{const wait=async fn=>{for(let i=0;i<80;i++){const v=await fn();if(v)return v;await new Promise(r=>setTimeout(r,250));}throw new Error('offline episode timeout');};const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));await wait(()=>button('完成第 3 集'));button('完成第 3 集').click();await wait(async()=>{const rows=await window.__TAURI_INTERNALS__.invoke('get_all_records');return rows.find(item=>item.id===${JSON.stringify(recordId)})?.nextEpisode===null;});window.dispatchEvent(new Event('online'));return true;})()`);
+  await evaluate(`(async()=>{const wait=async fn=>{for(let i=0;i<80;i++){const v=await fn();if(v)return v;await new Promise(r=>setTimeout(r,250));}throw new Error('offline episode timeout');};const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent.trim()===text||item.textContent.trim().endsWith(text));button('片库')?.click();await wait(()=>button('完成第 3 集'));button('完成第 3 集').click();await wait(async()=>{const rows=await window.__TAURI_INTERNALS__.invoke('get_all_records');return rows.find(item=>item.id===${JSON.stringify(recordId)})?.nextEpisode===null;});window.dispatchEvent(new Event('online'));return true;})()`);
   const failedRuntime = await waitFor(async () => { const runtime = await evaluate(`window.__TAURI_INTERNALS__.invoke('get_sync_runtime_state')`); return runtime.scheduler.lastErrorCode ? runtime : null; }, 'Case 8 failed runtime', 80, 250);
   assert(failedRuntime.outbox.pending, 'Case 8 network failure cleared outbox');
   const localAfterFailure = await evaluate(`window.__TAURI_INTERNALS__.invoke('get_all_records')`);
