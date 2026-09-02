@@ -148,7 +148,7 @@ function businessRecordsEqual(left: WatchRecord, right: WatchRecord): boolean {
 }
 
 function preferredEquivalentRecord(local: WatchRecord, remote: WatchRecord): WatchRecord {
-  const preferred = local.isLocked || (local.rev ?? 0) > (remote.rev ?? 0)
+  const preferred = (local.rev ?? 0) > (remote.rev ?? 0)
     ? local
     : (remote.rev ?? 0) > (local.rev ?? 0)
       ? remote
@@ -166,7 +166,8 @@ function mergeRecords(
   const localFields = changedBusinessFields(base, local);
   const remoteFields = changedBusinessFields(base, remote);
   const conflicts = [...localFields].filter(field => remoteFields.has(field)
-    && !syncValuesEqual(
+    && !businessFieldEqual(
+      field,
       (local as unknown as Record<string, unknown>)[field],
       (remote as unknown as Record<string, unknown>)[field],
     )).sort();
@@ -180,7 +181,7 @@ function mergeRecords(
   merged.updatedAt = now;
   merged.rev = Math.max(base.rev ?? 0, local.rev ?? 0, remote.rev ?? 0) + 1;
   merged.revActor = deviceId;
-  return { record: merged as unknown as WatchRecord, conflictingFields: [] };
+  return { record: normalizeOptionalRecordDates(merged as unknown as WatchRecord), conflictingFields: [] };
 }
 
 function deletionOf(id: string, entities: Entity[], deviceId: string, now: string): SyncTombstoneV3 {
@@ -211,7 +212,7 @@ function conflictOf(
 }
 
 function pushEntity(side: SyncMergeSide, entity: Entity) {
-  if (entity.record) side.records.push(entity.record);
+  if (entity.record) side.records.push(normalizeOptionalRecordDates(entity.record));
   else if (entity.tombstone) side.tombstones.push(entity.tombstone);
 }
 
@@ -247,12 +248,6 @@ export function mergeSyncStates(
     const local = entityOf(id, localMaps, base);
     const remote = entityOf(id, remoteMaps, base);
     const frozen = frozenById.get(id);
-    if (local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
-      const selected = preferredEquivalentRecord(local.record, remote.record);
-      pushEntity(result.local, { record: selected });
-      pushEntity(result.remote, { record: selected });
-      continue;
-    }
     if (frozen) {
       pushEntity(result.local, local);
       pushEntity(result.remote, remote);
@@ -263,6 +258,14 @@ export function mergeSyncStates(
         localDeleted: Boolean(local.tombstone),
         remoteDeleted: Boolean(remote.tombstone),
       });
+      continue;
+    }
+    if (local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
+      const localResult = local.record.isLocked
+        ? normalizeOptionalRecordDates(local.record)
+        : preferredEquivalentRecord(local.record, remote.record);
+      pushEntity(result.local, { record: localResult });
+      pushEntity(result.remote, { record: normalizeOptionalRecordDates(remote.record) });
       continue;
     }
     const localChanged = !entityEqual(local, base);
