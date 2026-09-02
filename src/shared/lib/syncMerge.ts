@@ -55,6 +55,7 @@ interface Entity {
 }
 
 const SYSTEM_FIELDS = new Set(['id', 'createdAt', 'updatedAt', 'rev', 'revActor']);
+const OPTIONAL_DATE_FIELDS = new Set(['startDate', 'endDate']);
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -103,7 +104,6 @@ function normalizeOptionalRecordDates(record: WatchRecord): WatchRecord {
   };
 }
 
-
 function mapsOf(side: SyncMergeSide) {
   return {
     records: new Map(side.records.map(record => [record.id, record])),
@@ -131,17 +131,29 @@ function entityEqual(left: Entity, right: Entity): boolean {
 function changedBusinessFields(base: WatchRecord, current: WatchRecord): Set<string> {
   const keys = new Set([...Object.keys(base), ...Object.keys(current)]);
   return new Set([...keys].filter(key => !SYSTEM_FIELDS.has(key)
-    && !syncValuesEqual(
+    && !businessFieldEqual(
+      key,
       (base as unknown as Record<string, unknown>)[key],
       (current as unknown as Record<string, unknown>)[key],
     )));
 }
 
 function businessRecordsEqual(left: WatchRecord, right: WatchRecord): boolean {
-  const business = (record: WatchRecord) => Object.fromEntries(
-    Object.entries(record).filter(([key]) => !SYSTEM_FIELDS.has(key)),
-  );
-  return syncValuesEqual(business(left), business(right));
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].filter(key => !SYSTEM_FIELDS.has(key)).every(key => businessFieldEqual(
+    key,
+    (left as unknown as Record<string, unknown>)[key],
+    (right as unknown as Record<string, unknown>)[key],
+  ));
+}
+
+function preferredEquivalentRecord(local: WatchRecord, remote: WatchRecord): WatchRecord {
+  const preferred = local.isLocked || (local.rev ?? 0) > (remote.rev ?? 0)
+    ? local
+    : (remote.rev ?? 0) > (local.rev ?? 0)
+      ? remote
+      : (local.updatedAt ?? '').localeCompare(remote.updatedAt ?? '') >= 0 ? local : remote;
+  return normalizeOptionalRecordDates(preferred);
 }
 
 function mergeRecords(
@@ -235,6 +247,12 @@ export function mergeSyncStates(
     const local = entityOf(id, localMaps, base);
     const remote = entityOf(id, remoteMaps, base);
     const frozen = frozenById.get(id);
+    if (local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
+      const selected = preferredEquivalentRecord(local.record, remote.record);
+      pushEntity(result.local, { record: selected });
+      pushEntity(result.remote, { record: selected });
+      continue;
+    }
     if (frozen) {
       pushEntity(result.local, local);
       pushEntity(result.remote, remote);
@@ -253,13 +271,6 @@ export function mergeSyncStates(
     if (entityEqual(local, remote)) {
       pushEntity(result.local, local);
       pushEntity(result.remote, local);
-      continue;
-    }
-    if (!base.record && local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
-      const selected = local.record.isLocked || (local.record.rev ?? 0) >= (remote.record.rev ?? 0)
-        ? local.record : remote.record;
-      pushEntity(result.local, { record: selected });
-      pushEntity(result.remote, { record: selected });
       continue;
     }
     if (!localChanged) {

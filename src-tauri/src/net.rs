@@ -592,7 +592,10 @@ pub(crate) fn valid_entity_tag(value: &str, allow_weak: bool) -> bool {
         !inner.is_empty()
             && !inner.contains('"')
             && !inner.chars().any(|character| character.is_control())
-    })`r`n}`r`n`r`npub(crate) fn valid_range(value: &str) -> bool {
+    })
+}
+
+pub(crate) fn valid_range(value: &str) -> bool {
     value == "bytes=0-0"
 }
 
@@ -859,7 +862,9 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
 
 #[cfg(test)]
 mod request_safety_tests {
-    use super::{safe_url_for_log, valid_range, valid_range_content_range, webdav_request, WebDavRequest};
+    use super::{
+        safe_url_for_log, valid_range, valid_range_content_range, webdav_request, WebDavRequest,
+    };
     use std::future::Future;
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
