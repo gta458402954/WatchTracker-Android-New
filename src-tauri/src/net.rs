@@ -866,8 +866,50 @@ mod request_safety_tests {
         safe_url_for_log, valid_range, valid_range_content_range, webdav_request, WebDavRequest,
     };
     use std::future::Future;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn request(response: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            String::from_utf8(bytes).expect("HTTP request is UTF-8")
+        });
+        (format!("http://{address}/records-v3.json"), server)
+    }
+
+    fn get_request(url: String, range: Option<String>) -> WebDavRequest {
+        WebDavRequest {
+            method: "GET".to_string(),
+            url,
+            username: "wire-user".to_string(),
+            password: "wire-secret".to_string(),
+            body: None,
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range,
+        }
+    }
 
     fn noop_raw_waker() -> RawWaker {
         unsafe fn clone(_: *const ()) -> RawWaker {
@@ -939,5 +981,47 @@ mod request_safety_tests {
         }));
 
         assert!(matches!(result, Err(error) if error == "webdav_range_invalid"));
+    }
+
+    #[test]
+    fn range_request_sends_header_and_returns_only_metadata() {
+        let (url, server) = request(
+            "HTTP/1.1 206 Partial Content\r\nETag: \"wire-etag\"\r\nContent-Range: bytes 0-0/9\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{",
+        );
+        let response = tauri::async_runtime::block_on(webdav_request(get_request(
+            url,
+            Some("bytes=0-0".to_string()),
+        )))
+        .expect("range request succeeds");
+        let wire_request = server.join().expect("test server finishes");
+
+        assert!(wire_request.starts_with("GET /records-v3.json HTTP/1.1\r\n"));
+        assert!(wire_request
+            .to_ascii_lowercase()
+            .contains("range: bytes=0-0\r\n"));
+        assert_eq!(response.status, 206);
+        assert_eq!(response.etag.as_deref(), Some("\"wire-etag\""));
+        assert_eq!(response.content_range.as_deref(), Some("bytes 0-0/9"));
+        assert_eq!(response.range_body_length, Some(1));
+        assert!(response.body.is_none());
+        let serialized = serde_json::to_string(&response).expect("serialize response");
+        assert!(!serialized.contains("wire-user"));
+        assert!(!serialized.contains("wire-secret"));
+    }
+
+    #[test]
+    fn ordinary_get_still_parses_json_without_range_metadata() {
+        let (url, server) = request(
+            "HTTP/1.1 200 OK\r\nETag: \"full-etag\"\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+        );
+        let response = tauri::async_runtime::block_on(webdav_request(get_request(url, None)))
+            .expect("ordinary GET succeeds");
+        let wire_request = server.join().expect("test server finishes");
+
+        assert!(!wire_request.to_ascii_lowercase().contains("\r\nrange:"));
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Some(serde_json::json!({ "ok": true })));
+        assert!(response.content_range.is_none());
+        assert!(response.range_body_length.is_none());
     }
 }

@@ -263,7 +263,9 @@ const rangeFallbacks: Array<{
   { name: 'missing ETag', etag: null, contentRange: 'bytes 0-0/1208148', bodyLength: 1 },
   { name: 'malformed ETag', etag: 'bad"quote', contentRange: 'bytes 0-0/1208148', bodyLength: 1 },
   { name: 'server ignores Range with 200', etag: 'range-server', contentRange: null, bodyLength: null, status: 200 },
+  { name: 'missing Content-Range', etag: 'range-server', contentRange: null, bodyLength: 1 },
   { name: 'invalid Content-Range', etag: 'range-server', contentRange: 'bytes 1-1/1208148', bodyLength: 1 },
+  { name: 'empty response body', etag: 'range-server', contentRange: 'bytes 0-0/1208148', bodyLength: 0 },
   { name: 'invalid response body length', etag: 'range-server', contentRange: 'bytes 0-0/1208148', bodyLength: 2 },
 ];
 
@@ -329,6 +331,28 @@ test('@conditional-pull range 403 remains a sync failure without fallback GET or
   const result = await runSync(page);
   expect(result).toMatchObject({ ok: false });
   expect(result.error).toContain('HTTP Error: 403');
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0')).toHaveLength(1);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+});
+
+test('@conditional-pull range network failure stops without fallback GET or writes', async ({ page }) => {
+  const local = record('range-network-failure');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+    webdavPropfindStatus: 405, webdavConditionalGet: true, webdavRangeNetworkFailure: true,
+    settings: cleanConditionalSettings(baseline, '"range-server"'),
+  });
+  await page.goto('/');
+
+  const result = await runSync(page);
+  expect(result).toMatchObject({ ok: false });
   const snapshot = await mockSnapshot(page);
   expect(snapshot.calls.filter(call => call.command === 'webdav_request'
     && call.args.method === 'GET' && call.args.range === 'bytes=0-0')).toHaveLength(1);

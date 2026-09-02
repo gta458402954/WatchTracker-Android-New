@@ -35,6 +35,7 @@ export interface MockIpcOptions {
   webdavRangeEtag?: string | null;
   webdavRangeContentRange?: string | null;
   webdavRangeBodyLength?: number | null;
+  webdavRangeNetworkFailure?: boolean;
   omitConditionalGetEtag?: boolean;
   mutateLocalDuringConditionalGet?: boolean;
   mutateLocalDuringPropfind?: boolean;
@@ -93,7 +94,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, webdavRangeNetworkFailure, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -1109,6 +1110,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               if (request.method === 'GET') {
                 if (String(request.url).endsWith('records-v3.json')) {
                   if (request.range) {
+                    if (webdavRangeNetworkFailure) throw new Error('webdav_transport_error');
                     return {
                       status: webdavRangeStatus ?? 503,
                       body: null,
@@ -1203,6 +1205,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       webdavRangeEtag: options.webdavRangeEtag,
       webdavRangeContentRange: options.webdavRangeContentRange,
       webdavRangeBodyLength: options.webdavRangeBodyLength,
+      webdavRangeNetworkFailure: options.webdavRangeNetworkFailure ?? false,
       omitConditionalGetEtag: options.omitConditionalGetEtag ?? false,
       mutateLocalDuringConditionalGet: options.mutateLocalDuringConditionalGet ?? false,
       mutateLocalDuringPropfind: options.mutateLocalDuringPropfind ?? false,
