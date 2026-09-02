@@ -1,4 +1,4 @@
-# WebDAV Conditional Pull Fast Path（S1-PC）
+# WebDAV Conditional Pull Fast Path（S1 shared protocol）
 
 clean snapshot 的拉取顺序为：
 
@@ -43,10 +43,31 @@ WatchTracker 优先使用 DAV `getetag` 作为 clean pull fast path。当服务�
 前和事务内复核 outbox 不 pending、staging 为空且不存在 publish intent，避免丢弃或
 确认任何待上传本地状态。
 
+完整 GET 正文和写 validator 必须来自同一个稳定 representation。strong GET ETag 可直接
+绑定正文并用于 `If-Match`。weak 或 unquoted GET ETag 规范化后，只有读取后的 PROPFIND
+返回相同 ETag 才能用 DAV `If`。两者不同会丢弃正文并重新完整 GET。GET 没有 ETag、但
+PROPFIND 有 ETag 时，第一次正文同样被丢弃；客户端重新 GET，并要求新 GET 前后的两个
+DAV 观察值相同。连续三次仍无法稳定会返回 `remote_busy`，过程中不 PUT、不 commit。
+Range ETag 不参与这一绑定。
+
 所有 unchanged shortcut 都继续检查 legacy `records.json` guard；因此目标存在 legacy
 文件时仍可能下载 legacy body，并在 fingerprint 改变时报告 `legacy_remote_changed`。
 unchanged 路径只更新 scheduler 成功状态和必要的 legacy fingerprint，不合并或替换
 业务数据，不 ack outbox、不清理 staging/publish intent、不改 baseline、remote ETag 或
 conflicts，也不创建 recovery point。窄范围 Rust 提交继续以 generation 做 TOCTOU 校验。
 
-本轮未改变云端数据格式、资源路径、同步实体 contract、拉取周期或 Android 实现范围。
+legacy guard 只接受 `records.json` 的 200（验证 fingerprint）或 404（`missing`）。401、403、
+5xx 及其他 HTTP 状态均按对应 HTTP error 失败，transport/network error 直接传播；guard
+失败时不会执行 unchanged commit、普通 commit、PUT 或记录同步成功。
+
+业务等价快捷分支位于 frozen conflict 检查之后，因此未显式解决的 conflict 不会静默消失。
+业务字段相同但系统字段不同不会触发 PUT：远端结果保留规范化后的远端副本；unlocked
+本地结果确定性选择较新副本；locked 本地结果保留本机副本，同时远端保留远端副本。
+optional date 的 `null`、`undefined`、空串和空白字符串都规范化为空字符串。实体数组顺序
+不构成变化，但 collection member `position` 等业务字段仍构成变化。
+
+Android M1.4 受控本地服务器 smoke 覆盖 PROPFIND 405 后的严格 206 Range：clean unchanged
+断言有 Range、无完整 V3 GET、无 PUT；Range changed 断言随后执行完整 GET。smoke 统计
+PROPFIND、Range、完整 V3 GET 和 PUT，并持续要求 `unconditionalPuts=0`。
+
+本轮未改变云端数据格式、资源路径、同步实体 contract 或拉取周期。
