@@ -653,6 +653,19 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
     {
         return Err("webdav_range_invalid".to_string());
     }
+    if request.method == "PUT"
+        && [
+            request.if_match.is_some(),
+            request.if_none_match.is_some(),
+            request.if_dav_etag.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            != 1
+    {
+        return Err("conditional_write_unsupported".to_string());
+    }
     if request.method == "PUT" {
         if let Some(value) = request.if_match.as_deref() {
             log::info!(
@@ -981,6 +994,24 @@ mod request_safety_tests {
         }));
 
         assert!(matches!(result, Err(error) if error == "webdav_range_invalid"));
+    }
+
+    #[test]
+    fn unconditional_put_is_rejected_before_client_send() {
+        let result = poll_ready(webdav_request(WebDavRequest {
+            method: "PUT".to_string(),
+            url: "not-a-real-url".to_string(),
+            username: "user".to_string(),
+            password: "password".to_string(),
+            body: Some("{}".to_string()),
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range: None,
+        }));
+
+        assert!(matches!(result, Err(error) if error == "conditional_write_unsupported"));
     }
 
     #[test]

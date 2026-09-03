@@ -55,6 +55,11 @@ fn validate_webdav_conditions(
     }
     match method {
         "PUT" => {
+            if condition_count == 0 {
+                return Err(crate::error::AppError::General(
+                    "conditional_write_unsupported".to_string(),
+                ));
+            }
             if if_match.is_some_and(|value| !net::valid_entity_tag(value, false)) {
                 return Err(crate::error::AppError::General(
                     "Invalid strong If-Match value".to_string(),
@@ -980,6 +985,11 @@ mod command_tests {
         assert!(validate_webdav_conditions("PUT", None, Some("*"), None, None).is_ok());
         assert!(validate_webdav_conditions("PUT", None, None, Some("\"strong\""), None).is_ok());
         assert!(validate_webdav_conditions("PUT", None, None, Some("W/\"weak\""), None).is_ok());
+        assert!(matches!(
+            validate_webdav_conditions("PUT", None, None, None, None),
+            Err(crate::error::AppError::General(error))
+                if error == "conditional_write_unsupported"
+        ));
         assert!(validate_webdav_conditions("PUT", Some("W/\"weak\""), None, None, None).is_err());
         assert!(
             validate_webdav_conditions("PUT", Some("\"bad\r\nheader\""), None, None, None).is_err()

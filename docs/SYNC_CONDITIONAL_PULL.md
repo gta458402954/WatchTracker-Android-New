@@ -43,6 +43,9 @@ WatchTracker 优先使用 DAV `getetag` 作为 clean pull fast path。当服务�
 前和事务内复核 outbox 不 pending、staging 为空且不存在 publish intent，避免丢弃或
 确认任何待上传本地状态。
 
+Rust IPC 和底层 network 层都强制 PUT 恰好携带一个合法条件；零条件或多个条件会在
+创建 HTTP client 或连接远端前失败。
+
 完整 GET 正文和写 validator 必须来自同一个稳定 representation。strong GET ETag 可直接
 绑定正文并用于 `If-Match`。weak 或 unquoted GET ETag 规范化后，只有读取后的 PROPFIND
 返回相同 ETag 才能用 DAV `If`。两者不同会丢弃正文并重新完整 GET。GET 没有 ETag、但

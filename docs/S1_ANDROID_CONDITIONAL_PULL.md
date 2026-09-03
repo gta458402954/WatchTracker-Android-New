@@ -48,6 +48,8 @@ Range ETag 从不进入正文绑定状态机。PUT 后缺少 strong response ETa
 
 `remoteEtag = null` 仅允许 clean pull-only。TS 在事务前拒绝 dirty 状态，Rust 在事务前及事务内再次检查 outbox、staging、publish intent 和 upload requirement。需要 PUT 却缺少 validator 时返回 `conditional_write_unsupported`，不会执行无条件 PUT。现有 `If-Match`、DAV `If`、`If-None-Match: *`、最多三次 412 retry 以及无 strong PUT ETag 时的 verification GET 均保持不变。
 
+Rust IPC 和底层 network 层都会独立要求 PUT 恰好携带一个上述条件；零条件或多个条件会在创建 HTTP client 或连接远端前失败。
+
 ## Merge invariants
 
 Frozen conflict 优先于业务等价快捷分支；未显式解决的 conflict 即使两端后来业务字段相同也继续保留。业务字段等价时，远端结果保留规范化后的远端记录，因此 `rev`、`revActor`、`updatedAt` 差异不会制造 PUT。unlocked 本机记录确定性选择较新副本；locked 本机记录保留本机副本，同时远端保持远端副本，不会把较旧 locked revision 发布到云端。
