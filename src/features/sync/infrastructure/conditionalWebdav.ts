@@ -3,6 +3,10 @@ import type { WebDAVCreds, WebDavResponse, WebDavTransport } from './webdavTrans
 
 export interface ConditionalValidator { etag: string; header: 'if-match' | 'dav-if'; }
 export interface BoundResourceRead { response: WebDavResponse; validator: ConditionalValidator | null; }
+export type DavEntityTagProbe =
+  | { kind: 'etag'; etag: string }
+  | { kind: 'unsupported'; status: 405 | 501 }
+  | { kind: 'missing' };
 
 function successful(status: number) { return status >= 200 && status < 300; }
 
@@ -14,31 +18,32 @@ export async function contentFingerprint(value: unknown): Promise<string> {
 }
 
 function davEtagFromPropfind(text: string | null): string | null {
-  if (!text) return null;
+  if (!text?.trim()) throw new Error('webdav_propfind_invalid');
   const document = new DOMParser().parseFromString(text, 'application/xml');
-  if (document.querySelector('parsererror')) return null;
+  if (document.querySelector('parsererror')) throw new Error('webdav_propfind_invalid');
   return firstUsableEntityTag(
     Array.from(document.getElementsByTagNameNS('*', 'getetag'), element => element.textContent),
   );
 }
 
 /**
- * Reads only DAV:getetag for a resource. A missing/unsupported/malformed
- * response is deliberately represented as null so callers can choose a safe
- * fallback without coupling this transport helper to sync policy.
+ * Reads only DAV:getetag for a resource. Only explicit capability responses
+ * and a valid response without a usable validator permit fallback. HTTP,
+ * transport, body-read, and XML parse failures propagate and fail closed.
  */
 export async function probeDavEntityTagForResource(
   creds: WebDAVCreds,
   proxy: string | null,
   resource: string,
   transport: WebDavTransport,
-): Promise<string | null> {
-  try {
-    const properties = await transport.request('PROPFIND', creds, proxy, resource);
-    return successful(properties.status) ? davEtagFromPropfind(properties.text) : null;
-  } catch {
-    return null;
+): Promise<DavEntityTagProbe> {
+  const properties = await transport.request('PROPFIND', creds, proxy, resource);
+  if (properties.status === 405 || properties.status === 501) {
+    return { kind: 'unsupported', status: properties.status };
   }
+  if (!successful(properties.status)) throw new Error(`HTTP Error: ${properties.status}`);
+  const etag = davEtagFromPropfind(properties.text);
+  return etag ? { kind: 'etag', etag } : { kind: 'missing' };
 }
 
 /** Resolves a safe strong/weak validator without deciding upload or merge policy. */
@@ -54,7 +59,8 @@ export async function conditionalValidatorForResource(
   if (rawResponseEtag && entityTagKind(rawResponseEtag) === 'strong') {
     return { etag: responseEtag!, header: 'if-match' };
   }
-  const propertyEtag = await probeDavEntityTagForResource(creds, proxy, resource, transport);
+  const propertyProbe = await probeDavEntityTagForResource(creds, proxy, resource, transport);
+  const propertyEtag = propertyProbe.kind === 'etag' ? propertyProbe.etag : null;
   if (responseEtag && propertyEtag === responseEtag) return { etag: responseEtag, header: 'dav-if' };
   if (responseEtag && propertyEtag && propertyEtag !== responseEtag) throw new Error('remote_busy');
   throw new Error('conditional_write_unsupported');
@@ -88,9 +94,10 @@ export async function readResourceWithBoundValidator(
       return { response, validator: { etag: responseEtag, header: 'if-match' } };
     }
 
-    const postReadDavEtag = await probeDavEntityTagForResource(
+    const postReadDavProbe = await probeDavEntityTagForResource(
       creds, proxy, resource, transport,
     );
+    const postReadDavEtag = postReadDavProbe.kind === 'etag' ? postReadDavProbe.etag : null;
     if (responseEtag) {
       if (postReadDavEtag === responseEtag) {
         return { response, validator: { etag: responseEtag, header: 'dav-if' } };

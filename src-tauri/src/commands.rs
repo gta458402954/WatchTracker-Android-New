@@ -48,35 +48,9 @@ fn validate_webdav_conditions(
     .into_iter()
     .filter(|present| *present)
     .count();
-    if condition_count > 1 {
-        return Err(crate::error::AppError::General(
-            "WebDAV conditions cannot be combined".to_string(),
-        ));
-    }
     match method {
-        "PUT" => {
-            if condition_count == 0 {
-                return Err(crate::error::AppError::General(
-                    "conditional_write_unsupported".to_string(),
-                ));
-            }
-            if if_match.is_some_and(|value| !net::valid_entity_tag(value, false)) {
-                return Err(crate::error::AppError::General(
-                    "Invalid strong If-Match value".to_string(),
-                ));
-            }
-            if if_none_match.is_some_and(|value| value != "*") {
-                return Err(crate::error::AppError::General(
-                    "Invalid If-None-Match value".to_string(),
-                ));
-            }
-            if if_dav_etag.is_some_and(|value| !net::valid_entity_tag(value, true)) {
-                return Err(crate::error::AppError::General(
-                    "Invalid WebDAV entity tag".to_string(),
-                ));
-            }
-            Ok(())
-        }
+        "PUT" => net::validate_webdav_put_conditions(if_match, if_none_match, if_dav_etag)
+            .map_err(crate::error::AppError::General),
         "GET" => {
             if if_match.is_some()
                 || if_dav_etag.is_some()

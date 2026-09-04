@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { WatchRecord } from '../src/shared/types';
 import type { SyncPayloadV3 } from '../src/shared/lib/syncMerge';
-import { mockSnapshot, setupMockIpc } from './fixtures/mockIpc';
+import { mockSnapshot, setupMockIpc, type MockIpcOptions } from './fixtures/mockIpc';
 
 function record(id: string, overrides: Partial<WatchRecord> = {}): WatchRecord {
   return {
@@ -86,6 +86,11 @@ function pendingSettings(baseline: SyncPayloadV3, etag = '"conditional-etag"') {
   };
 }
 
+const cleanScheduler = JSON.stringify({
+  version: 1, paused: true, consecutiveFailures: 0, nextAttemptAt: null,
+  lastAttemptAt: null, lastSuccessAt: null, lastErrorCode: null, lastRemoteCheckAt: null,
+});
+
 test('@conditional-pull clean unchanged remote uses PROPFIND without v3 GET, commit, or PUT', async ({ page }) => {
   const local = record('conditional-clean');
   const baseline = payload([local]);
@@ -117,6 +122,41 @@ test('@conditional-pull clean unchanged remote uses PROPFIND without v3 GET, com
   expect(scheduler.lastSuccessAt).not.toBeNull();
   expect(scheduler.consecutiveFailures).toBe(0);
 });
+
+const fatalPropfindCases: Array<{ name: string; options: Partial<MockIpcOptions> }> = [
+  { name: '401', options: { webdavPropfindStatus: 401 } },
+  { name: '403', options: { webdavPropfindStatus: 403 } },
+  { name: '500', options: { webdavPropfindStatus: 500 } },
+  { name: '503', options: { webdavPropfindStatus: 503 } },
+  { name: 'transport failure', options: { webdavPropfindNetworkFailure: true } },
+  { name: 'missing response body', options: { webdavPropfindText: null } },
+  { name: 'malformed XML', options: { webdavPropfindText: '<d:multistatus' } },
+];
+
+for (const failure of fatalPropfindCases) {
+  test(`@conditional-pull PROPFIND ${failure.name} fails closed before every fallback or write`, async ({ page }) => {
+    const local = record(`propfind-fatal-${failure.name}`);
+    const baseline = payload([local]);
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: baseline, webdavV3Etag: '"propfind-fatal"',
+      settings: { ...cleanConditionalSettings(baseline, '"propfind-fatal"'), sync_scheduler_v1: cleanScheduler },
+      ...failure.options,
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(false);
+    const snapshot = await mockSnapshot(page);
+    const v3Calls = snapshot.calls.filter(call => call.command === 'webdav_request'
+      && String(call.args.url).endsWith('records-v3.json'));
+    expect(v3Calls.filter(call => call.args.method === 'PROPFIND')).toHaveLength(1);
+    expect(v3Calls.some(call => call.args.range === 'bytes=0-0')).toBe(false);
+    expect(v3Calls.some(call => call.args.method === 'GET')).toBe(false);
+    expect(v3Calls.some(call => call.args.method === 'PUT')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+    expect(snapshot.settings.sync_scheduler_v1).toBe(cleanScheduler);
+  });
+}
 
 test('@conditional-pull PROPFIND same detects a concurrent local edit through narrow stale CAS', async ({ page }) => {
   const local = record('propfind-toctou');

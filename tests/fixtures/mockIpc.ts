@@ -25,6 +25,8 @@ export interface MockIpcOptions {
   webdavGetEtag?: string | null;
   webdavPropfindEtag?: string | null;
   webdavPropfindEtagSequence?: Array<string | null>;
+  webdavPropfindText?: string | null;
+  webdavPropfindNetworkFailure?: boolean;
   webdavFullGetResponses?: Array<{ body: SyncPayloadV3; etag: string | null }>;
   webdavPreconditionFailures?: number;
   rotateEtagOnPreconditionFailure?: boolean;
@@ -98,7 +100,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPropfindEtagSequence, webdavFullGetResponses, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, webdavRangeNetworkFailure, legacyWebdavStatus, legacyNetworkFailure, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPropfindEtagSequence, webdavPropfindText, webdavPropfindNetworkFailure, webdavFullGetResponses, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, webdavRangeNetworkFailure, legacyWebdavStatus, legacyNetworkFailure, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -1098,6 +1100,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
               }
               if (request.method === 'MKCOL') return { status: 405, body: null, etag: null };
               if (request.method === 'PROPFIND') {
+                if (webdavPropfindNetworkFailure) throw new Error('webdav_transport_error');
                 if (webdavPropfindStatus !== null) return { status: webdavPropfindStatus, body: null, etag: null, text: null };
                 if (!snapshot.webdavV3Remote) return { status: 404, body: null, etag: null, text: null };
                 if (shouldMutateLocalDuringPropfind) {
@@ -1114,7 +1117,9 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
                   propfindV3Etag = propfindEtagSequence.shift() ?? null;
                   if (propfindV3Etag) v3Etag = propfindV3Etag;
                 }
-                const value = propfindV3Etag ? `<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:getetag>${propfindV3Etag.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}</d:getetag></d:prop></d:propstat></d:response></d:multistatus>` : '<d:multistatus xmlns:d="DAV:" />';
+                const value = webdavPropfindText !== undefined
+                  ? webdavPropfindText
+                  : propfindV3Etag ? `<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:getetag>${propfindV3Etag.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}</d:getetag></d:prop></d:propstat></d:response></d:multistatus>` : '<d:multistatus xmlns:d="DAV:" />';
                 return { status: 207, body: null, etag: null, text: value };
               }
               if (request.method === 'GET') {
@@ -1214,6 +1219,8 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
       webdavGetEtag: options.webdavGetEtag,
       webdavPropfindEtag: options.webdavPropfindEtag,
       webdavPropfindEtagSequence: options.webdavPropfindEtagSequence ?? [],
+      webdavPropfindText: options.webdavPropfindText,
+      webdavPropfindNetworkFailure: options.webdavPropfindNetworkFailure ?? false,
       webdavFullGetResponses: options.webdavFullGetResponses ?? [],
       webdavPreconditionFailures: options.webdavPreconditionFailures ?? 0,
       rotateEtagOnPreconditionFailure: options.rotateEtagOnPreconditionFailure ?? false,

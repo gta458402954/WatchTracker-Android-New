@@ -149,9 +149,10 @@ async function syncWithDependencies(
     for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
       let useConditionalGetFallback = false;
       if (storedConditionalEtag) {
-        const davEtag = await probeDavEntityTagForResource(
+        const davProbe = await probeDavEntityTagForResource(
           creds, proxy, V3_RESOURCE, deps.transport,
         );
+        const davEtag = davProbe.kind === 'etag' ? davProbe.etag : null;
         if (davEtag === storedConditionalEtag) {
           console.info('[sync] clean preflight: PROPFIND same validator');
           return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
@@ -159,7 +160,7 @@ async function syncWithDependencies(
         if (davEtag) {
           console.info('[sync] clean preflight: PROPFIND changed');
         } else {
-          console.info('[sync] clean preflight: PROPFIND unavailable');
+          console.info(`[sync] clean preflight: PROPFIND ${davProbe.kind}`);
           const rangeResponse = await deps.transport.request(
             'GET', creds, proxy, V3_RESOURCE, null, null, null, null, RANGE_PROBE,
           );

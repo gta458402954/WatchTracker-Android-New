@@ -595,6 +595,37 @@ pub(crate) fn valid_entity_tag(value: &str, allow_weak: bool) -> bool {
     })
 }
 
+pub(crate) fn validate_webdav_put_conditions(
+    if_match: Option<&str>,
+    if_none_match: Option<&str>,
+    if_dav_etag: Option<&str>,
+) -> Result<(), String> {
+    let condition_count = [
+        if_match.is_some(),
+        if_none_match.is_some(),
+        if_dav_etag.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if condition_count == 0 {
+        return Err("conditional_write_unsupported".to_string());
+    }
+    if condition_count > 1 {
+        return Err("WebDAV conditions cannot be combined".to_string());
+    }
+    if if_match.is_some_and(|value| !valid_entity_tag(value, false)) {
+        return Err("Invalid strong If-Match value".to_string());
+    }
+    if if_none_match.is_some_and(|value| value != "*") {
+        return Err("Invalid If-None-Match value".to_string());
+    }
+    if if_dav_etag.is_some_and(|value| !valid_entity_tag(value, true)) {
+        return Err("Invalid WebDAV entity tag".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn valid_range(value: &str) -> bool {
     value == "bytes=0-0"
 }
@@ -653,18 +684,12 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
     {
         return Err("webdav_range_invalid".to_string());
     }
-    if request.method == "PUT"
-        && [
-            request.if_match.is_some(),
-            request.if_none_match.is_some(),
-            request.if_dav_etag.is_some(),
-        ]
-        .into_iter()
-        .filter(|present| *present)
-        .count()
-            != 1
-    {
-        return Err("conditional_write_unsupported".to_string());
+    if request.method == "PUT" {
+        validate_webdav_put_conditions(
+            request.if_match.as_deref(),
+            request.if_none_match.as_deref(),
+            request.if_dav_etag.as_deref(),
+        )?;
     }
     if request.method == "PUT" {
         if let Some(value) = request.if_match.as_deref() {
@@ -1012,6 +1037,55 @@ mod request_safety_tests {
         }));
 
         assert!(matches!(result, Err(error) if error == "conditional_write_unsupported"));
+    }
+
+    #[test]
+    fn invalid_put_conditions_are_rejected_before_client_send() {
+        let cases = [
+            (
+                Some("\"one\""),
+                Some("*"),
+                None,
+                "WebDAV conditions cannot be combined",
+            ),
+            (Some("*"), None, None, "Invalid strong If-Match value"),
+            (
+                Some("W/\"weak\""),
+                None,
+                None,
+                "Invalid strong If-Match value",
+            ),
+            (
+                Some("malformed"),
+                None,
+                None,
+                "Invalid strong If-Match value",
+            ),
+            (
+                None,
+                Some("\"arbitrary\""),
+                None,
+                "Invalid If-None-Match value",
+            ),
+            (None, None, Some("malformed"), "Invalid WebDAV entity tag"),
+        ];
+
+        for (if_match, if_none_match, if_dav_etag, expected_error) in cases {
+            let result = poll_ready(webdav_request(WebDavRequest {
+                method: "PUT".to_string(),
+                url: "not-a-real-url".to_string(),
+                username: "user".to_string(),
+                password: "password".to_string(),
+                body: Some("{}".to_string()),
+                proxy: None,
+                if_match: if_match.map(str::to_string),
+                if_none_match: if_none_match.map(str::to_string),
+                if_dav_etag: if_dav_etag.map(str::to_string),
+                range: None,
+            }));
+
+            assert!(matches!(result, Err(error) if error == expected_error));
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ S1 只优化 clean pull，不改变云端 schema、资源路径、实体 contrac
 PROPFIND Depth: 0 DAV:getetag
   ├─ safe ETag unchanged → legacy guard → narrow unchanged commit
   ├─ safe ETag changed   → full GET → merge
-  └─ unavailable
+  └─ 405/501 or valid response without validator
        └─ GET Range: bytes=0-0
             ├─ valid 206 metadata + unchanged ETag → legacy guard → narrow unchanged
             ├─ valid 206 metadata + changed ETag   → full GET → merge
@@ -23,6 +23,8 @@ PROPFIND Depth: 0 DAV:getetag
 ```
 
 所有 unchanged 分支共用同一 helper。它先执行 `records.json` legacy guard，再调用事务型 `record_sync_remote_unchanged`。窄提交复核 target id、target epoch、records generation 和 expected remote ETag，只更新 scheduler success 与必要的 legacy fingerprint；不会替换业务数据、修改 baseline/conflicts/remote ETag、ack outbox、清 staging/publish intent 或创建 recovery point。
+
+PROPFIND 只有明确表示 capability unsupported 的 405/501，或成功且 XML 合法但没有可用 validator 时才进入 Range fallback。401、403、其他 HTTP 错误、transport/body-read 错误、缺失正文和 XML parse 错误全部失败关闭，不执行后续 GET、PUT 或成功提交。
 
 ## Range safety
 
@@ -48,7 +50,7 @@ Range ETag 从不进入正文绑定状态机。PUT 后缺少 strong response ETa
 
 `remoteEtag = null` 仅允许 clean pull-only。TS 在事务前拒绝 dirty 状态，Rust 在事务前及事务内再次检查 outbox、staging、publish intent 和 upload requirement。需要 PUT 却缺少 validator 时返回 `conditional_write_unsupported`，不会执行无条件 PUT。现有 `If-Match`、DAV `If`、`If-None-Match: *`、最多三次 412 retry 以及无 strong PUT ETag 时的 verification GET 均保持不变。
 
-Rust IPC 和底层 network 层都会独立要求 PUT 恰好携带一个上述条件；零条件或多个条件会在创建 HTTP client 或连接远端前失败。
+Rust IPC 和底层 network 层复用同一校验，独立要求 PUT 恰好携带一个合法条件：strong `If-Match`、合法 strong/weak ETag 的 DAV `If`，或 `If-None-Match: *`。数量或值不合法会在创建 HTTP client 或连接远端前失败。
 
 ## Merge invariants
 

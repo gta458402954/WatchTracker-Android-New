@@ -7,7 +7,7 @@ DAV PROPFIND records-v3.json
   ├─ getetag 与本地 remoteEtag 相同 → legacy guard → narrow unchanged
   │                                  （不下载或解析 v3 body）
   ├─ validator 改变 → 完整 GET → 三方 merge → 必要时条件 PUT
-  └─ PROPFIND 不支持或没有可用 validator
+  └─ PROPFIND 405/501，或有效响应没有可用 validator
        └─ GET Range: bytes=0-0 metadata probe
             ├─ 206 + 合法 Content-Range + 恰好 1 byte + 相同安全 ETag
             │    → legacy guard → narrow unchanged
@@ -31,6 +31,10 @@ WatchTracker 优先使用 DAV `getetag` 作为 clean pull fast path。当服务�
 不可用时，仍保留 HTTP conditional GET fallback；服务可能忽略 Range 返回 200，此时不
 解析 probe body，直接回到现有完整/conditional GET 路径。
 
+PROPFIND 的 fallback 仅接受明确的 405/501 capability 响应，或成功且 XML 合法但没有
+可用 validator 的响应。401、403、其他 HTTP 错误、transport/body-read 错误、缺失正文
+和 XML parse 错误都会直接失败，不进入 Range 或 conditional GET，也不记录同步成功。
+
 如果完整 GET 成功并通过 payload/schema/domain 校验，但 GET 与后续 PROPFIND 都无法
 提供可靠 validator，客户端仍可接受不需要修改远端的纯拉取 merge。该提交会保存新的
 本地业务状态、baseline、conflicts、last commit、legacy fingerprint 和 scheduler 成功
@@ -43,8 +47,9 @@ WatchTracker 优先使用 DAV `getetag` 作为 clean pull fast path。当服务�
 前和事务内复核 outbox 不 pending、staging 为空且不存在 publish intent，避免丢弃或
 确认任何待上传本地状态。
 
-Rust IPC 和底层 network 层都强制 PUT 恰好携带一个合法条件；零条件或多个条件会在
-创建 HTTP client 或连接远端前失败。
+Rust IPC 和底层 network 层复用同一规则，强制 PUT 恰好携带 strong `If-Match`、合法
+strong/weak ETag 的 DAV `If`，或 `If-None-Match: *`；数量或值不合法会在创建 HTTP
+client 或连接远端前失败。
 
 完整 GET 正文和写 validator 必须来自同一个稳定 representation。strong GET ETag 可直接
 绑定正文并用于 `If-Match`。weak 或 unquoted GET ETag 规范化后，只有读取后的 PROPFIND
