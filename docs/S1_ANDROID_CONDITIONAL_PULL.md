@@ -70,12 +70,18 @@ Android M1.4 smoke 的受控本地 WebDAV 可以切换 PROPFIND 405，并返回�
 
 完成代码后执行：`npm run gate:fast`、`npm run check:m0`、`npm run test:e2e`、`npm run android:build`，并在设备可用时执行 `npm run android:test` 与 `npm run android:m14-smoke`。
 
-## Live WebDAV pending
+PR HEAD `7da7ff7fceb73fd636d19fc7e725e2f0b232bb2d` 的最终外部验证证据：
 
-Codex 不连接生产 WebDAV。手工验证应使用独立目录 `影视追踪-S1-Android-Test`：
+- GitHub `WatchTracker CI` 与 `Android Build` 均通过。
+- Android 16、arm64-v8a 真机 `25053RT47C` 上执行 `npm run android:test`，5/5 instrumentation tests 通过并得到 `BUILD SUCCESSFUL`。
+- 同一真机执行 `npm run android:m14-smoke`，得到 `cold=true`、`keystore=true`、`pull=true`、`episode=true`、`restart=true`、`startupSync=true`、`lifecycle=true`、`merge=true`、`rangeUnchanged=true`、`rangeChanged=true`、`precondition412=1`、`offlineOutbox=true`、`conditionalPuts=3`、`unconditionalPuts=0`；本地 APK SHA-256 与设备安装 APK SHA-256 一致。
 
-1. unchanged：PROPFIND 207 后 Range 206/1 byte，执行 legacy guard，无完整 v3 GET、无 PUT。
-2. changed：只安全修改测试 payload 尾部空白并保持 JSON 合法；Range ETag 改变后执行完整 GET，semantic no-op 不覆盖远端。
-3. unchanged again：再次 Range 1 byte，无完整 v3 GET、无 PUT。
+## Live WebDAV result: Jianguoyun
 
-生产目录 `影视追踪` 不用于本轮验证。
+真实 provider 验证仅使用隔离目录 `影视追踪-S1-Test` 中的 `records-v3.json`；未访问生产目录 `影视追踪`。普通 GET 返回 HTTP 200 和 unquoted ETag。`Depth: 0` PROPFIND 返回 HTTP 207，但响应中缺少可用的 `DAV:getetag`。
+
+将 GET ETag 安全规范化为 quoted entity-tag 后，验证使用与桌面版相同的 DAV header 形状 `If: (["ETAG_VALUE"])`。使用当前 validator 的语义不变 PUT（payload 仅有 JSON 尾部空白差异）返回 HTTP 204，随后 GET 确认 ETag 已变化；再次使用旧 validator 的 stale PUT 仍返回 HTTP 204，而不是 412 或其他 precondition failure。整个验证没有发送 unconditional PUT。
+
+这项结果表示坚果云在观察到的行为下没有通过 DAV `If` entity-tag 条件提供可靠的 lost-update protection。它是 provider capability test failure，不是 PR safety failure：Android 拒绝把缺少 DAV 观察绑定的 unquoted GET ETag 用作 write validator，正好避免依赖该 provider 未实际执行的前置条件。
+
+因此不得为了兼容坚果云而恢复“normalized unquoted GET ETag 可直接用于 DAV `If`”的宽松策略。在该 provider 上，完整 GET、payload/schema/domain 校验和 merge 均可继续支持无需上传的 pull-only commit；一旦 merge 需要 PUT，缺少可靠 validator 时返回 `conditional_write_unsupported` 并保留本地修改，是预期的 fail-closed 行为。
