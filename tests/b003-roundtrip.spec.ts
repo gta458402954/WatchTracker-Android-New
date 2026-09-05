@@ -620,8 +620,14 @@ test('@expected-sync-v3 uses DAV getetag when GET and PUT omit ETag headers', as
   const result = await page.evaluate(async () => (await import('/src/shared/lib/webdav.ts')).syncToWebDAV());
   expect(result.ok).toBe(true);
   const snapshot = await mockSnapshot(page);
-  const propfinds = snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PROPFIND');
-  expect(propfinds).toHaveLength(2);
+  const bindingRequests = snapshot.calls
+    .filter(call => call.command === 'webdav_request' && String(call.args.url).endsWith('records-v3.json'))
+    .map(call => call.args.method);
+  expect(bindingRequests).toEqual([
+    'GET', 'PROPFIND', 'GET', 'PROPFIND',
+    'PUT',
+    'GET', 'PROPFIND', 'GET', 'PROPFIND',
+  ]);
   const put = snapshot.calls.find(call => call.command === 'webdav_request' && call.args.method === 'PUT');
   expect(put?.args.ifDavEtag).toBe('"v3-1"');
   expect(snapshot.webdavV3Remote?.records[0].notes).toBe('safe local change');

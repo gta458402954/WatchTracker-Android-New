@@ -55,6 +55,7 @@ interface Entity {
 }
 
 const SYSTEM_FIELDS = new Set(['id', 'createdAt', 'updatedAt', 'rev', 'revActor']);
+const OPTIONAL_DATE_FIELDS = new Set(['startDate', 'endDate']);
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -69,6 +70,44 @@ function stableValue(value: unknown): unknown {
 
 export function syncValuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+}
+
+function canonicalEntityArray<T extends { id: string }>(items: T[]): unknown[] {
+  return [...items].sort((left, right) => left.id.localeCompare(right.id)).map(stableValue);
+}
+
+function canonicalRecordArray(items: WatchRecord[]): unknown[] {
+  return [...items]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(record => stableValue(normalizeOptionalRecordDates(record)));
+}
+
+/**
+ * Sync-only semantic comparison. Entity order in a payload is not state: the
+ * stable entity id is the identity. Optional empty dates share one canonical
+ * value; every other field, including revision fields, remains significant.
+ */
+export function syncSideEquivalent(left: SyncMergeSide, right: SyncMergeSide): boolean {
+  return syncValuesEqual(canonicalRecordArray(left.records), canonicalRecordArray(right.records))
+    && syncValuesEqual(canonicalEntityArray(left.tombstones), canonicalEntityArray(right.tombstones));
+}
+
+function normalizedBusinessValue(field: string, value: unknown): unknown {
+  if (OPTIONAL_DATE_FIELDS.has(field)
+    && (value === null || value === undefined || typeof value === 'string' && !value.trim())) return '';
+  return value;
+}
+
+function businessFieldEqual(field: string, left: unknown, right: unknown): boolean {
+  return syncValuesEqual(normalizedBusinessValue(field, left), normalizedBusinessValue(field, right));
+}
+
+function normalizeOptionalRecordDates(record: WatchRecord): WatchRecord {
+  return {
+    ...record,
+    startDate: normalizedBusinessValue('startDate', record.startDate) as string,
+    endDate: normalizedBusinessValue('endDate', record.endDate) as string,
+  };
 }
 
 function mapsOf(side: SyncMergeSide) {
@@ -91,24 +130,39 @@ function entityOf(
 }
 
 function entityEqual(left: Entity, right: Entity): boolean {
-  return syncValuesEqual(left.record, right.record)
+  const recordsEqual = left.record && right.record
+    ? syncValuesEqual(normalizeOptionalRecordDates(left.record), normalizeOptionalRecordDates(right.record))
+    : left.record === right.record;
+  return recordsEqual
     && syncValuesEqual(left.tombstone, right.tombstone);
 }
 
 function changedBusinessFields(base: WatchRecord, current: WatchRecord): Set<string> {
   const keys = new Set([...Object.keys(base), ...Object.keys(current)]);
   return new Set([...keys].filter(key => !SYSTEM_FIELDS.has(key)
-    && !syncValuesEqual(
+    && !businessFieldEqual(
+      key,
       (base as unknown as Record<string, unknown>)[key],
       (current as unknown as Record<string, unknown>)[key],
     )));
 }
 
 function businessRecordsEqual(left: WatchRecord, right: WatchRecord): boolean {
-  const business = (record: WatchRecord) => Object.fromEntries(
-    Object.entries(record).filter(([key]) => !SYSTEM_FIELDS.has(key)),
-  );
-  return syncValuesEqual(business(left), business(right));
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].filter(key => !SYSTEM_FIELDS.has(key)).every(key => businessFieldEqual(
+    key,
+    (left as unknown as Record<string, unknown>)[key],
+    (right as unknown as Record<string, unknown>)[key],
+  ));
+}
+
+function preferredEquivalentRecord(local: WatchRecord, remote: WatchRecord): WatchRecord {
+  const preferred = (local.rev ?? 0) > (remote.rev ?? 0)
+    ? local
+    : (remote.rev ?? 0) > (local.rev ?? 0)
+      ? remote
+      : (local.updatedAt ?? '').localeCompare(remote.updatedAt ?? '') >= 0 ? local : remote;
+  return normalizeOptionalRecordDates(preferred);
 }
 
 function mergeRecords(
@@ -121,7 +175,8 @@ function mergeRecords(
   const localFields = changedBusinessFields(base, local);
   const remoteFields = changedBusinessFields(base, remote);
   const conflicts = [...localFields].filter(field => remoteFields.has(field)
-    && !syncValuesEqual(
+    && !businessFieldEqual(
+      field,
       (local as unknown as Record<string, unknown>)[field],
       (remote as unknown as Record<string, unknown>)[field],
     )).sort();
@@ -135,7 +190,7 @@ function mergeRecords(
   merged.updatedAt = now;
   merged.rev = Math.max(base.rev ?? 0, local.rev ?? 0, remote.rev ?? 0) + 1;
   merged.revActor = deviceId;
-  return { record: merged as unknown as WatchRecord, conflictingFields: [] };
+  return { record: normalizeOptionalRecordDates(merged as unknown as WatchRecord), conflictingFields: [] };
 }
 
 function deletionOf(id: string, entities: Entity[], deviceId: string, now: string): SyncTombstoneV3 {
@@ -166,7 +221,7 @@ function conflictOf(
 }
 
 function pushEntity(side: SyncMergeSide, entity: Entity) {
-  if (entity.record) side.records.push(entity.record);
+  if (entity.record) side.records.push(normalizeOptionalRecordDates(entity.record));
   else if (entity.tombstone) side.tombstones.push(entity.tombstone);
 }
 
@@ -214,19 +269,20 @@ export function mergeSyncStates(
       });
       continue;
     }
+    if (local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
+      const localResult = local.record.isLocked
+        ? normalizeOptionalRecordDates(local.record)
+        : preferredEquivalentRecord(local.record, remote.record);
+      pushEntity(result.local, { record: localResult });
+      pushEntity(result.remote, { record: normalizeOptionalRecordDates(remote.record) });
+      continue;
+    }
     const localChanged = !entityEqual(local, base);
     const remoteChanged = !entityEqual(remote, base);
 
     if (entityEqual(local, remote)) {
       pushEntity(result.local, local);
       pushEntity(result.remote, local);
-      continue;
-    }
-    if (!base.record && local.record && remote.record && businessRecordsEqual(local.record, remote.record)) {
-      const selected = local.record.isLocked || (local.record.rev ?? 0) >= (remote.record.rev ?? 0)
-        ? local.record : remote.record;
-      pushEntity(result.local, { record: selected });
-      pushEntity(result.remote, { record: selected });
       continue;
     }
     if (!localChanged) {
@@ -331,6 +387,14 @@ export function parseSyncPayloadV3(value: unknown): SyncPayloadV3 {
 
 function completionKey(item: EpisodeCompletion): string {
   return `${item.recordId}\0${item.episodeNumber}`;
+}
+
+/** Episode identity follows the same record/episode key used by the merge. */
+export function episodeCompletionStateEquivalent(left: EpisodeCompletion[], right: EpisodeCompletion[]): boolean {
+  return syncValuesEqual(
+    [...left].sort((a, b) => completionKey(a).localeCompare(completionKey(b))).map(stableValue),
+    [...right].sort((a, b) => completionKey(a).localeCompare(completionKey(b))).map(stableValue),
+  );
 }
 
 /** Monotonic three-way merge for per-episode completion facts. */

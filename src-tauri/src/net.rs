@@ -508,6 +508,8 @@ pub struct WebDavResponse {
     pub body: Option<Value>,
     pub etag: Option<String>,
     pub text: Option<String>,
+    pub content_range: Option<String>,
+    pub range_body_length: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -522,6 +524,7 @@ pub struct WebDavRequest {
     pub if_match: Option<String>,
     pub if_none_match: Option<String>,
     pub if_dav_etag: Option<String>,
+    pub range: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -536,6 +539,7 @@ pub struct StoredWebDavRequest {
     pub if_match: Option<String>,
     pub if_none_match: Option<String>,
     pub if_dav_etag: Option<String>,
+    pub range: Option<String>,
 }
 
 fn etag_shape(value: Option<&str>) -> &'static str {
@@ -575,12 +579,118 @@ fn safe_url_for_log(raw: &str) -> String {
     parsed.to_string()
 }
 
+pub(crate) fn valid_entity_tag(value: &str, allow_weak: bool) -> bool {
+    let opaque = if allow_weak {
+        value
+            .strip_prefix("W/\"")
+            .or_else(|| value.strip_prefix('"'))
+    } else {
+        value.strip_prefix('"')
+    }
+    .and_then(|rest| rest.strip_suffix('"'));
+    opaque.is_some_and(|inner| {
+        !inner.is_empty()
+            && !inner.contains('"')
+            && !inner.chars().any(|character| character.is_control())
+    })
+}
+
+pub(crate) fn validate_webdav_put_conditions(
+    if_match: Option<&str>,
+    if_none_match: Option<&str>,
+    if_dav_etag: Option<&str>,
+) -> Result<(), String> {
+    let condition_count = [
+        if_match.is_some(),
+        if_none_match.is_some(),
+        if_dav_etag.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if condition_count == 0 {
+        return Err("conditional_write_unsupported".to_string());
+    }
+    if condition_count > 1 {
+        return Err("WebDAV conditions cannot be combined".to_string());
+    }
+    if if_match.is_some_and(|value| !valid_entity_tag(value, false)) {
+        return Err("Invalid strong If-Match value".to_string());
+    }
+    if if_none_match.is_some_and(|value| value != "*") {
+        return Err("Invalid If-None-Match value".to_string());
+    }
+    if if_dav_etag.is_some_and(|value| !valid_entity_tag(value, true)) {
+        return Err("Invalid WebDAV entity tag".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn valid_range(value: &str) -> bool {
+    value == "bytes=0-0"
+}
+
+fn valid_range_content_range(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    let Some(total) = value.strip_prefix("bytes 0-0/") else {
+        return false;
+    };
+    !total.is_empty()
+        && total.bytes().all(|byte| byte.is_ascii_digit())
+        && total.bytes().any(|byte| byte != b'0')
+}
+
+async fn range_probe_body_length(mut response: reqwest::Response) -> Result<u64, String> {
+    if response.content_length().is_some_and(|length| length > 1) {
+        return Ok(2);
+    }
+    let mut length = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "network_body_read_failed".to_string())?
+    {
+        length = length.saturating_add(chunk.len() as u64);
+        if length > 1 {
+            return Ok(2);
+        }
+    }
+    Ok(length)
+}
+
 pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, String> {
     log::info!(
         "[WebDAV] {} Request to: {}",
         request.method,
         safe_url_for_log(&request.url)
     );
+    let is_range_probe = request.range.is_some();
+    if request
+        .range
+        .as_deref()
+        .is_some_and(|value| request.method != "GET" || !valid_range(value))
+    {
+        return Err("webdav_range_invalid".to_string());
+    }
+    if request.range.is_some() && request.body.is_some() {
+        return Err("webdav_range_invalid".to_string());
+    }
+    if request.range.is_some()
+        && (request.if_match.is_some()
+            || request.if_none_match.is_some()
+            || request.if_dav_etag.is_some())
+    {
+        return Err("webdav_range_invalid".to_string());
+    }
+    if request.method == "PUT" {
+        validate_webdav_put_conditions(
+            request.if_match.as_deref(),
+            request.if_none_match.as_deref(),
+            request.if_dav_etag.as_deref(),
+        )?;
+    }
     if request.method == "PUT" {
         if let Some(value) = request.if_match.as_deref() {
             log::info!(
@@ -595,6 +705,14 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         } else if let Some(value) = request.if_none_match.as_deref() {
             log::info!(
                 "[WebDAV] PUT condition: if-none-match; validator fingerprint: {}",
+                validator_fingerprint(value)
+            );
+        }
+    }
+    if request.method == "GET" {
+        if let Some(value) = request.if_none_match.as_deref() {
+            log::info!(
+                "[WebDAV] GET condition: if-none-match; validator fingerprint: {}",
                 validator_fingerprint(value)
             );
         }
@@ -643,6 +761,10 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         req_builder = req_builder.header("If", format!("([{value}])"));
     }
 
+    if let Some(value) = request.range.as_deref() {
+        req_builder = req_builder.header(reqwest::header::RANGE, value);
+    }
+
     if request.method != "PROPFIND" {
         if let Some(b) = request.body {
             req_builder = req_builder
@@ -666,6 +788,58 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         .get(reqwest::header::ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let content_range = res
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    if request.method == "GET" && is_range_probe {
+        if status == reqwest::StatusCode::PARTIAL_CONTENT
+            && valid_range_content_range(content_range.as_deref())
+        {
+            let range_body_length = range_probe_body_length(res).await?;
+            log::info!(
+                "[WebDAV] Range probe completed with status {}; ETag shape: {}; body bytes: {}",
+                status.as_u16(),
+                etag_shape(etag.as_deref()),
+                range_body_length
+            );
+            return Ok(WebDavResponse {
+                status: status.as_u16(),
+                body: None,
+                etag,
+                text: None,
+                content_range,
+                range_body_length: Some(range_body_length),
+            });
+        }
+        log::info!(
+            "[WebDAV] Range probe unavailable with status {}; ETag shape: {}",
+            status.as_u16(),
+            etag_shape(etag.as_deref())
+        );
+        return Ok(WebDavResponse {
+            status: status.as_u16(),
+            body: None,
+            etag,
+            text: None,
+            content_range,
+            range_body_length: None,
+        });
+    }
+
+    if request.method == "GET" && status == reqwest::StatusCode::NOT_MODIFIED {
+        log::info!("[WebDAV] Conditional GET completed with 304");
+        return Ok(WebDavResponse {
+            status: status.as_u16(),
+            body: None,
+            etag,
+            text: None,
+            content_range,
+            range_body_length: None,
+        });
+    }
 
     if request.method == "GET" && status.is_success() {
         log::info!(
@@ -685,6 +859,8 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
             body: Some(json),
             etag,
             text: None,
+            content_range,
+            range_body_length: None,
         });
     }
 
@@ -700,6 +876,8 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
             body: None,
             etag,
             text: Some(text),
+            content_range,
+            range_body_length: None,
         });
     }
 
@@ -715,12 +893,80 @@ pub async fn webdav_request(request: WebDavRequest) -> Result<WebDavResponse, St
         body: None,
         etag,
         text: None,
+        content_range,
+        range_body_length: None,
     })
 }
 
 #[cfg(test)]
-mod url_log_tests {
-    use super::safe_url_for_log;
+mod request_safety_tests {
+    use super::{
+        safe_url_for_log, valid_range, valid_range_content_range, webdav_request, WebDavRequest,
+    };
+    use std::future::Future;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn request(response: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            String::from_utf8(bytes).expect("HTTP request is UTF-8")
+        });
+        (format!("http://{address}/records-v3.json"), server)
+    }
+
+    fn get_request(url: String, range: Option<String>) -> WebDavRequest {
+        WebDavRequest {
+            method: "GET".to_string(),
+            url,
+            username: "wire-user".to_string(),
+            password: "wire-secret".to_string(),
+            body: None,
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range,
+        }
+    }
+
+    fn noop_raw_waker() -> RawWaker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        unsafe fn no_op(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+
+    fn poll_ready<F: Future>(future: F) -> F::Output {
+        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        match Future::poll(Pin::as_mut(&mut future), &mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("expected WebDAV shape validation before network I/O"),
+        }
+    }
 
     #[test]
     fn redacts_userinfo_query_and_fragment() {
@@ -735,5 +981,152 @@ mod url_log_tests {
     #[test]
     fn invalid_urls_have_constant_log_value() {
         assert_eq!(safe_url_for_log("not a URL?token=secret"), "<invalid-url>");
+    }
+
+    #[test]
+    fn range_request_is_exactly_one_safe_value() {
+        assert!(valid_range("bytes=0-0"));
+        assert!(!valid_range("bytes=1-1"));
+        assert!(!valid_range("bytes=0-1"));
+        assert!(!valid_range("bytes=0-0\r\nX-Evil: yes"));
+    }
+
+    #[test]
+    fn range_content_range_requires_a_non_empty_one_byte_span() {
+        assert!(valid_range_content_range(Some("bytes 0-0/1208148")));
+        assert!(valid_range_content_range(Some(" bytes 0-0/1 ")));
+        assert!(!valid_range_content_range(None));
+        assert!(!valid_range_content_range(Some("bytes 1-1/1208148")));
+        assert!(!valid_range_content_range(Some("bytes 0-1/1208148")));
+        assert!(!valid_range_content_range(Some("bytes 0-0/*")));
+        assert!(valid_range_content_range(Some("bytes 0-0/0001")));
+        assert!(!valid_range_content_range(Some("bytes 0-0/0")));
+    }
+
+    #[test]
+    fn get_range_with_body_is_rejected_before_client_send() {
+        let result = poll_ready(webdav_request(WebDavRequest {
+            method: "GET".to_string(),
+            url: "not-a-real-url".to_string(),
+            username: "user".to_string(),
+            password: "password".to_string(),
+            body: Some("{}".to_string()),
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range: Some("bytes=0-0".to_string()),
+        }));
+
+        assert!(matches!(result, Err(error) if error == "webdav_range_invalid"));
+    }
+
+    #[test]
+    fn unconditional_put_is_rejected_before_client_send() {
+        let result = poll_ready(webdav_request(WebDavRequest {
+            method: "PUT".to_string(),
+            url: "not-a-real-url".to_string(),
+            username: "user".to_string(),
+            password: "password".to_string(),
+            body: Some("{}".to_string()),
+            proxy: None,
+            if_match: None,
+            if_none_match: None,
+            if_dav_etag: None,
+            range: None,
+        }));
+
+        assert!(matches!(result, Err(error) if error == "conditional_write_unsupported"));
+    }
+
+    #[test]
+    fn invalid_put_conditions_are_rejected_before_client_send() {
+        let cases = [
+            (
+                Some("\"one\""),
+                Some("*"),
+                None,
+                "WebDAV conditions cannot be combined",
+            ),
+            (Some("*"), None, None, "Invalid strong If-Match value"),
+            (
+                Some("W/\"weak\""),
+                None,
+                None,
+                "Invalid strong If-Match value",
+            ),
+            (
+                Some("malformed"),
+                None,
+                None,
+                "Invalid strong If-Match value",
+            ),
+            (
+                None,
+                Some("\"arbitrary\""),
+                None,
+                "Invalid If-None-Match value",
+            ),
+            (None, None, Some("malformed"), "Invalid WebDAV entity tag"),
+        ];
+
+        for (if_match, if_none_match, if_dav_etag, expected_error) in cases {
+            let result = poll_ready(webdav_request(WebDavRequest {
+                method: "PUT".to_string(),
+                url: "not-a-real-url".to_string(),
+                username: "user".to_string(),
+                password: "password".to_string(),
+                body: Some("{}".to_string()),
+                proxy: None,
+                if_match: if_match.map(str::to_string),
+                if_none_match: if_none_match.map(str::to_string),
+                if_dav_etag: if_dav_etag.map(str::to_string),
+                range: None,
+            }));
+
+            assert!(matches!(result, Err(error) if error == expected_error));
+        }
+    }
+
+    #[test]
+    fn range_request_sends_header_and_returns_only_metadata() {
+        let (url, server) = request(
+            "HTTP/1.1 206 Partial Content\r\nETag: \"wire-etag\"\r\nContent-Range: bytes 0-0/9\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{",
+        );
+        let response = tauri::async_runtime::block_on(webdav_request(get_request(
+            url,
+            Some("bytes=0-0".to_string()),
+        )))
+        .expect("range request succeeds");
+        let wire_request = server.join().expect("test server finishes");
+
+        assert!(wire_request.starts_with("GET /records-v3.json HTTP/1.1\r\n"));
+        assert!(wire_request
+            .to_ascii_lowercase()
+            .contains("range: bytes=0-0\r\n"));
+        assert_eq!(response.status, 206);
+        assert_eq!(response.etag.as_deref(), Some("\"wire-etag\""));
+        assert_eq!(response.content_range.as_deref(), Some("bytes 0-0/9"));
+        assert_eq!(response.range_body_length, Some(1));
+        assert!(response.body.is_none());
+        let serialized = serde_json::to_string(&response).expect("serialize response");
+        assert!(!serialized.contains("wire-user"));
+        assert!(!serialized.contains("wire-secret"));
+    }
+
+    #[test]
+    fn ordinary_get_still_parses_json_without_range_metadata() {
+        let (url, server) = request(
+            "HTTP/1.1 200 OK\r\nETag: \"full-etag\"\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+        );
+        let response = tauri::async_runtime::block_on(webdav_request(get_request(url, None)))
+            .expect("ordinary GET succeeds");
+        let wire_request = server.join().expect("test server finishes");
+
+        assert!(!wire_request.to_ascii_lowercase().contains("\r\nrange:"));
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Some(serde_json::json!({ "ok": true })));
+        assert!(response.content_range.is_none());
+        assert!(response.range_body_length.is_none());
     }
 }

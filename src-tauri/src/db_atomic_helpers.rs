@@ -57,6 +57,11 @@ pub fn set_setting_tx(conn: &Connection, key: &str, value: &str) -> Result<(), r
     Ok(())
 }
 
+pub fn delete_setting_tx(conn: &Connection, key: &str) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
 pub fn get_records_generation(conn: &Connection) -> Result<i64, AppError> {
     let Some(value) = get_setting_tx(conn, "records_generation")? else {
         return Ok(0);
