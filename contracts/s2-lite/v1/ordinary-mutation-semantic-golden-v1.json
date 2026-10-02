@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "typedI64FixtureEncoding": "Decimal strings carry typed i64 inputs across JSON; adapters parse them to i64/BigInt before mapping.",
+  "refs": {
+    "base": {
+      "writerId": "10000000-0000-4000-8000-000000000001",
+      "writerSeq": "7",
+      "commitId": "10000000-0000-4000-8000-000000000002",
+      "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "localValues": {
+    "recordA": {
+      "entityType": "record",
+      "value": {
+        "id": "r1", "originalName": "Example", "chineseName": "", "progress": "",
+        "totalEpisodes": 12, "episodeTrackingEnabled": true, "nextEpisode": 2,
+        "movieProgress": null, "movieDuration": null, "releaseYear": "2026", "posterPath": null,
+        "status": "在看", "platform": "", "rating": null, "startDate": null, "endDate": null,
+        "notes": "before", "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": null,
+        "imdbId": null, "isLocked": null, "genres": null, "originCountry": null,
+        "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null,
+        "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": "tv",
+        "tmdbId": "9007199254740993", "tmdbParentId": null, "tmdbSeasonNumber": null,
+        "seriesRecordKind": "whole-series", "rev": "7", "revActor": "desktop-a"
+      }
+    },
+    "recordB": {
+      "entityType": "record",
+      "value": {
+        "id": "r1", "originalName": "Example", "chineseName": "", "progress": "",
+        "totalEpisodes": 12, "episodeTrackingEnabled": true, "nextEpisode": 2,
+        "movieProgress": null, "movieDuration": null, "releaseYear": "2026", "posterPath": null,
+        "status": "在看", "platform": "", "rating": null, "startDate": null, "endDate": null,
+        "notes": "after", "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-11T01:02:03.004Z",
+        "imdbId": null, "isLocked": null, "genres": null, "originCountry": null,
+        "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null,
+        "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": "tv",
+        "tmdbId": "9007199254740993", "tmdbParentId": null, "tmdbSeasonNumber": null,
+        "seriesRecordKind": "whole-series", "rev": "8", "revActor": "desktop-a"
+      }
+    },
+    "recordMetadataOnly": {
+      "entityType": "record",
+      "value": {
+        "id": "r1", "originalName": "Example", "chineseName": "", "progress": "",
+        "totalEpisodes": 12, "episodeTrackingEnabled": true, "nextEpisode": 2,
+        "movieProgress": null, "movieDuration": null, "releaseYear": "2026", "posterPath": null,
+        "status": "在看", "platform": "", "rating": null, "startDate": null, "endDate": null,
+        "notes": "before", "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-12T01:02:03.004Z",
+        "imdbId": null, "isLocked": null, "genres": null, "originCountry": null,
+        "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null,
+        "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": "tv",
+        "tmdbId": "9007199254740993", "tmdbParentId": null, "tmdbSeasonNumber": null,
+        "seriesRecordKind": "whole-series", "rev": "9", "revActor": "desktop-b"
+      }
+    },
+    "collectionA": {
+      "entityType": "collection",
+      "value": {
+        "id": "c1", "name": "Favorites", "normalizedName": "favorites", "description": null,
+        "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual",
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-10T01:02:03.004Z",
+        "rev": "1", "revActor": "desktop-a"
+      }
+    },
+    "collectionB": {
+      "entityType": "collection",
+      "value": {
+        "id": "c1", "name": "Favorites", "normalizedName": "favorites", "description": "Pinned",
+        "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual",
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-11T01:02:03.004Z",
+        "rev": "2", "revActor": "desktop-a"
+      }
+    },
+    "memberA": {
+      "entityType": "collection-member",
+      "value": {
+        "id": "e8af55f52daf82685fcf58e31ab14531ff633766da5eb5712ce0a7251d2cfcc6",
+        "collectionId": "c1", "recordId": "r1", "position": "9007199254740993", "sourceKind": "manual",
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-10T01:02:03.004Z",
+        "rev": "1", "revActor": "desktop-a"
+      }
+    },
+    "memberB": {
+      "entityType": "collection-member",
+      "value": {
+        "id": "e8af55f52daf82685fcf58e31ab14531ff633766da5eb5712ce0a7251d2cfcc6",
+        "collectionId": "c1", "recordId": "r1", "position": "9007199254740994", "sourceKind": "manual",
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-12T01:02:03.004Z",
+        "rev": "3", "revActor": "desktop-a"
+      }
+    },
+    "episodeIncomplete": {
+      "entityType": "episode-completion",
+      "value": {
+        "id": "7076e0b14c68b9a02a88dc22ea8b1aa29ce15af5834fa10f0a3e1563a5a26794",
+        "recordId": "r1", "episodeNumber": 1, "completedAt": null,
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-10T01:02:03.004Z",
+        "rev": "1", "revActor": "desktop-a"
+      }
+    },
+    "episodeComplete": {
+      "entityType": "episode-completion",
+      "value": {
+        "id": "7076e0b14c68b9a02a88dc22ea8b1aa29ce15af5834fa10f0a3e1563a5a26794",
+        "recordId": "r1", "episodeNumber": 1, "completedAt": "2026-09-11T01:02:03.004Z",
+        "createdAt": "2026-09-10T01:02:03.004Z", "updatedAt": "2026-09-11T01:02:03.004Z",
+        "rev": "2", "revActor": "desktop-a"
+      }
+    }
+  },
+  "deleteDescriptors": {
+    "recordDelete": { "entityType": "record", "id": "r1", "deletedAt": "2026-09-13T01:02:03.004Z", "rev": "10", "revActor": "desktop-a" },
+    "collectionDelete": { "entityType": "collection", "id": "c1", "deletedAt": "2026-09-13T01:02:03.004Z", "rev": "3", "revActor": "desktop-a" },
+    "memberDelete": { "entityType": "collection-member", "id": "e8af55f52daf82685fcf58e31ab14531ff633766da5eb5712ce0a7251d2cfcc6", "collectionId": "c1", "recordId": "r1", "deletedAt": "2026-09-13T01:02:03.004Z", "rev": "2", "revActor": "desktop-a" },
+    "episodeDelete": { "entityType": "episode-completion", "id": "7076e0b14c68b9a02a88dc22ea8b1aa29ce15af5834fa10f0a3e1563a5a26794", "recordId": "r1", "episodeNumber": 1, "deletedAt": "2026-09-13T01:02:03.004Z", "rev": "3", "revActor": "desktop-a" }
+  },
+  "cases": [
+    { "name": "record-create", "input": { "payload": { "operation": "upsert", "localValueRef": "recordA" }, "causalBase": { "state": "absent" }, "baseFrontier": [], "localMutationId": "30000000-0000-4000-8000-000000000001" }, "expected": { "entityType": "record", "entityKey": ["record", "r1"], "operation": "upsert", "valueRef": "recordA", "baseFrontier": [], "changedFields": ["originalName", "chineseName", "progress", "totalEpisodes", "episodeTrackingEnabled", "nextEpisode", "movieProgress", "movieDuration", "releaseYear", "posterPath", "status", "platform", "rating", "startDate", "endDate", "notes", "imdbId", "isLocked", "genres", "originCountry", "imdbRating", "tmdbStatus", "interestLevel", "episodeRuntime", "mediaType", "contentTags", "tmdbMediaKind", "tmdbId", "tmdbParentId", "tmdbSeasonNumber", "seriesRecordKind"] } },
+    { "name": "record-partial-update", "input": { "payload": { "operation": "upsert", "localValueRef": "recordB" }, "causalBase": { "state": "live", "valueRef": "recordA" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000002" }, "expected": { "entityType": "record", "entityKey": ["record", "r1"], "operation": "upsert", "valueRef": "recordB", "baseFrontier": ["base"], "changedFields": ["notes"] } },
+    { "name": "record-delete", "input": { "payload": { "operation": "tombstone", "deleteDescriptorRef": "recordDelete" }, "causalBase": { "state": "live", "valueRef": "recordB" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000003" }, "expected": { "entityType": "record", "entityKey": ["record", "r1"], "operation": "tombstone", "deleteDescriptorRef": "recordDelete", "baseFrontier": ["base"], "changedFields": ["$tombstone"] } },
+    { "name": "record-metadata-only-no-op", "input": { "payload": { "operation": "upsert", "localValueRef": "recordMetadataOnly" }, "causalBase": { "state": "live", "valueRef": "recordA" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000004" }, "expected": null },
+    { "name": "collection-create", "input": { "payload": { "operation": "upsert", "localValueRef": "collectionA" }, "causalBase": { "state": "absent" }, "baseFrontier": [], "localMutationId": "30000000-0000-4000-8000-000000000005" }, "expected": { "entityType": "collection", "entityKey": ["collection", "c1"], "operation": "upsert", "valueRef": "collectionA", "baseFrontier": [], "changedFields": ["name", "normalizedName", "description", "sourceKind", "sourceKey", "collectionKind", "orderMode"] } },
+    { "name": "collection-update", "input": { "payload": { "operation": "upsert", "localValueRef": "collectionB" }, "causalBase": { "state": "live", "valueRef": "collectionA" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000006" }, "expected": { "entityType": "collection", "entityKey": ["collection", "c1"], "operation": "upsert", "valueRef": "collectionB", "baseFrontier": ["base"], "changedFields": ["description"] } },
+    { "name": "collection-delete", "input": { "payload": { "operation": "tombstone", "deleteDescriptorRef": "collectionDelete" }, "causalBase": { "state": "live", "valueRef": "collectionB" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000007" }, "expected": { "entityType": "collection", "entityKey": ["collection", "c1"], "operation": "tombstone", "deleteDescriptorRef": "collectionDelete", "baseFrontier": ["base"], "changedFields": ["$tombstone"] } },
+    { "name": "member-add", "input": { "payload": { "operation": "upsert", "localValueRef": "memberA" }, "causalBase": { "state": "absent" }, "baseFrontier": [], "localMutationId": "30000000-0000-4000-8000-000000000008" }, "expected": { "entityType": "collection-member", "entityKey": ["collection-member", "c1", "r1"], "operation": "upsert", "valueRef": "memberA", "baseFrontier": [], "changedFields": ["collectionId", "recordId", "position", "sourceKind"] } },
+    { "name": "member-remove", "input": { "payload": { "operation": "tombstone", "deleteDescriptorRef": "memberDelete" }, "causalBase": { "state": "live", "valueRef": "memberA" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000009" }, "expected": { "entityType": "collection-member", "entityKey": ["collection-member", "c1", "r1"], "operation": "tombstone", "deleteDescriptorRef": "memberDelete", "baseFrontier": ["base"], "changedFields": ["$tombstone"] } },
+    { "name": "member-re-add", "input": { "payload": { "operation": "upsert", "localValueRef": "memberB" }, "causalBase": { "state": "tombstone" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000010" }, "expected": { "entityType": "collection-member", "entityKey": ["collection-member", "c1", "r1"], "operation": "upsert", "valueRef": "memberB", "baseFrontier": ["base"], "changedFields": ["collectionId", "recordId", "position", "sourceKind"] } },
+    { "name": "episode-completion", "input": { "payload": { "operation": "upsert", "localValueRef": "episodeComplete" }, "causalBase": { "state": "live", "valueRef": "episodeIncomplete" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000011" }, "expected": { "entityType": "episode-completion", "entityKey": ["episode-completion", "r1", 1], "operation": "upsert", "valueRef": "episodeComplete", "baseFrontier": ["base"], "changedFields": ["completedAt"] } },
+    { "name": "episode-uncompletion-is-upsert", "input": { "payload": { "operation": "upsert", "localValueRef": "episodeIncomplete" }, "causalBase": { "state": "live", "valueRef": "episodeComplete" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000012" }, "expected": { "entityType": "episode-completion", "entityKey": ["episode-completion", "r1", 1], "operation": "upsert", "valueRef": "episodeIncomplete", "baseFrontier": ["base"], "changedFields": ["completedAt"] } },
+    { "name": "episode-entity-delete", "input": { "payload": { "operation": "tombstone", "deleteDescriptorRef": "episodeDelete" }, "causalBase": { "state": "live", "valueRef": "episodeComplete" }, "baseFrontier": ["base"], "localMutationId": "30000000-0000-4000-8000-000000000013" }, "expected": { "entityType": "episode-completion", "entityKey": ["episode-completion", "r1", 1], "operation": "tombstone", "deleteDescriptorRef": "episodeDelete", "baseFrontier": ["base"], "changedFields": ["$tombstone"] } }
+  ],
+  "invalidCases": [
+    { "name": "required-nullable-present-null-is-valid", "localValueRef": "recordA", "expected": "valid" },
+    { "name": "required-nullable-missing-is-invalid", "localValueRef": "recordA", "removeField": "updatedAt", "expectedError": "invalid_entity_fields" }
+  ],
+  "coalescing": {
+    "inputPayloadRefs": ["recordA", "collectionA", "recordB"],
+    "expectedFinalPayloadRefsInEntityKeyOrder": ["collectionA", "recordB"],
+    "postFreeze": {
+      "frozenMutationId": "30000000-0000-4000-8000-000000000014",
+      "successorMutationId": "30000000-0000-4000-8000-000000000015"
+    }
+  },
+  "deterministicOrdering": {
+    "inputCaseNames": ["record-create", "episode-completion", "member-add", "collection-create"],
+    "expectedCaseNames": ["collection-create", "member-add", "episode-completion", "record-create"]
+  },
+  "typedFloat64Cases": [
+    { "name": "none-create-remains-null", "causalBaseRating": "ABSENT", "outgoing": "NONE", "expected": "VALID_NULL" },
+    { "name": "finite-zero-preserved", "causalBaseRating": 8.0, "outgoing": 0.0, "expected": "VALID_NUMBER" },
+    { "name": "finite-eight-preserved", "causalBaseRating": null, "outgoing": 8.0, "expected": "VALID_NUMBER" },
+    { "name": "nan-rejected-before-json", "causalBaseRating": 8.0, "outgoing": "NON_FINITE_NAN", "expectedError": "invalid_float64" },
+    { "name": "positive-infinity-rejected-before-json", "causalBaseRating": 8.0, "outgoing": "NON_FINITE_POS_INF", "expectedError": "invalid_float64" },
+    { "name": "negative-infinity-rejected-before-json", "causalBaseRating": 8.0, "outgoing": "NON_FINITE_NEG_INF", "expectedError": "invalid_float64" },
+    { "name": "intentional-null-clears-rating", "causalBaseRating": 8.0, "outgoing": "NONE", "expected": "VALID_NULL_CLEAR" }
+  ]
+}

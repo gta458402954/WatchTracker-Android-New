@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "name": "utf16-bmp-private-use-vs-non-bmp",
+      "input": { "": "bmp", "𐀀": "astral" },
+      "expectedJcs": "{\"𐀀\":\"astral\",\"\":\"bmp\"}"
+    },
+    {
+      "name": "utf16-bmp-order",
+      "input": { "Ω": 3, "é": 2, "z": 1 },
+      "expectedJcs": "{\"z\":1,\"é\":2,\"Ω\":3}"
+    },
+    {
+      "name": "utf16-common-prefix",
+      "input": { "a": "bmp", "a𐀀": "astral", "a": "prefix" },
+      "expectedJcs": "{\"a\":\"prefix\",\"a𐀀\":\"astral\",\"a\":\"bmp\"}"
+    },
+    {
+      "name": "escaped-object-keys",
+      "input": { "\\": "backslash", "\"": "quote", "\u0001": "control" },
+      "expectedJcs": "{\"\\u0001\":\"control\",\"\\\"\":\"quote\",\"\\\\\":\"backslash\"}"
+    },
+    {
+      "name": "nested-arrays-primitives-and-numbers",
+      "input": {
+        "z": [null, true, false, "text", -0, 1.5],
+        "a": { "b": 2, "a": 1 }
+      },
+      "expectedJcs": "{\"a\":{\"a\":1,\"b\":2},\"z\":[null,true,false,\"text\",0,1.5]}"
+    }
+  ]
+}

@@ -1,0 +1,475 @@
+{
+  "schema": "watchtracker-s2-lite-discovery-golden-v1",
+  "description": "Manually frozen path, retention, gap, targeting, and fair historical-audit observations.",
+  "scenarioCoverage": [
+    "writer-segment-path-parsing",
+    "listing-omission-retain",
+    "listing-reordering",
+    "duplicate-entries",
+    "known-gap",
+    "targeted-dependency-exact-get",
+    "late-object",
+    "historical-audit-cursor",
+    "delayed-historical-fork",
+    "path-body-mismatch",
+    "unrelated-junk",
+    "activation-candidate-retention",
+    "persistent-fair-exact-work",
+    "executable-cross-language-multi-round-trace"
+  ],
+  "identities": {
+    "writerA": "10000000-0000-4000-8000-000000000001",
+    "writerB": "10000000-0000-4000-8000-000000000002",
+    "writerC": "10000000-0000-4000-8000-000000000003",
+    "commitId": "20000000-0000-4000-8000-000000000001",
+    "zeroHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+    "activationId": "30000000-0000-4000-8000-000000000001",
+    "activationPath": "activations/30000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json"
+  },
+  "pathCases": [
+    {
+      "name": "canonical-commit",
+      "kind": "commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": true
+    },
+    {
+      "name": "canonical-activation",
+      "kind": "activation",
+      "path": "activations/30000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": true
+    },
+    {
+      "name": "segment-seq-mismatch",
+      "kind": "commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": false,
+      "canonicalLooking": true
+    },
+    {
+      "name": "uppercase-writer",
+      "kind": "commit",
+      "path": "writers/ABCDEF00-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": false
+    },
+    {
+      "name": "short-seq",
+      "kind": "commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/1--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": false
+    },
+    {
+      "name": "uppercase-hash",
+      "kind": "commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.json",
+      "accepted": false
+    },
+    {
+      "name": "suffix-junk",
+      "kind": "commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json.bak",
+      "accepted": false
+    },
+    {
+      "name": "path-traversal",
+      "kind": "commit",
+      "path": "../writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "accepted": false
+    },
+    {
+      "name": "unrelated-junk",
+      "kind": "none",
+      "path": "writers/notes.txt",
+      "accepted": false
+    }
+  ],
+  "junkCorpus": [
+    {
+      "name": "activation-notes-json",
+      "path": "activations/notes.json",
+      "classification": "UnrelatedJunk",
+      "fatal": false
+    },
+    {
+      "name": "segment-notes-json",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/notes.json",
+      "classification": "UnrelatedJunk",
+      "fatal": false
+    },
+    {
+      "name": "writer-text-note",
+      "path": "writers/10000000-0000-4000-8000-000000000001/notes.json",
+      "classification": "UnrelatedJunk",
+      "fatal": false
+    },
+    {
+      "name": "backup-suffix",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json.bak",
+      "classification": "UnrelatedJunk",
+      "fatal": false
+    },
+    {
+      "name": "canonical-commit",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "classification": "Candidate",
+      "fatal": false
+    },
+    {
+      "name": "segment-seq-mismatch",
+      "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json",
+      "classification": "CanonicalIdentityMismatch",
+      "fatal": true
+    }
+  ],
+  "executableTrace": {
+    "budgets": {
+      "maxExactFetchesPerSync": 2,
+      "maxSegmentsPerWriterPerSync": 5,
+      "maxDependencyTargetsPerSync": 64,
+      "maxListingEntriesPerDirectory": 4096
+    },
+    "objects": [
+      {
+        "ref": {
+          "writerId": "10000000-0000-4000-8000-000000000001",
+          "writerSeq": "1",
+          "commitId": "20000000-0000-4000-8000-000000000101",
+          "contentHash": "d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7"
+        },
+        "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+        "utf8Base64": "eyJwcm90b2NvbCI6IndhdGNodHJhY2tlci1zMi1saXRlIiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzMlNlbWFudGljUHJvZmlsZVZlcnNpb24iOjEsInJlcXVpcmVkRmVhdHVyZXMiOltdLCJ3cml0ZXJJZCI6IjEwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsIndyaXRlclNlcSI6IjEiLCJjb21taXRJZCI6IjIwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMSIsInByZXZpb3VzV3JpdGVyQ29tbWl0IjpudWxsLCJiYXNpc0Nsb2NrIjpbXSwiY29tbWl0S2luZCI6Im11dGF0aW9uIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwic291cmNlIjp7InR5cGUiOiJuYXRpdmUifSwibXV0YXRpb25zIjpbeyJsb2NhbE11dGF0aW9uSWQiOiI0MDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAxMDEiLCJlbnRpdHlUeXBlIjoiY29sbGVjdGlvbiIsImVudGl0eUtleSI6WyJjb2xsZWN0aW9uIiwidHJhY2UtMTAxIl0sIm9wZXJhdGlvbiI6InVwc2VydCIsInZhbHVlIjp7ImlkIjoidHJhY2UtMTAxIiwibmFtZSI6IlRyYWNlIDEwMSIsIm5vcm1hbGl6ZWROYW1lIjoidHJhY2UgMTAxIiwiZGVzY3JpcHRpb24iOm51bGwsInNvdXJjZUtpbmQiOiJtYW51YWwiLCJzb3VyY2VLZXkiOm51bGwsImNvbGxlY3Rpb25LaW5kIjoibWFudWFsIiwib3JkZXJNb2RlIjoibWFudWFsIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwidXBkYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwicmV2IjoiMCIsInJldkFjdG9yIjoiIn0sImJhc2VGcm9udGllciI6W10sImNoYW5nZWRGaWVsZHMiOlsibmFtZSIsIm5vcm1hbGl6ZWROYW1lIiwiZGVzY3JpcHRpb24iLCJzb3VyY2VLaW5kIiwic291cmNlS2V5IiwiY29sbGVjdGlvbktpbmQiLCJvcmRlck1vZGUiXX1dfQ=="
+      },
+      {
+        "ref": {
+          "writerId": "10000000-0000-4000-8000-000000000001",
+          "writerSeq": "2",
+          "commitId": "20000000-0000-4000-8000-000000000102",
+          "contentHash": "ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4"
+        },
+        "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+        "utf8Base64": "eyJwcm90b2NvbCI6IndhdGNodHJhY2tlci1zMi1saXRlIiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzMlNlbWFudGljUHJvZmlsZVZlcnNpb24iOjEsInJlcXVpcmVkRmVhdHVyZXMiOltdLCJ3cml0ZXJJZCI6IjEwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsIndyaXRlclNlcSI6IjIiLCJjb21taXRJZCI6IjIwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMiIsInByZXZpb3VzV3JpdGVyQ29tbWl0Ijp7IndyaXRlcklkIjoiMTAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwid3JpdGVyU2VxIjoiMSIsImNvbW1pdElkIjoiMjAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMTAxIiwiY29udGVudEhhc2giOiJkNzI0YzdlMGVmMTk5YTQwMTQ1YmFiNzQ1MTBmMTZjYjliMDQxYTU5ZThmZTlkZDIyZWUzZTZiYzQ2Y2FjOGM3In0sImJhc2lzQ2xvY2siOlt7IndyaXRlcklkIjoiMTAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwid3JpdGVyU2VxIjoiMSIsImNvbW1pdElkIjoiMjAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMTAxIiwiY29udGVudEhhc2giOiJkNzI0YzdlMGVmMTk5YTQwMTQ1YmFiNzQ1MTBmMTZjYjliMDQxYTU5ZThmZTlkZDIyZWUzZTZiYzQ2Y2FjOGM3In1dLCJjb21taXRLaW5kIjoibXV0YXRpb24iLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJzb3VyY2UiOnsidHlwZSI6Im5hdGl2ZSJ9LCJtdXRhdGlvbnMiOlt7ImxvY2FsTXV0YXRpb25JZCI6IjQwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMiIsImVudGl0eVR5cGUiOiJjb2xsZWN0aW9uIiwiZW50aXR5S2V5IjpbImNvbGxlY3Rpb24iLCJ0cmFjZS0xMDIiXSwib3BlcmF0aW9uIjoidXBzZXJ0IiwidmFsdWUiOnsiaWQiOiJ0cmFjZS0xMDIiLCJuYW1lIjoiVHJhY2UgMTAyIiwibm9ybWFsaXplZE5hbWUiOiJ0cmFjZSAxMDIiLCJkZXNjcmlwdGlvbiI6bnVsbCwic291cmNlS2luZCI6Im1hbnVhbCIsInNvdXJjZUtleSI6bnVsbCwiY29sbGVjdGlvbktpbmQiOiJtYW51YWwiLCJvcmRlck1vZGUiOiJtYW51YWwiLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJyZXYiOiIwIiwicmV2QWN0b3IiOiIifSwiYmFzZUZyb250aWVyIjpbXSwiY2hhbmdlZEZpZWxkcyI6WyJuYW1lIiwibm9ybWFsaXplZE5hbWUiLCJkZXNjcmlwdGlvbiIsInNvdXJjZUtpbmQiLCJzb3VyY2VLZXkiLCJjb2xsZWN0aW9uS2luZCIsIm9yZGVyTW9kZSJdfV19"
+      },
+      {
+        "ref": {
+          "writerId": "10000000-0000-4000-8000-000000000001",
+          "writerSeq": "2",
+          "commitId": "20000000-0000-4000-8000-000000000103",
+          "contentHash": "6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1"
+        },
+        "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json",
+        "utf8Base64": "eyJwcm90b2NvbCI6IndhdGNodHJhY2tlci1zMi1saXRlIiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzMlNlbWFudGljUHJvZmlsZVZlcnNpb24iOjEsInJlcXVpcmVkRmVhdHVyZXMiOltdLCJ3cml0ZXJJZCI6IjEwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsIndyaXRlclNlcSI6IjIiLCJjb21taXRJZCI6IjIwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMyIsInByZXZpb3VzV3JpdGVyQ29tbWl0Ijp7IndyaXRlcklkIjoiMTAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwid3JpdGVyU2VxIjoiMSIsImNvbW1pdElkIjoiMjAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMTAxIiwiY29udGVudEhhc2giOiJkNzI0YzdlMGVmMTk5YTQwMTQ1YmFiNzQ1MTBmMTZjYjliMDQxYTU5ZThmZTlkZDIyZWUzZTZiYzQ2Y2FjOGM3In0sImJhc2lzQ2xvY2siOlt7IndyaXRlcklkIjoiMTAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwid3JpdGVyU2VxIjoiMSIsImNvbW1pdElkIjoiMjAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMTAxIiwiY29udGVudEhhc2giOiJkNzI0YzdlMGVmMTk5YTQwMTQ1YmFiNzQ1MTBmMTZjYjliMDQxYTU5ZThmZTlkZDIyZWUzZTZiYzQ2Y2FjOGM3In1dLCJjb21taXRLaW5kIjoibXV0YXRpb24iLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJzb3VyY2UiOnsidHlwZSI6Im5hdGl2ZSJ9LCJtdXRhdGlvbnMiOlt7ImxvY2FsTXV0YXRpb25JZCI6IjQwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMyIsImVudGl0eVR5cGUiOiJjb2xsZWN0aW9uIiwiZW50aXR5S2V5IjpbImNvbGxlY3Rpb24iLCJ0cmFjZS0xMDMiXSwib3BlcmF0aW9uIjoidXBzZXJ0IiwidmFsdWUiOnsiaWQiOiJ0cmFjZS0xMDMiLCJuYW1lIjoiVHJhY2UgMTAzIiwibm9ybWFsaXplZE5hbWUiOiJ0cmFjZSAxMDMiLCJkZXNjcmlwdGlvbiI6bnVsbCwic291cmNlS2luZCI6Im1hbnVhbCIsInNvdXJjZUtleSI6bnVsbCwiY29sbGVjdGlvbktpbmQiOiJtYW51YWwiLCJvcmRlck1vZGUiOiJtYW51YWwiLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTA2VDEwOjAwOjAwLjAwMFoiLCJyZXYiOiIwIiwicmV2QWN0b3IiOiIifSwiYmFzZUZyb250aWVyIjpbXSwiY2hhbmdlZEZpZWxkcyI6WyJuYW1lIiwibm9ybWFsaXplZE5hbWUiLCJkZXNjcmlwdGlvbiIsInNvdXJjZUtpbmQiLCJzb3VyY2VLZXkiLCJjb2xsZWN0aW9uS2luZCIsIm9yZGVyTW9kZSJdfV19"
+      }
+    ],
+    "rounds": [
+      {
+        "listings": {
+          "activations/": [],
+          "writers/": [
+            "writers/10000000-0000-4000-8000-000000000001/"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/": [
+            "00000000000001"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+            "activations/notes.json"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/": []
+        },
+        "expected": {
+          "observedCandidates": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+          ],
+          "verifiedRefs": [
+            "10000000-0000-4000-8000-000000000001/2/20000000-0000-4000-8000-000000000102/ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4"
+          ],
+          "gaps": [
+            "10000000-0000-4000-8000-000000000001/1"
+          ],
+          "dependencyQueue": [
+            "10000000-0000-4000-8000-000000000001/1/20000000-0000-4000-8000-000000000101/d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7"
+          ],
+          "dependencyProgress": {
+            "nextClass": "reverify",
+            "afterByClass": {
+              "dependency": null,
+              "candidate": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+              "reverify": null
+            }
+          },
+          "auditCursor": {
+            "lastWriterId": "10000000-0000-4000-8000-000000000001",
+            "lastSegmentByWriter": {
+              "10000000-0000-4000-8000-000000000001": "00000000000000"
+            }
+          },
+          "scheduledLists": [
+            "activations/",
+            "writers/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/"
+          ],
+          "scheduledGets": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+          ],
+          "fatalSignals": [],
+          "forkState": []
+        }
+      },
+      {
+        "listings": {
+          "activations/": [],
+          "writers/": [
+            "writers/10000000-0000-4000-8000-000000000001/"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/": [
+            "00000000000001"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/": []
+        },
+        "expected": {
+          "observedCandidates": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+          ],
+          "verifiedRefs": [
+            "10000000-0000-4000-8000-000000000001/1/20000000-0000-4000-8000-000000000101/d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7",
+            "10000000-0000-4000-8000-000000000001/2/20000000-0000-4000-8000-000000000102/ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4"
+          ],
+          "gaps": [],
+          "dependencyQueue": [],
+          "dependencyProgress": {
+            "nextClass": "candidate",
+            "afterByClass": {
+              "dependency": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+              "candidate": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+              "reverify": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+            }
+          },
+          "auditCursor": {
+            "lastWriterId": "10000000-0000-4000-8000-000000000001",
+            "lastSegmentByWriter": {
+              "10000000-0000-4000-8000-000000000001": "00000000000000"
+            }
+          },
+          "scheduledLists": [
+            "activations/",
+            "writers/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/"
+          ],
+          "scheduledGets": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json"
+          ],
+          "fatalSignals": [],
+          "forkState": []
+        }
+      },
+      {
+        "listings": {
+          "activations/": [],
+          "writers/": [
+            "writers/10000000-0000-4000-8000-000000000001/"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/": [
+            "00000000000001"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json"
+          ],
+          "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/": []
+        },
+        "expected": {
+          "observedCandidates": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json"
+          ],
+          "verifiedRefs": [
+            "10000000-0000-4000-8000-000000000001/1/20000000-0000-4000-8000-000000000101/d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7",
+            "10000000-0000-4000-8000-000000000001/2/20000000-0000-4000-8000-000000000102/ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4",
+            "10000000-0000-4000-8000-000000000001/2/20000000-0000-4000-8000-000000000103/6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1"
+          ],
+          "gaps": [],
+          "dependencyQueue": [],
+          "dependencyProgress": {
+            "nextClass": "dependency",
+            "afterByClass": {
+              "dependency": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+              "candidate": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json",
+              "reverify": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+            }
+          },
+          "auditCursor": {
+            "lastWriterId": "10000000-0000-4000-8000-000000000001",
+            "lastSegmentByWriter": {
+              "10000000-0000-4000-8000-000000000001": "00000000000000"
+            }
+          },
+          "scheduledLists": [
+            "activations/",
+            "writers/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000001/"
+          ],
+          "scheduledGets": [
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json",
+            "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json"
+          ],
+          "fatalSignals": [
+            {
+              "code": "WRITER_FORK",
+              "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+              "writerId": "10000000-0000-4000-8000-000000000001",
+              "writerSeq": "2",
+              "safeWriterFrontier": "1"
+            }
+          ],
+          "forkState": [
+            {
+              "writerId": "10000000-0000-4000-8000-000000000001",
+              "writerSeq": "2",
+              "safeWriterFrontier": "1",
+              "paths": [
+                "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000102--ce4e3ea94f8eeab2a0b67793bd2aa612455f2a14d0f8761e26bbff06c1735fe4.json",
+                "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--20000000-0000-4000-8000-000000000103--6d5e1d0eb71f98a1474a202681cd0556890d414c8e1a62b9add3ebf5b36cfab1.json"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "activationFailureTrace": {
+    "budgets": {
+      "maxExactFetchesPerSync": 2,
+      "maxSegmentsPerWriterPerSync": 5,
+      "maxDependencyTargetsPerSync": 64,
+      "maxListingEntriesPerDirectory": 4096
+    },
+    "objects": [
+      {
+        "path": "activations/30000000-0000-4000-8000-000000000001--021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96.json",
+        "utf8Base64": "ew=="
+      },
+      {
+        "ref": {
+          "writerId": "10000000-0000-4000-8000-000000000001",
+          "writerSeq": "1",
+          "commitId": "20000000-0000-4000-8000-000000000101",
+          "contentHash": "d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7"
+        },
+        "path": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+        "utf8Base64": "eyJwcm90b2NvbCI6IndhdGNodHJhY2tlci1zMi1saXRlIiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzMlNlbWFudGljUHJvZmlsZVZlcnNpb24iOjEsInJlcXVpcmVkRmVhdHVyZXMiOltdLCJ3cml0ZXJJZCI6IjEwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsIndyaXRlclNlcSI6IjEiLCJjb21taXRJZCI6IjIwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMSIsInByZXZpb3VzV3JpdGVyQ29tbWl0IjpudWxsLCJiYXNpc0Nsb2NrIjpbXSwiY29tbWl0S2luZCI6Im11dGF0aW9uIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwic291cmNlIjp7InR5cGUiOiJuYXRpdmUifSwibXV0YXRpb25zIjpbeyJsb2NhbE11dGF0aW9uSWQiOiI0MDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAxMDEiLCJlbnRpdHlUeXBlIjoiY29sbGVjdGlvbiIsImVudGl0eUtleSI6WyJjb2xsZWN0aW9uIiwidHJhY2UtMTAxIl0sIm9wZXJhdGlvbiI6InVwc2VydCIsInZhbHVlIjp7ImlkIjoidHJhY2UtMTAxIiwibmFtZSI6IlRyYWNlIDEwMSIsIm5vcm1hbGl6ZWROYW1lIjoidHJhY2UgMTAxIiwiZGVzY3JpcHRpb24iOm51bGwsInNvdXJjZUtpbmQiOiJtYW51YWwiLCJzb3VyY2VLZXkiOm51bGwsImNvbGxlY3Rpb25LaW5kIjoibWFudWFsIiwib3JkZXJNb2RlIjoibWFudWFsIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwidXBkYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwicmV2IjoiMCIsInJldkFjdG9yIjoiIn0sImJhc2VGcm9udGllciI6W10sImNoYW5nZWRGaWVsZHMiOlsibmFtZSIsIm5vcm1hbGl6ZWROYW1lIiwiZGVzY3JpcHRpb24iLCJzb3VyY2VLaW5kIiwic291cmNlS2V5IiwiY29sbGVjdGlvbktpbmQiLCJvcmRlck1vZGUiXX1dfQ=="
+      }
+    ],
+    "listing": {
+      "activations/": [
+        "activations/30000000-0000-4000-8000-000000000001--021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96.json"
+      ],
+      "writers/": [
+        "writers/10000000-0000-4000-8000-000000000001/"
+      ],
+      "writers/10000000-0000-4000-8000-000000000001/segments/": [
+        "00000000000000"
+      ],
+      "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/": [
+        "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json"
+      ]
+    },
+    "expected": {
+      "observedCandidates": [
+        "activations/30000000-0000-4000-8000-000000000001--021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96.json",
+        "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json"
+      ],
+      "verifiedRefs": [
+        "10000000-0000-4000-8000-000000000001/1/20000000-0000-4000-8000-000000000101/d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7"
+      ],
+      "gaps": [],
+      "dependencyQueue": [],
+      "dependencyProgress": {
+        "nextClass": "reverify",
+        "afterByClass": {
+          "dependency": null,
+          "candidate": "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json",
+          "reverify": null
+        }
+      },
+      "auditCursor": {
+        "lastWriterId": null,
+        "lastSegmentByWriter": {}
+      },
+      "scheduledLists": [
+        "activations/",
+        "writers/",
+        "writers/10000000-0000-4000-8000-000000000001/segments/",
+        "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/"
+      ],
+      "scheduledGets": [
+        "activations/30000000-0000-4000-8000-000000000001--021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96.json",
+        "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000101--d724c7e0ef199a40145bab74510f16cb9b041a59e8fe9dd22ee3e6bc46cac8c7.json"
+      ],
+      "fatalSignals": [
+        {
+          "code": "REMOTE_S2_OBJECT_INVALID",
+          "path": "activations/30000000-0000-4000-8000-000000000001--021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96.json"
+        }
+      ],
+      "forkState": []
+    }
+  },
+  "audit": {
+    "closedSegments": [
+      "10000000-0000-4000-8000-000000000001/00000000000000",
+      "10000000-0000-4000-8000-000000000001/00000000000001",
+      "10000000-0000-4000-8000-000000000001/00000000000002",
+      "10000000-0000-4000-8000-000000000002/00000000000000",
+      "10000000-0000-4000-8000-000000000002/00000000000001",
+      "10000000-0000-4000-8000-000000000003/00000000000000"
+    ],
+    "initialCursor": {
+      "lastWriterId": null,
+      "lastSegmentByWriter": {}
+    },
+    "rounds": 12,
+    "expectedSequence": [
+      "10000000-0000-4000-8000-000000000001/00000000000000",
+      "10000000-0000-4000-8000-000000000002/00000000000000",
+      "10000000-0000-4000-8000-000000000003/00000000000000",
+      "10000000-0000-4000-8000-000000000001/00000000000001",
+      "10000000-0000-4000-8000-000000000002/00000000000001",
+      "10000000-0000-4000-8000-000000000003/00000000000000",
+      "10000000-0000-4000-8000-000000000001/00000000000002",
+      "10000000-0000-4000-8000-000000000002/00000000000000",
+      "10000000-0000-4000-8000-000000000003/00000000000000",
+      "10000000-0000-4000-8000-000000000001/00000000000000",
+      "10000000-0000-4000-8000-000000000002/00000000000001",
+      "10000000-0000-4000-8000-000000000003/00000000000000"
+    ]
+  },
+  "expected": {
+    "retentionAfterOmission": [
+      "writers/10000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json"
+    ],
+    "gapAfterSeqsOneAndFour": [
+      "10000000-0000-4000-8000-000000000001/2",
+      "10000000-0000-4000-8000-000000000001/3"
+    ],
+    "targetedListingOmittedFound": true,
+    "activationRetainedAfterOmission": [
+      "activations/30000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json"
+    ],
+    "forkCode": "WRITER_FORK",
+    "immutableMismatchCode": "REMOTE_IMMUTABLE_PATH_CONTENT_MISMATCH"
+  },
+  "permutationIterations": 256
+}

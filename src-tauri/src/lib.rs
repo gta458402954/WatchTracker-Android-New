@@ -16,6 +16,7 @@ mod net;
 mod poster_cache;
 mod record_validation;
 mod recovery_points;
+pub mod s2_lite;
 mod secret_store;
 mod sync_staging;
 mod sync_state;

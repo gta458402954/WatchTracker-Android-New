@@ -1,0 +1,255 @@
+{
+  "schema": "watchtracker-s2-lite-publish-golden-v1",
+  "description": "Language-neutral immutable path, PreparedIntent, recovery, and crash-cut-point vectors.",
+  "pathIdentity": {
+    "writerId": "10000000-0000-4000-8000-000000000090",
+    "commitId": "20000000-0000-4000-8000-000000000090",
+    "contentHash": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "pathCases": [
+    {
+      "writerSeq": "1",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    },
+    {
+      "writerSeq": "256",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000000/00000000000000000256--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    },
+    {
+      "writerSeq": "257",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000001/00000000000000000257--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    },
+    {
+      "writerSeq": "512",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000001/00000000000000000512--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    },
+    {
+      "writerSeq": "513",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000002/00000000000000000513--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    },
+    {
+      "writerSeq": "18446744073709551615",
+      "expectedPath": "writers/10000000-0000-4000-8000-000000000090/segments/ffffffffffffff/18446744073709551615--20000000-0000-4000-8000-000000000090--0000000000000000000000000000000000000000000000000000000000000000.json"
+    }
+  ],
+  "pathProperty": {
+    "seedHex": "9e3779b97f4a7c15",
+    "count": 512,
+    "expectedPathsSha256": "d9b4b66b715b2e0f0194536001f980e62c6681a80b80ab0702a627c3412d30d2"
+  },
+  "invalidWriterSeqCases": [
+    {
+      "writerSeq": "0",
+      "expectedError": "invalid_writer_seq"
+    },
+    {
+      "writerSeq": "01",
+      "expectedError": "invalid_writer_seq"
+    },
+    {
+      "writerSeq": "18446744073709551616",
+      "expectedError": "invalid_writer_seq"
+    }
+  ],
+  "preparedIntent": {
+    "exactBytesBase64": "eyJwcm90b2NvbCI6IndhdGNodHJhY2tlci1zMi1saXRlIiwicHJvdG9jb2xWZXJzaW9uIjoxLCJzMlNlbWFudGljUHJvZmlsZVZlcnNpb24iOjEsInJlcXVpcmVkRmVhdHVyZXMiOltdLCJ3cml0ZXJJZCI6IjEwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDA5MCIsIndyaXRlclNlcSI6IjEiLCJjb21taXRJZCI6IjIwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDA5MCIsInByZXZpb3VzV3JpdGVyQ29tbWl0IjpudWxsLCJiYXNpc0Nsb2NrIjpbXSwiY29tbWl0S2luZCI6Im11dGF0aW9uIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwic291cmNlIjp7InR5cGUiOiJuYXRpdmUifSwibXV0YXRpb25zIjpbeyJsb2NhbE11dGF0aW9uSWQiOiIyMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMTAwOTAiLCJlbnRpdHlUeXBlIjoiY29sbGVjdGlvbiIsImVudGl0eUtleSI6WyJjb2xsZWN0aW9uIiwicmF3LXdpcmUiXSwib3BlcmF0aW9uIjoidXBzZXJ0IiwidmFsdWUiOnsiaWQiOiJyYXctd2lyZSIsIm5hbWUiOiJDb2xsZWN0aW9uIiwibm9ybWFsaXplZE5hbWUiOiJjb2xsZWN0aW9uIiwiZGVzY3JpcHRpb24iOm51bGwsInNvdXJjZUtpbmQiOiJtYW51YWwiLCJzb3VyY2VLZXkiOm51bGwsImNvbGxlY3Rpb25LaW5kIjoibWFudWFsIiwib3JkZXJNb2RlIjoibWFudWFsIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwidXBkYXRlZEF0IjoiMjAyNi0wOS0wNlQxMDowMDowMC4wMDBaIiwicmV2IjoiMCIsInJldkFjdG9yIjoiIn0sImJhc2VGcm9udGllciI6W10sImNoYW5nZWRGaWVsZHMiOlsibmFtZSIsIm5vcm1hbGl6ZWROYW1lIiwiZGVzY3JpcHRpb24iLCJzb3VyY2VLaW5kIiwic291cmNlS2V5IiwiY29sbGVjdGlvbktpbmQiLCJvcmRlck1vZGUiXX1dfQ==",
+    "createdLocallyAtDiagnostic": "2026-09-08T04:00:00.000Z",
+    "expectedContentHash": "fc16669d9fdfa1d31390e30780e495fc548b9421a8659aebb8f215d7e5892ff7",
+    "expectedCommitRef": {
+      "writerId": "10000000-0000-4000-8000-000000000090",
+      "writerSeq": "1",
+      "commitId": "20000000-0000-4000-8000-000000000090",
+      "contentHash": "fc16669d9fdfa1d31390e30780e495fc548b9421a8659aebb8f215d7e5892ff7"
+    },
+    "expectedRemotePath": "writers/10000000-0000-4000-8000-000000000090/segments/00000000000000/00000000000000000001--20000000-0000-4000-8000-000000000090--fc16669d9fdfa1d31390e30780e495fc548b9421a8659aebb8f215d7e5892ff7.json",
+    "expectedIntentFingerprint": "a7e0d4eb0e8dd1ccb9a7e6ac53657b6a7054420abc012a82eaef8e4f5c3136a4"
+  },
+  "recoveryCases": [
+    {
+      "name": "same-path-same-bytes",
+      "remote": "exact",
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "name": "same-path-different-bytes",
+      "remote": "different",
+      "expectedOutcome": "CorruptionMismatch"
+    },
+    {
+      "name": "definitely-absent",
+      "remote": "absent",
+      "expectedOutcome": "RetryPublishExact"
+    },
+    {
+      "name": "indeterminate-get",
+      "remote": "indeterminate",
+      "expectedOutcome": "RemoteIndeterminate"
+    },
+    {
+      "name": "auth-or-capability-failure",
+      "remote": "auth",
+      "expectedOutcome": "AuthOrCapabilityFailure"
+    }
+  ],
+  "publishCases": [
+    {
+      "name": "already-exact-preflight",
+      "initialRemote": "exact",
+      "putBehavior": "not-called",
+      "verifyBehavior": "not-called",
+      "expectedTrace": [
+        "GET_PREFLIGHT",
+        "REMOTE_EXACT",
+        "RECEIPT_READY"
+      ],
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "name": "store-then-timeout-rejection",
+      "initialRemote": "absent",
+      "putBehavior": "store-then-reject-indeterminate",
+      "verifyBehavior": "exact",
+      "expectedTrace": [
+        "GET_PREFLIGHT",
+        "REMOTE_ABSENT",
+        "PUT_ATTEMPT",
+        "PUT_REJECTED",
+        "GET_VERIFY",
+        "REMOTE_EXACT",
+        "RECEIPT_READY"
+      ],
+      "expectedGetCount": 2,
+      "expectedPutCount": 1,
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "name": "timeout-before-store-rejection",
+      "initialRemote": "absent",
+      "putBehavior": "reject-indeterminate-before-store",
+      "verifyBehavior": "absent",
+      "expectedTrace": [
+        "GET_PREFLIGHT",
+        "REMOTE_ABSENT",
+        "PUT_ATTEMPT",
+        "PUT_REJECTED",
+        "GET_VERIFY",
+        "REMOTE_ABSENT"
+      ],
+      "expectedGetCount": 2,
+      "expectedPutCount": 1,
+      "expectedOutcome": "RetryPublishExact"
+    },
+    {
+      "name": "verify-get-rejection",
+      "initialRemote": "absent",
+      "putBehavior": "success",
+      "verifyBehavior": "reject-indeterminate",
+      "expectedTrace": [
+        "GET_PREFLIGHT",
+        "REMOTE_ABSENT",
+        "PUT_ATTEMPT",
+        "PUT_SUCCESS",
+        "GET_VERIFY",
+        "GET_REJECTED"
+      ],
+      "expectedGetCount": 2,
+      "expectedPutCount": 1,
+      "expectedOutcome": "RemoteIndeterminate"
+    }
+  ],
+  "differentRemoteBytesBase64": "cmVtb3RlLWNvcnJ1cHRpb24=",
+  "differentRemoteBytesHash": "2b272a0752ce64676dc49131b39f6fc20ac852baf9cd94fa8c98a94715382f6a",
+  "crashCutPoints": [
+    {
+      "cutPoint": "A-before-intent-persistence",
+      "durableIntentPresent": false,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "absent",
+      "restartAction": "no-publish-without-intent",
+      "expectedGetCount": 0,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "none",
+      "expectedOutcome": "NoNetworkWithoutIntent"
+    },
+    {
+      "cutPoint": "B-after-intent-persistence",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "absent",
+      "restartAction": "recover-durable-intent",
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "none",
+      "expectedOutcome": "RetryPublishExact"
+    },
+    {
+      "cutPoint": "C-put-before-server-write",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "absent",
+      "restartAction": "recover-durable-intent",
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "none",
+      "expectedOutcome": "RetryPublishExact"
+    },
+    {
+      "cutPoint": "D-server-write-before-response",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "exact",
+      "restartAction": "recover-durable-intent",
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "create-new",
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "cutPoint": "E-put-response-before-verify",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "exact",
+      "restartAction": "recover-durable-intent",
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "create-new",
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "cutPoint": "F-verify-before-receipt",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": false,
+      "remoteObjectState": "exact",
+      "restartAction": "recover-durable-intent",
+      "expectedGetCount": 1,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "create-new",
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "cutPoint": "G-after-receipt-persistence",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": true,
+      "remoteObjectState": "exact",
+      "restartAction": "load-and-validate-existing-receipt",
+      "expectedGetCount": 0,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "reuse-existing",
+      "expectedOutcome": "AlreadyPublishedExact"
+    },
+    {
+      "cutPoint": "G-corrupted-durable-receipt",
+      "durableIntentPresent": true,
+      "durableReceiptPresent": true,
+      "durableReceiptCorrupted": true,
+      "remoteObjectState": "exact",
+      "restartAction": "load-and-reject-existing-receipt",
+      "expectedGetCount": 0,
+      "expectedPutCount": 0,
+      "expectedReceiptAction": "reject-existing",
+      "expectedOutcome": "LOCAL_PUBLISHED_RECEIPT_CORRUPTION"
+    }
+  ]
+}

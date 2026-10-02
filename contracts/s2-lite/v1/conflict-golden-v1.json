@@ -1,0 +1,111 @@
+{
+  "fixtureVersion": 1,
+  "jcsEncoding": "UTF-8 bytes of expectedJcs with no trailing newline",
+  "refs": {
+    "RA": { "writerId": "11111111-1111-4111-8111-111111111111", "writerSeq": "2", "commitId": "ffffffff-ffff-4fff-8fff-ffffffffffff", "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "RB": { "writerId": "22222222-2222-4222-8222-222222222222", "writerSeq": "10", "commitId": "00000000-0000-4000-8000-000000000000", "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    "P": { "writerId": "00000000-0000-4000-8000-000000000001", "writerSeq": "1", "commitId": "00000000-0000-4000-8000-000000000001", "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+    "Q": { "writerId": "33333333-3333-4333-8333-333333333333", "writerSeq": "1", "commitId": "33333333-3333-4333-8333-333333333333", "contentHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+  },
+  "semanticValues": {
+    "collectionAlpha": { "name": "Alpha", "normalizedName": "alpha", "description": null, "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual" },
+    "collectionBeta": { "name": "Beta", "normalizedName": "beta", "description": null, "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual" },
+    "collectionOne": { "name": "Alpha", "normalizedName": "alpha", "description": "One", "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual" },
+    "collectionTwo": { "name": "Alpha", "normalizedName": "alpha", "description": "Two", "sourceKind": "manual", "sourceKey": null, "collectionKind": "manual", "orderMode": "manual" },
+    "recordLocked": { "originalName": "Original", "chineseName": "中文名", "progress": "", "totalEpisodes": null, "episodeTrackingEnabled": false, "nextEpisode": null, "movieProgress": null, "movieDuration": null, "releaseYear": null, "posterPath": null, "status": "未看", "platform": "", "rating": null, "startDate": null, "endDate": null, "notes": "", "imdbId": null, "isLocked": true, "genres": null, "originCountry": null, "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null, "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": null, "tmdbId": null, "tmdbParentId": null, "tmdbSeasonNumber": null, "seriesRecordKind": null },
+    "recordChanged": { "originalName": "Original", "chineseName": "中文名", "progress": "", "totalEpisodes": null, "episodeTrackingEnabled": false, "nextEpisode": null, "movieProgress": null, "movieDuration": null, "releaseYear": null, "posterPath": null, "status": "未看", "platform": "", "rating": null, "startDate": null, "endDate": null, "notes": "changed", "imdbId": null, "isLocked": false, "genres": null, "originCountry": null, "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null, "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": null, "tmdbId": null, "tmdbParentId": null, "tmdbSeasonNumber": null, "seriesRecordKind": null },
+    "recordOriginalMissing": { "originalName": "", "chineseName": "中文名", "progress": "", "totalEpisodes": null, "episodeTrackingEnabled": false, "nextEpisode": null, "movieProgress": null, "movieDuration": null, "releaseYear": null, "posterPath": null, "status": "未看", "platform": "", "rating": null, "startDate": null, "endDate": null, "notes": "", "imdbId": null, "isLocked": false, "genres": null, "originCountry": null, "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null, "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": null, "tmdbId": null, "tmdbParentId": null, "tmdbSeasonNumber": null, "seriesRecordKind": null },
+    "recordChineseMissing": { "originalName": "Original", "chineseName": "", "progress": "", "totalEpisodes": null, "episodeTrackingEnabled": false, "nextEpisode": null, "movieProgress": null, "movieDuration": null, "releaseYear": null, "posterPath": null, "status": "未看", "platform": "", "rating": null, "startDate": null, "endDate": null, "notes": "", "imdbId": null, "isLocked": false, "genres": null, "originCountry": null, "imdbRating": null, "tmdbStatus": null, "interestLevel": null, "episodeRuntime": null, "mediaType": "剧集", "contentTags": null, "tmdbMediaKind": null, "tmdbId": null, "tmdbParentId": null, "tmdbSeasonNumber": null, "seriesRecordKind": null }
+  },
+  "entityCases": [
+    {
+      "name": "live-tombstone",
+      "entityKey": ["collection", "c-live"],
+      "conflictKind": "live-tombstone",
+      "alternatives": [
+        { "ref": "RB", "semanticState": { "state": "tombstone" }, "changedFields": [], "baseRefs": ["P"] },
+        { "ref": "RA", "semanticState": { "state": "live", "value": "collectionAlpha" }, "changedFields": [], "baseRefs": ["P"] }
+      ],
+      "expectedJcs": "{\"conflictFields\":[\"$existence\"],\"conflictKind\":\"live-tombstone\",\"domain\":\"watchtracker-s2-lite-entity-conflict-v1\",\"entityKey\":[\"collection\",\"c-live\"],\"frontierDots\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}],\"semanticAlternatives\":[{\"dot\":{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"collectionKind\":\"manual\",\"description\":null,\"name\":\"Alpha\",\"normalizedName\":\"alpha\",\"orderMode\":\"manual\",\"sourceKey\":null,\"sourceKind\":\"manual\"}}},{\"dot\":{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"},\"semanticState\":{\"state\":\"tombstone\"}}]}",
+      "expectedSha256": "11b0f2b5bdd4a59f4e512210ee431502b02f92273cfb794dccbf2bb202fefcff"
+    },
+    {
+      "name": "different-base",
+      "entityKey": ["collection", "c-base"],
+      "conflictKind": "different-base",
+      "alternatives": [
+        { "ref": "RB", "semanticState": { "state": "live", "value": "collectionBeta" }, "changedFields": ["name", "normalizedName"], "baseRefs": ["Q"] },
+        { "ref": "RA", "semanticState": { "state": "live", "value": "collectionAlpha" }, "changedFields": [], "baseRefs": ["P"] }
+      ],
+      "expectedJcs": "{\"conflictFields\":[\"$base\"],\"conflictKind\":\"different-base\",\"domain\":\"watchtracker-s2-lite-entity-conflict-v1\",\"entityKey\":[\"collection\",\"c-base\"],\"frontierDots\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}],\"semanticAlternatives\":[{\"dot\":{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"collectionKind\":\"manual\",\"description\":null,\"name\":\"Alpha\",\"normalizedName\":\"alpha\",\"orderMode\":\"manual\",\"sourceKey\":null,\"sourceKind\":\"manual\"}}},{\"dot\":{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"collectionKind\":\"manual\",\"description\":null,\"name\":\"Beta\",\"normalizedName\":\"beta\",\"orderMode\":\"manual\",\"sourceKey\":null,\"sourceKind\":\"manual\"}}}]}",
+      "expectedSha256": "be13b12e18123bfdaa5e884a7f82eda467a03d25c752271209931c9f6ee6b0d8"
+    },
+    {
+      "name": "overlapping-field",
+      "entityKey": ["collection", "c-overlap"],
+      "conflictKind": "overlapping-field",
+      "alternatives": [
+        { "ref": "RB", "semanticState": { "state": "live", "value": "collectionTwo" }, "changedFields": ["description"], "baseRefs": ["P"] },
+        { "ref": "RA", "semanticState": { "state": "live", "value": "collectionOne" }, "changedFields": ["description"], "baseRefs": ["P"] }
+      ],
+      "expectedJcs": "{\"conflictFields\":[\"description\"],\"conflictKind\":\"overlapping-field\",\"domain\":\"watchtracker-s2-lite-entity-conflict-v1\",\"entityKey\":[\"collection\",\"c-overlap\"],\"frontierDots\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}],\"semanticAlternatives\":[{\"dot\":{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"collectionKind\":\"manual\",\"description\":\"One\",\"name\":\"Alpha\",\"normalizedName\":\"alpha\",\"orderMode\":\"manual\",\"sourceKey\":null,\"sourceKind\":\"manual\"}}},{\"dot\":{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"collectionKind\":\"manual\",\"description\":\"Two\",\"name\":\"Alpha\",\"normalizedName\":\"alpha\",\"orderMode\":\"manual\",\"sourceKey\":null,\"sourceKind\":\"manual\"}}}]}",
+      "expectedSha256": "6878b33fd623c0dd3e37ca586c5671ad648afeac504f5c5a1e02f309419d00de"
+    },
+    {
+      "name": "locked-concurrent",
+      "entityKey": ["record", "r-lock"],
+      "conflictKind": "locked-concurrent",
+      "alternatives": [
+        { "ref": "RB", "semanticState": { "state": "live", "value": "recordChanged" }, "changedFields": ["notes"], "baseRefs": ["P"] },
+        { "ref": "RA", "semanticState": { "state": "live", "value": "recordLocked" }, "changedFields": ["isLocked"], "baseRefs": ["P"] }
+      ],
+      "expectedJcs": "{\"conflictFields\":[\"isLocked\",\"notes\"],\"conflictKind\":\"locked-concurrent\",\"domain\":\"watchtracker-s2-lite-entity-conflict-v1\",\"entityKey\":[\"record\",\"r-lock\"],\"frontierDots\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}],\"semanticAlternatives\":[{\"dot\":{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"chineseName\":\"中文名\",\"contentTags\":null,\"endDate\":null,\"episodeRuntime\":null,\"episodeTrackingEnabled\":false,\"genres\":null,\"imdbId\":null,\"imdbRating\":null,\"interestLevel\":null,\"isLocked\":true,\"mediaType\":\"剧集\",\"movieDuration\":null,\"movieProgress\":null,\"nextEpisode\":null,\"notes\":\"\",\"originCountry\":null,\"originalName\":\"Original\",\"platform\":\"\",\"posterPath\":null,\"progress\":\"\",\"rating\":null,\"releaseYear\":null,\"seriesRecordKind\":null,\"startDate\":null,\"status\":\"未看\",\"tmdbId\":null,\"tmdbMediaKind\":null,\"tmdbParentId\":null,\"tmdbSeasonNumber\":null,\"tmdbStatus\":null,\"totalEpisodes\":null}}},{\"dot\":{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"chineseName\":\"中文名\",\"contentTags\":null,\"endDate\":null,\"episodeRuntime\":null,\"episodeTrackingEnabled\":false,\"genres\":null,\"imdbId\":null,\"imdbRating\":null,\"interestLevel\":null,\"isLocked\":false,\"mediaType\":\"剧集\",\"movieDuration\":null,\"movieProgress\":null,\"nextEpisode\":null,\"notes\":\"changed\",\"originCountry\":null,\"originalName\":\"Original\",\"platform\":\"\",\"posterPath\":null,\"progress\":\"\",\"rating\":null,\"releaseYear\":null,\"seriesRecordKind\":null,\"startDate\":null,\"status\":\"未看\",\"tmdbId\":null,\"tmdbMediaKind\":null,\"tmdbParentId\":null,\"tmdbSeasonNumber\":null,\"tmdbStatus\":null,\"totalEpisodes\":null}}}]}",
+      "expectedSha256": "997c4e822ddc7f91d5a736ebb55f7fe6540f177366bc98efc7197c5f32ce843e"
+    },
+    {
+      "name": "derived-domain",
+      "entityKey": ["record", "r-domain"],
+      "conflictKind": "derived-domain",
+      "alternatives": [
+        { "ref": "RB", "semanticState": { "state": "live", "value": "recordChineseMissing" }, "changedFields": ["chineseName"], "baseRefs": ["P"] },
+        { "ref": "RA", "semanticState": { "state": "live", "value": "recordOriginalMissing" }, "changedFields": ["originalName"], "baseRefs": ["P"] }
+      ],
+      "expectedJcs": "{\"conflictFields\":[\"$domain\"],\"conflictKind\":\"derived-domain\",\"domain\":\"watchtracker-s2-lite-entity-conflict-v1\",\"entityKey\":[\"record\",\"r-domain\"],\"frontierDots\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}],\"semanticAlternatives\":[{\"dot\":{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"chineseName\":\"中文名\",\"contentTags\":null,\"endDate\":null,\"episodeRuntime\":null,\"episodeTrackingEnabled\":false,\"genres\":null,\"imdbId\":null,\"imdbRating\":null,\"interestLevel\":null,\"isLocked\":false,\"mediaType\":\"剧集\",\"movieDuration\":null,\"movieProgress\":null,\"nextEpisode\":null,\"notes\":\"\",\"originCountry\":null,\"originalName\":\"\",\"platform\":\"\",\"posterPath\":null,\"progress\":\"\",\"rating\":null,\"releaseYear\":null,\"seriesRecordKind\":null,\"startDate\":null,\"status\":\"未看\",\"tmdbId\":null,\"tmdbMediaKind\":null,\"tmdbParentId\":null,\"tmdbSeasonNumber\":null,\"tmdbStatus\":null,\"totalEpisodes\":null}}},{\"dot\":{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"},\"semanticState\":{\"state\":\"live\",\"value\":{\"chineseName\":\"\",\"contentTags\":null,\"endDate\":null,\"episodeRuntime\":null,\"episodeTrackingEnabled\":false,\"genres\":null,\"imdbId\":null,\"imdbRating\":null,\"interestLevel\":null,\"isLocked\":false,\"mediaType\":\"剧集\",\"movieDuration\":null,\"movieProgress\":null,\"nextEpisode\":null,\"notes\":\"\",\"originCountry\":null,\"originalName\":\"Original\",\"platform\":\"\",\"posterPath\":null,\"progress\":\"\",\"rating\":null,\"releaseYear\":null,\"seriesRecordKind\":null,\"startDate\":null,\"status\":\"未看\",\"tmdbId\":null,\"tmdbMediaKind\":null,\"tmdbParentId\":null,\"tmdbSeasonNumber\":null,\"tmdbStatus\":null,\"totalEpisodes\":null}}}]}",
+      "expectedSha256": "23e40477cdf93bc8ef7b2d9e3a5fec84321dbc1dc32d34646a151da8e678a0e2"
+    }
+  ],
+  "relationCases": [
+    {
+      "name": "collection-deleted-member-live",
+      "relationKind": "collection-deleted-member-live",
+      "facts": { "collectionId": "c1", "recordId": "r1", "collectionState": "tombstone", "memberState": "live" },
+      "participants": [{ "entityKey": ["collection-member", "c1", "r1"], "refs": ["RB"] }, { "entityKey": ["collection", "c1"], "refs": ["RA"] }],
+      "expectedJcs": "{\"domain\":\"watchtracker-s2-lite-relation-conflict-v1\",\"entityKeys\":[[\"collection\",\"c1\"],[\"collection-member\",\"c1\",\"r1\"]],\"relationKind\":\"collection-deleted-member-live\",\"semanticRelationFacts\":{\"collectionId\":\"c1\",\"collectionState\":\"tombstone\",\"memberState\":\"live\",\"recordId\":\"r1\"},\"versionRefs\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"contentHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"contentHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}]}",
+      "expectedSha256": "7438ee8cd749ec9b7a78837078c5b55c126e0e33f49c82a55b81cd959a4e4e35"
+    },
+    {
+      "name": "record-deleted-member-live",
+      "relationKind": "record-deleted-member-live",
+      "facts": { "collectionId": "c1", "recordId": "r1", "recordState": "tombstone", "memberState": "live" },
+      "participants": [{ "entityKey": ["record", "r1"], "refs": ["RA"] }, { "entityKey": ["collection-member", "c1", "r1"], "refs": ["RB"] }],
+      "expectedJcs": "{\"domain\":\"watchtracker-s2-lite-relation-conflict-v1\",\"entityKeys\":[[\"collection-member\",\"c1\",\"r1\"],[\"record\",\"r1\"]],\"relationKind\":\"record-deleted-member-live\",\"semanticRelationFacts\":{\"collectionId\":\"c1\",\"memberState\":\"live\",\"recordId\":\"r1\",\"recordState\":\"tombstone\"},\"versionRefs\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"contentHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"contentHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}]}",
+      "expectedSha256": "c176119a83adfdedf6a86af8cb9813c46c18bf822a0c04159068b4e2ffbc546e"
+    },
+    {
+      "name": "record-deleted-episode-live",
+      "relationKind": "record-deleted-episode-live",
+      "facts": { "recordId": "r1", "episodeNumber": 12, "recordState": "tombstone", "episodeState": "live" },
+      "participants": [{ "entityKey": ["record", "r1"], "refs": ["RA"] }, { "entityKey": ["episode-completion", "r1", 12], "refs": ["RB"] }],
+      "expectedJcs": "{\"domain\":\"watchtracker-s2-lite-relation-conflict-v1\",\"entityKeys\":[[\"episode-completion\",\"r1\",12],[\"record\",\"r1\"]],\"relationKind\":\"record-deleted-episode-live\",\"semanticRelationFacts\":{\"episodeNumber\":12,\"episodeState\":\"live\",\"recordId\":\"r1\",\"recordState\":\"tombstone\"},\"versionRefs\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"contentHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"contentHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}]}",
+      "expectedSha256": "550e1c95cfcac182b90ef7a1388bdbf164d5af9e986048d5d0c3a3876a74a8f1"
+    },
+    {
+      "name": "episode-exceeds-total",
+      "relationKind": "episode-exceeds-total",
+      "facts": { "recordId": "r1", "episodeNumber": 12, "totalEpisodes": 10 },
+      "participants": [{ "entityKey": ["record", "r1"], "refs": ["RA"] }, { "entityKey": ["episode-completion", "r1", 12], "refs": ["RB"] }],
+      "expectedJcs": "{\"domain\":\"watchtracker-s2-lite-relation-conflict-v1\",\"entityKeys\":[[\"episode-completion\",\"r1\",12],[\"record\",\"r1\"]],\"relationKind\":\"episode-exceeds-total\",\"semanticRelationFacts\":{\"episodeNumber\":12,\"recordId\":\"r1\",\"totalEpisodes\":10},\"versionRefs\":[{\"commitId\":\"ffffffff-ffff-4fff-8fff-ffffffffffff\",\"contentHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"writerId\":\"11111111-1111-4111-8111-111111111111\",\"writerSeq\":\"2\"},{\"commitId\":\"00000000-0000-4000-8000-000000000000\",\"contentHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"writerId\":\"22222222-2222-4222-8222-222222222222\",\"writerSeq\":\"10\"}]}",
+      "expectedSha256": "f4b6a6731c4bd8b80deb17e8c0570d0988666a70e64980b15cb9593f95c3cea0"
+    }
+  ]
+}

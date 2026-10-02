@@ -1,0 +1,580 @@
+{
+  "schema": "watchtracker-s2-lite-activation-cutover-golden-v1",
+  "fatalCode": "SYNC_ROOT_FROZEN_LEGACY_CHANGE",
+  "evidence": {
+    "a": {
+      "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+      "activationId": "30000000-0000-4000-8000-000000000001",
+      "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "legacyFingerprint": "F1"
+    },
+    "b": {
+      "path": "activations/30000000-0000-4000-8000-000000000002--2222222222222222222222222222222222222222222222222222222222222222.json",
+      "activationId": "30000000-0000-4000-8000-000000000002",
+      "contentHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "exactBytesHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "legacyFingerprint": "F1"
+    },
+    "c": {
+      "path": "activations/30000000-0000-4000-8000-000000000003--3333333333333333333333333333333333333333333333333333333333333333.json",
+      "activationId": "30000000-0000-4000-8000-000000000003",
+      "contentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "exactBytesHash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "legacyFingerprint": "F2"
+    },
+    "n1": {
+      "path": "activations/30000000-0000-4000-8000-000000000004--4444444444444444444444444444444444444444444444444444444444444444.json",
+      "activationId": "30000000-0000-4000-8000-000000000004",
+      "contentHash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "exactBytesHash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "legacyFingerprint": null
+    },
+    "n2": {
+      "path": "activations/30000000-0000-4000-8000-000000000005--5555555555555555555555555555555555555555555555555555555555555555.json",
+      "activationId": "30000000-0000-4000-8000-000000000005",
+      "contentHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "exactBytesHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "legacyFingerprint": null
+    }
+  },
+  "scenarios": [
+    {
+      "name": "no-activation",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": true
+    },
+    {
+      "name": "first-valid-activation",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+          "activationId": "30000000-0000-4000-8000-000000000001",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "legacyFingerprint": "F1"
+        }
+      ],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "restart-after-activation",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": false,
+      "serializeRestart": true
+    },
+    {
+      "name": "activation-later-omitted",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "multiple-same-fingerprint",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000002--2222222222222222222222222222222222222222222222222222222222222222.json",
+          "activationId": "30000000-0000-4000-8000-000000000002",
+          "contentHash": "2222222222222222222222222222222222222222222222222222222222222222",
+          "exactBytesHash": "2222222222222222222222222222222222222222222222222222222222222222",
+          "legacyFingerprint": "F1"
+        },
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+          "activationId": "30000000-0000-4000-8000-000000000001",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "legacyFingerprint": "F1"
+        }
+      ],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000002--2222222222222222222222222222222222222222222222222222222222222222.json",
+            "activationId": "30000000-0000-4000-8000-000000000002",
+            "contentHash": "2222222222222222222222222222222222222222222222222222222222222222",
+            "exactBytesHash": "2222222222222222222222222222222222222222222222222222222222222222",
+            "legacyFingerprint": "F1"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": "F1"
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "conflicting-fingerprints",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+          "activationId": "30000000-0000-4000-8000-000000000001",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "legacyFingerprint": "F1"
+        },
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000003--3333333333333333333333333333333333333333333333333333333333333333.json",
+          "activationId": "30000000-0000-4000-8000-000000000003",
+          "contentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "exactBytesHash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "legacyFingerprint": "F2"
+        }
+      ],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000003--3333333333333333333333333333333333333333333333333333333333333333.json",
+            "activationId": "30000000-0000-4000-8000-000000000003",
+            "contentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "exactBytesHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "legacyFingerprint": "F2"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Conflict"
+        },
+        "rootFatalSignals": [
+          {
+            "code": "SYNC_ROOT_FROZEN_LEGACY_CHANGE"
+          }
+        ]
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "null-fingerprint-equality",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000005--5555555555555555555555555555555555555555555555555555555555555555.json",
+          "activationId": "30000000-0000-4000-8000-000000000005",
+          "contentHash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "exactBytesHash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "legacyFingerprint": null
+        },
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000004--4444444444444444444444444444444444444444444444444444444444444444.json",
+          "activationId": "30000000-0000-4000-8000-000000000004",
+          "contentHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "exactBytesHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "legacyFingerprint": null
+        }
+      ],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000004--4444444444444444444444444444444444444444444444444444444444444444.json",
+            "activationId": "30000000-0000-4000-8000-000000000004",
+            "contentHash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "exactBytesHash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "legacyFingerprint": null
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000005--5555555555555555555555555555555555555555555555555555555555555555.json",
+            "activationId": "30000000-0000-4000-8000-000000000005",
+            "contentHash": "5555555555555555555555555555555555555555555555555555555555555555",
+            "exactBytesHash": "5555555555555555555555555555555555555555555555555555555555555555",
+            "legacyFingerprint": null
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Consistent",
+          "legacyFingerprint": null
+        },
+        "rootFatalSignals": []
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "null-vs-non-null-conflict",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": false,
+        "verifiedActivationEvidence": [],
+        "fingerprintConsistency": {
+          "state": "NoEvidence"
+        },
+        "rootFatalSignals": []
+      },
+      "verifiedActivations": [
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000004--4444444444444444444444444444444444444444444444444444444444444444.json",
+          "activationId": "30000000-0000-4000-8000-000000000004",
+          "contentHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "exactBytesHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "legacyFingerprint": null
+        },
+        {
+          "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+          "activationId": "30000000-0000-4000-8000-000000000001",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "legacyFingerprint": "F1"
+        }
+      ],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000004--4444444444444444444444444444444444444444444444444444444444444444.json",
+            "activationId": "30000000-0000-4000-8000-000000000004",
+            "contentHash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "exactBytesHash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "legacyFingerprint": null
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Conflict"
+        },
+        "rootFatalSignals": [
+          {
+            "code": "SYNC_ROOT_FROZEN_LEGACY_CHANGE"
+          }
+        ]
+      },
+      "legacyPutAllowed": false
+    },
+    {
+      "name": "conflict-remains-after-omission",
+      "prior": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000003--3333333333333333333333333333333333333333333333333333333333333333.json",
+            "activationId": "30000000-0000-4000-8000-000000000003",
+            "contentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "exactBytesHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "legacyFingerprint": "F2"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Conflict"
+        },
+        "rootFatalSignals": [
+          {
+            "code": "SYNC_ROOT_FROZEN_LEGACY_CHANGE"
+          }
+        ]
+      },
+      "verifiedActivations": [],
+      "expected": {
+        "stateVersion": 1,
+        "remoteS2Activated": true,
+        "verifiedActivationEvidence": [
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000001--1111111111111111111111111111111111111111111111111111111111111111.json",
+            "activationId": "30000000-0000-4000-8000-000000000001",
+            "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "exactBytesHash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "legacyFingerprint": "F1"
+          },
+          {
+            "path": "activations/30000000-0000-4000-8000-000000000003--3333333333333333333333333333333333333333333333333333333333333333.json",
+            "activationId": "30000000-0000-4000-8000-000000000003",
+            "contentHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "exactBytesHash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "legacyFingerprint": "F2"
+          }
+        ],
+        "fingerprintConsistency": {
+          "state": "Conflict"
+        },
+        "rootFatalSignals": [
+          {
+            "code": "SYNC_ROOT_FROZEN_LEGACY_CHANGE"
+          }
+        ]
+      },
+      "legacyPutAllowed": false,
+      "serializeRestart": true
+    }
+  ],
+  "recoveryScenarios": [
+    {
+      "name": "not-ready-decision",
+      "operation": "notReady",
+      "expectedReadiness": "NotReady",
+      "expectedDecision": { "allowed": false, "reason": "CUTOVER_RECOVERY_NOT_READY" }
+    },
+    {
+      "name": "empty-store-verified-evidence",
+      "operation": "recover",
+      "persistedScenario": null,
+      "evidence": [{ "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } }],
+      "expectedScenario": "first-valid-activation",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "stale-false-verified-evidence",
+      "operation": "recover",
+      "persistedScenario": "no-activation",
+      "evidence": [{ "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } }],
+      "expectedScenario": "first-valid-activation",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "evidence-before-latch-crash",
+      "operation": "recover",
+      "persistedScenario": null,
+      "evidence": [{ "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } }],
+      "expectedScenario": "first-valid-activation",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "missing-roundtrip",
+      "operation": "roundtripRecover",
+      "persistedScenario": null,
+      "evidence": [{ "key": "a", "fingerprintEvidence": { "state": "Missing" } }],
+      "expectedFingerprintEvidence": { "state": "Missing" },
+      "expectedReadiness": "NotReady",
+      "expectedDecision": { "allowed": false, "reason": "CUTOVER_RECOVERY_NOT_READY" }
+    },
+    {
+      "name": "null-roundtrip",
+      "operation": "roundtripRecover",
+      "persistedScenario": null,
+      "evidence": [{ "key": "n1", "fingerprintEvidence": { "state": "Null" } }],
+      "expectedFingerprintEvidence": { "state": "Null" },
+      "expectedReadiness": "Ready",
+      "expectedActivated": true,
+      "expectedConsistency": { "state": "Consistent", "legacyFingerprint": null },
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "value-roundtrip",
+      "operation": "roundtripRecover",
+      "persistedScenario": null,
+      "evidence": [{ "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } }],
+      "expectedFingerprintEvidence": { "state": "Value", "value": "F1" },
+      "expectedReadiness": "Ready",
+      "expectedActivated": true,
+      "expectedConsistency": { "state": "Consistent", "legacyFingerprint": "F1" },
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "null-null-recovery",
+      "operation": "recover",
+      "persistedScenario": "no-activation",
+      "evidence": [
+        { "key": "n1", "fingerprintEvidence": { "state": "Null" } },
+        { "key": "n2", "fingerprintEvidence": { "state": "Null" } }
+      ],
+      "expectedScenario": "null-fingerprint-equality",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "null-f1-recovery",
+      "operation": "recover",
+      "persistedScenario": "no-activation",
+      "evidence": [
+        { "key": "n1", "fingerprintEvidence": { "state": "Null" } },
+        { "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } }
+      ],
+      "expectedScenario": "null-vs-non-null-conflict",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "f1-f1-recovery",
+      "operation": "recover",
+      "persistedScenario": "no-activation",
+      "evidence": [
+        { "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } },
+        { "key": "b", "fingerprintEvidence": { "state": "Value", "value": "F1" } }
+      ],
+      "expectedScenario": "multiple-same-fingerprint",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    },
+    {
+      "name": "f1-f2-recovery",
+      "operation": "recover",
+      "persistedScenario": "no-activation",
+      "evidence": [
+        { "key": "a", "fingerprintEvidence": { "state": "Value", "value": "F1" } },
+        { "key": "c", "fingerprintEvidence": { "state": "Value", "value": "F2" } }
+      ],
+      "expectedScenario": "conflicting-fingerprints",
+      "expectedDecision": { "allowed": false, "reason": "REMOTE_S2_ACTIVATED" }
+    }
+  ]
+}

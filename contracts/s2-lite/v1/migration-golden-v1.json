@@ -1,0 +1,387 @@
+{
+  "schema": "watchtracker-s2-lite-migration-golden-v1",
+  "identity": {
+    "migrationId": "60000000-0000-4000-8000-000000000001",
+    "writerId": "61000000-0000-4000-8000-000000000001",
+    "newMigrationId": "60000000-0000-4000-8000-000000000002",
+    "newWriterId": "61000000-0000-4000-8000-000000000002",
+    "createdAt": "2026-09-10T04:00:00.000Z",
+    "rootId": "root://legacy",
+    "newRootId": "root://replacement"
+  },
+  "deterministicIdentity": {
+    "commit1": "7fc73f29-b172-4e99-91d5-e459198ef94e",
+    "commit2": "902d2e0c-2c43-4d05-9e98-96a5c0440009",
+    "activation": "e9804389-6d1e-4377-9133-94c75c6e11c1"
+  },
+  "standardExpectedProjection": {
+    "rootId": "root://legacy",
+    "generation": 0,
+    "status": "BOOTSTRAP_PLANNED",
+    "legacyFingerprint": "9eff1d0bd59e828a63a89dcadfd26fbe1f0e63948c6e0c79e45cf25222195f22",
+    "stageA": [{
+      "writerSeq": "1",
+      "commitId": "7fc73f29-b172-4e99-91d5-e459198ef94e",
+      "contentHash": "db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b",
+      "intentFingerprint": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "mutationCount": 2,
+      "receipted": false
+    }],
+    "stageB": [{
+      "writerSeq": "2",
+      "commitId": "902d2e0c-2c43-4d05-9e98-96a5c0440009",
+      "contentHash": "6e94f7187a4f625aef6fbbea859e1454605438b233f0b87220c2da16f75178f1",
+      "intentFingerprint": "8c7cb53aba0884a747a3fdf1abe8e4f2131b898df52b882888317ea40e04763e",
+      "mutationCount": 2,
+      "receipted": false
+    }],
+    "activationId": "e9804389-6d1e-4377-9133-94c75c6e11c1",
+    "activationContentHash": "8847c0822701d9679b7ed510213acabb71b1362df043b3f7650e95a11bd1f66c",
+    "activationIntentFingerprint": "f0c114292f14ca5da9a22c26a5d375969997340396274998a7b20be97f58a0a6",
+    "activationVerified": false,
+    "fatalCodes": [],
+    "sourceType": "legacy-bootstrap",
+    "preservationHandoff": null
+  },
+  "planningScenarios": [
+    {
+      "name": "empty-legacy-dataset",
+      "records": 0,
+      "collections": 0,
+      "episodes": 0,
+      "members": 0,
+      "expectedStageAChunkSizes": [],
+      "expectedStageBChunkSizes": [],
+      "expectedWriterSeqs": []
+    },
+    {
+      "name": "stage-a-only",
+      "records": 1,
+      "collections": 1,
+      "episodes": 0,
+      "members": 0,
+      "expectedStageAChunkSizes": [2],
+      "expectedStageBChunkSizes": [],
+      "expectedWriterSeqs": ["1"]
+    },
+    {
+      "name": "stage-a-and-stage-b",
+      "records": 1,
+      "collections": 1,
+      "episodes": 1,
+      "members": 1,
+      "expectedStageAChunkSizes": [2],
+      "expectedStageBChunkSizes": [2],
+      "expectedWriterSeqs": ["1", "2"]
+    },
+    {
+      "name": "more-than-256-mutations",
+      "records": 257,
+      "collections": 0,
+      "episodes": 0,
+      "members": 0,
+      "expectedStageAChunkSizes": [256, 1],
+      "expectedStageBChunkSizes": [],
+      "expectedWriterSeqs": ["1", "2"]
+    },
+    {
+      "name": "stage-b-more-than-256",
+      "records": 257,
+      "collections": 0,
+      "episodes": 257,
+      "members": 0,
+      "expectedStageAChunkSizes": [256, 1],
+      "expectedStageBChunkSizes": [256, 1],
+      "expectedWriterSeqs": ["1", "2", "3", "4"]
+    }
+  ],
+  "executionScenarios": [
+    { "name": "restart-during-stage-a", "planningScenario": "more-than-256-mutations", "expectedRestartStatus": "STAGE_A_PUBLISHING", "expectedFinalStatus": "MIGRATION_COMPLETE" },
+    { "name": "restart-between-stage-a-and-stage-b", "planningScenario": "stage-a-and-stage-b", "expectedRestartStatus": "STAGE_A_COMPLETE", "expectedFinalStatus": "MIGRATION_COMPLETE" },
+    { "name": "restart-during-activation-publish", "planningScenario": "stage-a-and-stage-b", "expectedRestartStatus": "ACTIVATION_PUBLISHING", "expectedFinalStatus": "MIGRATION_COMPLETE" },
+    { "name": "already-receipted-object-recovery", "planningScenario": "stage-a-and-stage-b", "expectedRestartStatus": "STAGE_A_COMPLETE", "expectedNoRepublish": true, "expectedFinalStatus": "MIGRATION_COMPLETE" },
+    { "name": "same-snapshot-deterministic-replan", "expectedSamePlan": true },
+    { "name": "frozen-old-root-new-root-handoff", "fatalCode": "SYNC_ROOT_FROZEN_WRITER_FORK", "expectedSourceType": "new-root-bootstrap" }
+  ],
+  "standardStatusTrace": [
+    "STAGE_A_COMPLETE",
+    "STAGE_B_PUBLISHING",
+    "STAGE_B_COMPLETE",
+    "ACTIVATION_PUBLISHING",
+    "ACTIVATION_VERIFIED",
+    "MIGRATION_COMPLETE"
+  ],
+  "emptyStatusTrace": [
+    "ACTIVATION_VERIFIED",
+    "MIGRATION_COMPLETE"
+  ],
+  "failureScenarios": [
+    { "name": "root-a-state-on-root-b", "expected": "MIGRATION_ROOT_BINDING_MISMATCH", "expectedOperations": [] },
+    { "name": "old-receipt-on-new-root", "expected": "LOCAL_MIGRATION_STATE_CORRUPTION", "expectedOperations": [] },
+    { "name": "same-root-handoff", "expected": "invalid_frozen_root_handoff", "expectedOperations": [] },
+    { "name": "known-fatal-blocks-publish", "expectedStatus": "ROOT_FROZEN", "expectedOperations": [] },
+    { "name": "freeze-before-exclusive-publish", "expectedStatus": "ROOT_FROZEN", "expectedOperations": [] },
+    { "name": "activation-cutover-crash", "expectedLegacyAllowed": false, "expectedFinalStatus": "MIGRATION_COMPLETE", "expectedOperations": ["GET", "PUT", "GET"] },
+    { "name": "stale-complete", "expectedLegacyAllowed": false, "expectedFinalStatus": "MIGRATION_COMPLETE" },
+    { "name": "duplicate-concurrent-start", "expectedAttemptCount": 1, "expectedOperations": [] },
+    { "name": "stage-b-partial-crash", "expectedNoStageARepublish": true },
+    { "name": "activation-requires-durable-capability", "expected": "LOCAL_PREPARED_INTENT_CORRUPTION", "expectedOperations": [] }
+  ],
+  "correctnessScenarios": [
+    {
+      "name": "capability-post-issuance-remote-replacement",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "PUT", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" }
+      ],
+      "expectedPutOccurred": true,
+      "expectedGeneration": 2,
+      "expectedStatus": "STAGE_A_COMPLETE",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 1,
+      "expectedFatalCodes": [],
+      "expectedCutoverDecision": "publish-eligible"
+    },
+    {
+      "name": "same-generation-snapshot-replacement",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [],
+      "expectedPutOccurred": false,
+      "expectedGeneration": 2,
+      "expectedStatus": "STAGE_A_COMPLETE",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 1,
+      "expectedFatalCodes": [],
+      "expectedCutoverDecision": "local-corruption-rejected"
+    },
+    {
+      "name": "cutover-fatal-blocks-publish",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [],
+      "expectedPutOccurred": false,
+      "expectedGeneration": 1,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied"
+    },
+    {
+      "name": "stale-authority-copy",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [],
+      "expectedPutOccurred": false,
+      "expectedGeneration": 1,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "authority-binding-rejected"
+    },
+    {
+      "name": "combined-stale-context-cutover-fatal",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [],
+      "expectedPutOccurred": false,
+      "expectedGeneration": 1,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied"
+    }
+  ],
+  "finalRaceScenarios": [
+    {
+      "name": "captured-x-restart-proposed-y",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [],
+      "expectedPutCount": 0,
+      "expectedGeneration": 0,
+      "expectedStatus": "LEGACY_SNAPSHOT_CAPTURED",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": null,
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": [],
+      "expectedCutoverDecision": "local-corruption-rejected",
+      "expectedRecoveryDecision": null
+    },
+    {
+      "name": "stage-a-fatal-during-preflight",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [{ "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" }],
+      "expectedPutCount": 0,
+      "expectedGeneration": 1,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedRecoveryDecision": "RetryPublishExact"
+    },
+    {
+      "name": "stage-b-fatal-during-preflight",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [{ "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000002--902d2e0c-2c43-4d05-9e98-96a5c0440009--6e94f7187a4f625aef6fbbea859e1454605438b233f0b87220c2da16f75178f1.json" }],
+      "expectedPutCount": 0,
+      "expectedGeneration": 4,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "9eff1d0bd59e828a63a89dcadfd26fbe1f0e63948c6e0c79e45cf25222195f22",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 1,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedRecoveryDecision": "RetryPublishExact"
+    },
+    {
+      "name": "activation-fatal-during-preflight",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [{ "operation": "GET", "path": "activations/e9804389-6d1e-4377-9133-94c75c6e11c1--8847c0822701d9679b7ed510213acabb71b1362df043b3f7650e95a11bd1f66c.json" }],
+      "expectedPutCount": 0,
+      "expectedGeneration": 6,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "9eff1d0bd59e828a63a89dcadfd26fbe1f0e63948c6e0c79e45cf25222195f22",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 2,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedRecoveryDecision": "RetryPublishExact"
+    },
+    {
+      "name": "activation-recovery-present-then-absent",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [{ "operation": "GET", "path": "activations/e9804389-6d1e-4377-9133-94c75c6e11c1--8847c0822701d9679b7ed510213acabb71b1362df043b3f7650e95a11bd1f66c.json" }],
+      "expectedPutCount": 0,
+      "expectedGeneration": 5,
+      "expectedStatus": "ACTIVATION_PUBLISHING",
+      "expectedSnapshotIdentity": "9eff1d0bd59e828a63a89dcadfd26fbe1f0e63948c6e0c79e45cf25222195f22",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 2,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedRecoveryDecision": "AlreadyPublishedExact"
+    },
+    {
+      "name": "admission-wins-then-fatal",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "PUT", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" }
+      ],
+      "expectedPutCount": 1,
+      "expectedGeneration": 2,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "publish-eligible",
+      "expectedRecoveryDecision": "RetryPublishExact"
+    },
+    {
+      "name": "fatal-after-admitted-put-blocks-next",
+      "expectedActualRoot": "root://legacy",
+      "expectedOperations": [
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "PUT", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" },
+        { "operation": "GET", "path": "writers/61000000-0000-4000-8000-000000000001/segments/00000000000000/00000000000000000001--7fc73f29-b172-4e99-91d5-e459198ef94e--db8bda91727512bc0db2f660a6fe1c5b1400900d02972bef0b81d7d9592e791b.json" }
+      ],
+      "expectedPutCount": 1,
+      "expectedGeneration": 2,
+      "expectedStatus": "ROOT_FROZEN",
+      "expectedSnapshotIdentity": "5a98f4d30d8fbd631a9f6baa316c1144bd913b4a492052549eab80305a9c4dde",
+      "expectedPlanIdentity": "15d4d2f218de80c34c5310ced37d529118bebe4bb656c8ff31af73c42dedf1cd",
+      "expectedRetainedReceipts": 0,
+      "expectedFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedRecoveryDecision": "RetryPublishExact"
+    }
+  ],
+  "rootBindingScenarios": [
+    {
+      "name": "cross-root-cutover-before-first-claim",
+      "requestedRootId": "root://replacement",
+      "expectedResult": "MIGRATION_ROOT_BINDING_MISMATCH",
+      "expectedRootSafetyRootId": "root://legacy",
+      "expectedAuthorityGeneration": 0,
+      "expectedEvidencePaths": [],
+      "expectedFatalCodes": [],
+      "expectedRemoteS2Activated": false,
+      "expectedMigrationStatus": "NOT_STARTED",
+      "expectedPutCount": 0
+    }
+  ],
+  "rootSafetyScenarios": [
+    {
+      "name": "fatal-before-first-claim",
+      "expectedRootFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedMigrationStatus": "ROOT_FROZEN",
+      "expectedRemoteS2Activated": false,
+      "expectedEvidencePaths": [],
+      "expectedFingerprintConsistency": "NoEvidence",
+      "expectedCutoverDecision": "root-fatal-denied",
+      "expectedPutCount": 0,
+      "expectedMigrationGeneration": 1,
+      "expectedAuthorityGeneration": 1
+    },
+    {
+      "name": "activated-state-then-stale-preactivation-state",
+      "expectedRootFatalCodes": [],
+      "expectedMigrationStatus": null,
+      "expectedRemoteS2Activated": true,
+      "expectedEvidencePaths": ["activations/a.json"],
+      "expectedFingerprintConsistency": "Consistent",
+      "expectedCutoverDecision": "REMOTE_S2_ACTIVATED",
+      "expectedPutCount": 0,
+      "expectedMigrationGeneration": null,
+      "expectedAuthorityGeneration": 1
+    },
+    {
+      "name": "conflict-fatal-then-stale-safe-state",
+      "expectedRootFatalCodes": ["SYNC_ROOT_FROZEN_LEGACY_CHANGE"],
+      "expectedMigrationStatus": null,
+      "expectedRemoteS2Activated": true,
+      "expectedEvidencePaths": ["activations/a.json", "activations/b.json"],
+      "expectedFingerprintConsistency": "Conflict",
+      "expectedCutoverDecision": "REMOTE_S2_ACTIVATED",
+      "expectedPutCount": 0,
+      "expectedMigrationGeneration": null,
+      "expectedAuthorityGeneration": 1
+    },
+    {
+      "name": "evidence-retention-subset-write",
+      "expectedRootFatalCodes": [],
+      "expectedMigrationStatus": null,
+      "expectedRemoteS2Activated": true,
+      "expectedEvidencePaths": ["activations/a.json", "activations/b.json"],
+      "expectedFingerprintConsistency": "Consistent",
+      "expectedCutoverDecision": "REMOTE_S2_ACTIVATED",
+      "expectedPutCount": 0,
+      "expectedMigrationGeneration": null,
+      "expectedAuthorityGeneration": 1
+    },
+    {
+      "name": "restart-after-stale-cutover-write",
+      "expectedRootFatalCodes": [],
+      "expectedMigrationStatus": null,
+      "expectedRemoteS2Activated": true,
+      "expectedEvidencePaths": ["activations/a.json"],
+      "expectedFingerprintConsistency": "Consistent",
+      "expectedCutoverDecision": "REMOTE_S2_ACTIVATED",
+      "expectedPutCount": 0,
+      "expectedMigrationGeneration": null,
+      "expectedAuthorityGeneration": 1
+    }
+  ]
+}
