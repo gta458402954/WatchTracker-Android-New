@@ -29,10 +29,10 @@ use super::migration_orchestration::{
     create_new_root_migration_handoff_v1, execute_migration_step_v1,
     freeze_old_root_for_new_root_handoff_v1, merge_migration_root_cutover_state_v1,
     migration_projection_v1, plan_captured_migration_v1, recover_migration_activation_cutover_v1,
-    retain_captured_snapshot_v1, start_or_attach_migration_v1, ActivationCutoverStateStoreV1,
-    LegacySnapshotEntryV1, MigrationExecutionIdentityV1, MigrationRootFatalV1,
-    MigrationRootSafetyStateV1, MigrationStateStoreV1, MigrationStateV1, MigrationStatusV1,
-    PublishExclusiveResultV1,
+    retain_captured_snapshot_v1, start_or_attach_migration_v1,
+    validate_migration_activation_body_v1, ActivationCutoverStateStoreV1, LegacySnapshotEntryV1,
+    MigrationExecutionIdentityV1, MigrationRootFatalV1, MigrationRootSafetyStateV1,
+    MigrationStateStoreV1, MigrationStateV1, MigrationStatusV1, PublishExclusiveResultV1,
 };
 use super::remote_discovery::create_discovery_state_v1;
 use super::types::{BootstrapEntity, LegacySemanticAdapterV1};
@@ -46,6 +46,25 @@ fn fixture() -> Value {
         .unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn migration_activation_validator_preserves_desktop_duplicate_key_parsing() {
+    let body = br#"{
+        "activationId":"10000000-0000-4000-8000-000000000001",
+        "legacyFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol":"watchtracker-s2-lite",
+        "protocol":"watchtracker-s2-lite",
+        "protocolVersion":1,
+        "requiredFeatures":[],
+        "s2SemanticProfileVersion":1
+    }"#;
+
+    assert_eq!(
+        serde_json::from_slice::<Value>(body).unwrap()["protocol"],
+        "watchtracker-s2-lite"
+    );
+    assert!(validate_migration_activation_body_v1(body).is_ok());
 }
 
 fn record(index: usize, timestamp: &str) -> BootstrapEntity {

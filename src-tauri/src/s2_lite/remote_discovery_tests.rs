@@ -215,6 +215,27 @@ fn production_activation_validator_is_exact_and_preserves_nullable_fingerprint()
     }
 }
 
+#[test]
+fn production_activation_validator_preserves_desktop_duplicate_key_parsing() {
+    let body = br#"{
+        "activationId":"10000000-0000-4000-8000-000000000001",
+        "legacyFingerprint":null,
+        "protocol":"watchtracker-s2-lite",
+        "protocol":"watchtracker-s2-lite",
+        "protocolVersion":1,
+        "requiredFeatures":[],
+        "s2SemanticProfileVersion":1
+    }"#;
+
+    // Frozen desktop activation validation calls normal serde_json::from_slice,
+    // whose object semantics retain the last duplicate field value.
+    assert_eq!(
+        serde_json::from_slice::<Value>(body).unwrap()["protocol"],
+        "watchtracker-s2-lite"
+    );
+    assert!(validate_production_activation_body_v1(body).is_ok());
+}
+
 fn ref_key_for_projection(value: &CommitRef) -> String {
     format!(
         "{}/{}/{}/{}",

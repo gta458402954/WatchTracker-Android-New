@@ -5,7 +5,7 @@ use super::canonical::{
     compare_commit_ref_v1, parse_writer_seq, sha256_hex, validate_canonical_uuid,
     validate_canonical_uuid_v4, validate_commit_ref, ProtocolError, Result,
 };
-use super::causal::{decode_frozen_wire_commit_v1, parse_frozen_json_value_v1};
+use super::causal::decode_frozen_wire_commit_v1;
 use super::immutable_publish::{build_commit_remote_path_v1, SEGMENT_NAME_WIDTH_V1};
 use super::types::{CommitRef, CommitV1};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ pub type ActivationValidatorResultV1 =
 /// by cutover evaluation; path/hash identity is established separately by the
 /// discovery verifier before this validator is called.
 pub fn validate_production_activation_body_v1(bytes: &[u8]) -> ActivationValidatorResultV1 {
-    let value = parse_frozen_json_value_v1(bytes)
+    let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| ActivationValidatorErrorV1::ProtocolValidation)?;
     let object = value
         .as_object()
