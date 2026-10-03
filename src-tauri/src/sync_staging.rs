@@ -152,6 +152,30 @@ pub fn set_staging(conn: &Connection, staging: &SyncStaging) -> Result<(), AppEr
         AppError::General(format!("Could not serialize {STAGING_KEY}: {error}"))
     })?;
     set_setting_tx(conn, &key(conn, STAGING_KEY, "staging_v1")?, &raw)?;
+    let retained = staging
+        .entries
+        .iter()
+        .map(|entry| (entry.entity_kind.clone(), entry.id.clone()))
+        .collect::<HashSet<_>>();
+    for entry in &staging.entries {
+        crate::s2_lite::local_authority::capture_staged_descriptor(
+            conn,
+            &entry.entity_kind,
+            &entry.id,
+            entry.base.clone(),
+            entry.local.clone(),
+            entry.last_generation,
+        )
+        .map_err(|error| AppError::General(error.0.to_string()))?;
+    }
+    for (kind, id) in crate::s2_lite::local_authority::staged_descriptor_keys(conn)
+        .map_err(|error| AppError::General(error.0.to_string()))?
+    {
+        if !retained.contains(&(kind.clone(), id.clone())) {
+            crate::s2_lite::local_authority::remove_staged_descriptor(conn, &kind, &id)
+                .map_err(|error| AppError::General(error.0.to_string()))?;
+        }
+    }
     Ok(())
 }
 
@@ -195,15 +219,6 @@ fn stage_value(
             .unwrap_or(generation),
         last_generation: generation,
     };
-    crate::s2_lite::local_authority::capture_staged_descriptor(
-        conn,
-        entity_kind,
-        id,
-        entry.base.clone(),
-        entry.local.clone(),
-        generation,
-    )
-    .map_err(|error| AppError::General(error.0.to_string()))?;
     if let Some(position) = existing {
         staging.entries[position] = entry;
     } else {

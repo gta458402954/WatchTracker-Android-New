@@ -38,11 +38,19 @@ pub struct CapturedStagingDescriptorV1 {
     pub entity_id: String,
     pub operation: String,
     pub local_mutation_id: String,
-    pub causal_anchor: String,
+    pub causal_anchor: StagingAnchorStateV1,
     pub base: Option<Value>,
     pub local: Option<Value>,
     pub first_generation: i64,
     pub last_generation: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum StagingAnchorStateV1 {
+    Unavailable,
+    Absent,
+    Live { value: Value },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -166,7 +174,6 @@ fn decode_staging_descriptor(bytes: &[u8]) -> Result<CapturedStagingDescriptorV1
         )
         || decoded.entity_id.trim().is_empty()
         || !matches!(decoded.operation.as_str(), "upsert" | "delete")
-        || decoded.causal_anchor != "absent"
         || decoded.first_generation < 0
         || decoded.last_generation < decoded.first_generation
         || serde_json::to_value(&decoded).map_err(|_| CORRUPTION)? != value
@@ -218,7 +225,7 @@ pub fn capture_staged_descriptor(
                 "delete".into()
             },
             local_mutation_id: uuid::Uuid::new_v4().to_string(),
-            causal_anchor: "absent".into(),
+            causal_anchor: StagingAnchorStateV1::Unavailable,
             base,
             local,
             first_generation: generation,
@@ -233,6 +240,26 @@ pub fn capture_staged_descriptor(
         params![entity_kind, entity_id, serde_json::to_vec(&validated).map_err(|_| CORRUPTION)?],
     ))?;
     Ok(validated)
+}
+
+pub fn staged_descriptor_keys(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut statement = database(
+        conn.prepare("SELECT entity_kind, entity_id FROM s2_lite_local_staging_descriptor_v1"),
+    )?;
+    let rows = database(statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))))?;
+    rows.map(database).collect()
+}
+
+pub fn remove_staged_descriptor(
+    conn: &Connection,
+    entity_kind: &str,
+    entity_id: &str,
+) -> Result<()> {
+    database(conn.execute(
+        "DELETE FROM s2_lite_local_staging_descriptor_v1 WHERE entity_kind=?1 AND entity_id=?2",
+        params![entity_kind, entity_id],
+    ))?;
+    Ok(())
 }
 
 pub fn load_writer(conn: &Connection) -> Result<Option<LocalWriterAuthorityV1>> {
@@ -480,7 +507,7 @@ mod tests {
         let deleted = capture_staged_descriptor(&conn, "collection", "c1", None, None, 8).unwrap();
         assert_eq!(first.local_mutation_id, updated.local_mutation_id);
         assert_eq!(updated.local_mutation_id, deleted.local_mutation_id);
-        assert_eq!(deleted.causal_anchor, "absent");
+        assert_eq!(deleted.causal_anchor, StagingAnchorStateV1::Unavailable);
         assert_eq!(deleted.first_generation, 3);
         assert_eq!(deleted.last_generation, 8);
         assert_eq!(deleted.operation, "delete");
