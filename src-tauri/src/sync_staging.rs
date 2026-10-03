@@ -195,6 +195,15 @@ fn stage_value(
             .unwrap_or(generation),
         last_generation: generation,
     };
+    crate::s2_lite::local_authority::capture_staged_descriptor(
+        conn,
+        entity_kind,
+        id,
+        entry.base.clone(),
+        entry.local.clone(),
+        generation,
+    )
+    .map_err(|error| AppError::General(error.0.to_string()))?;
     if let Some(position) = existing {
         staging.entries[position] = entry;
     } else {

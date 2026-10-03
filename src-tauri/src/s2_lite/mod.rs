@@ -9,6 +9,7 @@ pub mod canonical;
 pub mod causal;
 pub mod conflict;
 pub mod immutable_publish;
+pub mod local_authority;
 pub mod migration_orchestration;
 pub mod ordinary_mutation;
 pub mod remote_discovery;

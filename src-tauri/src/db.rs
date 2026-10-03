@@ -520,6 +520,7 @@ pub(crate) fn setup_db(conn: &Connection) -> Result<()> {
 
     migrate_episode_history_schema(conn)?;
     crate::collections::migrate_schema(conn)?;
+    crate::s2_lite::local_authority::migrate_schema(conn)?;
 
     Ok(())
 }
