@@ -148,6 +148,12 @@ fn get_staging_for_key(conn: &Connection, staging_key: &str) -> Result<SyncStagi
 }
 
 pub fn set_staging(conn: &Connection, staging: &SyncStaging) -> Result<(), AppError> {
+    let previous = get_staging(conn)?;
+    let previous_entries = previous
+        .entries
+        .iter()
+        .map(|entry| ((entry.entity_kind.as_str(), entry.id.as_str()), entry))
+        .collect::<BTreeMap<_, _>>();
     let raw = serde_json::to_string(staging).map_err(|error| {
         AppError::General(format!("Could not serialize {STAGING_KEY}: {error}"))
     })?;
@@ -158,6 +164,13 @@ pub fn set_staging(conn: &Connection, staging: &SyncStaging) -> Result<(), AppEr
         .map(|entry| (entry.entity_kind.clone(), entry.id.clone()))
         .collect::<HashSet<_>>();
     for entry in &staging.entries {
+        // Reconcile the staging transition, not its historical upserts. A
+        // business transaction may already have captured a cascade deletion
+        // (or cancelled a create) before staging each affected entity. Replaying
+        // unchanged siblings here would overwrite that newer authority.
+        if previous_entries.get(&(entry.entity_kind.as_str(), entry.id.as_str())) == Some(&entry) {
+            continue;
+        }
         crate::s2_lite::local_authority::capture_staged_descriptor(
             conn,
             &entry.entity_kind,

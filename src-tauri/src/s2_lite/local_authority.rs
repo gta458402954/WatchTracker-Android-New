@@ -472,6 +472,13 @@ pub fn capture_ordinary_mutation(
         base_frontier,
     };
     let Some(mutation) = map_ordinary_mutation_v1(&effective)? else {
+        // A semantic revert cancels the entire coalesced logical mutation.
+        // Retire its identity with the row; the next edit uses a new request's
+        // UUID and first generation, while writer authority remains intact.
+        database(conn.execute(
+            "DELETE FROM s2_lite_local_mutation_v1 WHERE entity_key_jcs = ?1",
+            [&key],
+        ))?;
         return Ok(None);
     };
     let persisted = PersistedMutationV1 {
@@ -649,5 +656,122 @@ mod tests {
         assert_eq!(deleted.first_generation, 3);
         assert_eq!(deleted.last_generation, 8);
         assert_eq!(deleted.operation, "delete");
+    }
+    #[test]
+    fn semantic_revert_removes_mutation_across_restart_and_reedit_has_new_identity() {
+        let path = std::env::temp_dir().join(format!("i61-cancel-{}.sqlite", uuid::Uuid::new_v4()));
+        let mut conn = Connection::open(&path).unwrap();
+        crate::db::setup_db(&conn).unwrap();
+        let writer = initialize_writer(&conn).unwrap();
+        let original = collection("c1", "Original");
+        let original_wire = LocalEntityValueV1::Collection(original.clone())
+            .wire_value()
+            .unwrap();
+        let mut changed = request("c1", &uuid::Uuid::new_v4().to_string(), "Changed");
+        changed.causal_base = OrdinaryCausalBaseV1::Live(
+            super::super::semantic::canonical_semantic_value(&original_wire).unwrap(),
+        );
+        let cancelled_id = capture_ordinary_mutation(&conn, &changed, 1)
+            .unwrap()
+            .unwrap()
+            .mutation
+            .local_mutation_id;
+        let mut revert = request("c1", &uuid::Uuid::new_v4().to_string(), "Original");
+        // Caller-supplied subsequent basis cannot replace the first live basis.
+        revert.causal_base = OrdinaryCausalBaseV1::Absent;
+        let tx = conn.transaction().unwrap();
+        assert!(capture_ordinary_mutation(&tx, &revert, 2)
+            .unwrap()
+            .is_none());
+        assert!(load_captured_mutations(&tx).unwrap().is_empty());
+        tx.commit().unwrap();
+        assert!(load_staged_descriptors(&conn).unwrap().is_empty());
+        assert_eq!(load_writer(&conn).unwrap().unwrap(), writer);
+        drop(conn);
+        let conn = Connection::open(&path).unwrap();
+        crate::db::setup_db(&conn).unwrap();
+        assert!(load_captured_mutations(&conn).unwrap().is_empty());
+        assert_eq!(load_writer(&conn).unwrap().unwrap(), writer);
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let mut again = request("c1", &new_id, "ChangedAgain");
+        again.causal_base = OrdinaryCausalBaseV1::Live(
+            super::super::semantic::canonical_semantic_value(&original_wire).unwrap(),
+        );
+        let captured = capture_ordinary_mutation(&conn, &again, 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(captured.mutation.local_mutation_id, new_id);
+        assert_ne!(captured.mutation.local_mutation_id, cancelled_id);
+        assert_eq!(captured.first_generation, 3);
+        assert_eq!(load_captured_mutations(&conn).unwrap().len(), 1);
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delete_then_recreate_original_cancels_against_immutable_live_basis() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::setup_db(&conn).unwrap();
+        let original_wire = LocalEntityValueV1::Collection(collection("c1", "Original"))
+            .wire_value()
+            .unwrap();
+        let delete = OrdinaryMutationRequestV1 {
+            local_mutation_id: uuid::Uuid::new_v4().to_string(),
+            payload: OrdinaryPayloadV1::Tombstone(DeleteDescriptorV1::Collection {
+                id: "c1".into(),
+                deleted_at: "2026-01-02T00:00:00.000Z".into(),
+                rev: 2,
+                rev_actor: "test".into(),
+            }),
+            causal_base: OrdinaryCausalBaseV1::Live(
+                super::super::semantic::canonical_semantic_value(&original_wire).unwrap(),
+            ),
+            base_frontier: vec![],
+        };
+        capture_ordinary_mutation(&conn, &delete, 1)
+            .unwrap()
+            .unwrap();
+        let recreate = request("c1", &uuid::Uuid::new_v4().to_string(), "Original");
+        assert!(capture_ordinary_mutation(&conn, &recreate, 2)
+            .unwrap()
+            .is_none());
+        assert!(load_captured_mutations(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn semantic_cancellation_obeys_transaction_rollback_and_delete_failure() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::setup_db(&conn).unwrap();
+        let mut changed = request("c1", &uuid::Uuid::new_v4().to_string(), "Changed");
+        changed.causal_base = OrdinaryCausalBaseV1::Live(
+            super::super::semantic::canonical_semantic_value(
+                &LocalEntityValueV1::Collection(collection("c1", "Original"))
+                    .wire_value()
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        let first = capture_ordinary_mutation(&conn, &changed, 1)
+            .unwrap()
+            .unwrap();
+        let revert = request("c1", &uuid::Uuid::new_v4().to_string(), "Original");
+        {
+            let tx = conn.transaction().unwrap();
+            assert!(capture_ordinary_mutation(&tx, &revert, 2)
+                .unwrap()
+                .is_none());
+            assert!(load_captured_mutations(&tx).unwrap().is_empty());
+            tx.rollback().unwrap();
+        }
+        assert_eq!(
+            serde_json::to_value(&load_captured_mutations(&conn).unwrap()[0].mutation).unwrap(),
+            serde_json::to_value(&first.mutation).unwrap()
+        );
+        conn.execute_batch("CREATE TRIGGER reject_cancel BEFORE DELETE ON s2_lite_local_mutation_v1 BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(capture_ordinary_mutation(&conn, &revert, 2).is_err());
+        assert_eq!(
+            serde_json::to_value(&load_captured_mutations(&conn).unwrap()[0].mutation).unwrap(),
+            serde_json::to_value(&first.mutation).unwrap()
+        );
     }
 }

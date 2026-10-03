@@ -415,3 +415,140 @@ fn malformed_delete_evidence_fails_closed_and_float_before_image_keeps_bits() {
         assert!(db::setup_db(&conn).is_err());
     }
 }
+
+fn pending_member_delete_case(member_count: usize) {
+    let mut conn = database();
+    let deleted_id = seed_collection(&conn);
+    for index in 2..=member_count {
+        let record_id = format!("r{index}");
+        db::insert_record(&conn, record(&record_id)).unwrap();
+        let member_id = super::canonical::sha256_hex(
+            format!("collection-member:v1\0c1\0{record_id}").as_bytes(),
+        );
+        conn.execute("INSERT INTO collection_members(id,collectionId,recordId,position,sourceKind,createdAt,updatedAt,rev,revActor) VALUES(?1,'c1',?2,?3,'manual','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',3,'seed')", params![member_id, record_id, (index as i64 - 1) * 1024]).unwrap();
+    }
+    baseline(&conn);
+    crate::collections::reorder(
+        &mut conn,
+        "c1",
+        (1..=member_count)
+            .rev()
+            .map(|index| format!("r{index}"))
+            .collect(),
+        3,
+        "device",
+    )
+    .unwrap();
+    let before = load_staged_descriptors(&conn).unwrap();
+    let pending = find(&conn, "collection-member", &deleted_id);
+    assert_eq!(pending.operation, "upsert");
+    assert!(
+        before
+            .iter()
+            .filter(|row| row.entity_kind == "collection-member")
+            .count()
+            >= 2
+    );
+    let member_revision = crate::collections::all_members(&conn)
+        .unwrap()
+        .into_iter()
+        .find(|member| member.id == deleted_id)
+        .unwrap()
+        .rev;
+    if member_count == 4 {
+        let before_staging = sync_staging::get_staging(&conn).unwrap();
+        let before_members =
+            serde_json::to_value(crate::collections::all_members(&conn).unwrap()).unwrap();
+        let generation = crate::db_atomic_helpers::get_records_generation(&conn).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_staging BEFORE INSERT ON settings WHEN NEW.key='sync_staging_v1' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(db_atomic_crud::delete_record_atomic(&mut conn, "r1", "device").is_err());
+        assert!(db::get_record(&conn, "r1").unwrap().is_some());
+        assert_eq!(load_staged_descriptors(&conn).unwrap(), before);
+        assert_eq!(sync_staging::get_staging(&conn).unwrap(), before_staging);
+        assert_eq!(
+            serde_json::to_value(crate::collections::all_members(&conn).unwrap()).unwrap(),
+            before_members
+        );
+        assert_eq!(
+            crate::db_atomic_helpers::get_records_generation(&conn).unwrap(),
+            generation
+        );
+        conn.execute_batch("DROP TRIGGER reject_staging;").unwrap();
+    }
+    db_atomic_crud::delete_record_atomic(&mut conn, "r1", "device").unwrap();
+    let deleted = find(&conn, "collection-member", &deleted_id);
+    assert_delete(&deleted, "device", member_revision + 1);
+    assert_eq!(deleted.local_mutation_id, pending.local_mutation_id);
+    assert_eq!(deleted.first_generation, pending.first_generation);
+    assert_eq!(deleted.base, pending.base);
+    assert_eq!(deleted.causal_anchor, pending.causal_anchor);
+    assert_eq!(
+        deleted.frozen_delete_evidence().unwrap().wire_value()["recordId"],
+        "r1"
+    );
+    let staging = sync_staging::get_staging(&conn).unwrap();
+    assert_eq!(
+        staging
+            .entries
+            .iter()
+            .find(|entry| entry.id == deleted_id)
+            .unwrap()
+            .operation,
+        "delete"
+    );
+    for survivor in before
+        .iter()
+        .filter(|row| row.entity_kind == "collection-member" && row.entity_id != deleted_id)
+    {
+        assert_eq!(
+            find(&conn, "collection-member", &survivor.entity_id),
+            *survivor
+        );
+        assert_eq!(
+            staging
+                .entries
+                .iter()
+                .find(|entry| entry.id == survivor.entity_id)
+                .unwrap()
+                .operation,
+            "upsert"
+        );
+    }
+    // Reconciliation is idempotent even while other member edits are pending.
+    sync_staging::set_staging(&conn, &staging).unwrap();
+    assert_eq!(find(&conn, "collection-member", &deleted_id), deleted);
+}
+
+#[test]
+fn pending_member_reorder_then_record_delete_preserves_tombstone() {
+    pending_member_delete_case(2);
+}
+
+#[test]
+fn multiple_pending_members_only_cascade_deleted_member_becomes_tombstone() {
+    pending_member_delete_case(4);
+}
+
+#[test]
+fn pending_new_member_cascade_cancellation_does_not_recreate_stale_upsert() {
+    let mut conn = database();
+    seed_collection(&conn);
+    baseline(&conn);
+    db_atomic_crud::insert_record_atomic(&mut conn, record("new"), "device").unwrap();
+    crate::collections::add_members(&mut conn, "c1", vec!["new".into()], "manual", 3, "device")
+        .unwrap();
+    let id = super::canonical::sha256_hex(b"collection-member:v1\0c1\0new");
+    assert!(find(&conn, "collection-member", &id).base.is_none());
+    let writer = super::local_authority::load_writer(&conn).unwrap();
+    db_atomic_crud::delete_record_atomic(&mut conn, "new", "device").unwrap();
+    assert!(load_staged_descriptors(&conn)
+        .unwrap()
+        .iter()
+        .all(|row| row.entity_id != id && row.entity_id != "new"));
+    assert!(sync_staging::get_staging(&conn)
+        .unwrap()
+        .entries
+        .iter()
+        .all(|entry| entry.id != id && entry.id != "new"));
+    assert_eq!(super::local_authority::load_writer(&conn).unwrap(), writer);
+}

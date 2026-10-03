@@ -1499,14 +1499,9 @@ pub fn detach_record_tx(
         .collect::<Vec<_>>();
     let mut changed_collections = Vec::new();
     for member in &members {
-        crate::s2_lite::local_capture::capture_delete_value(
-            conn,
-            "collection-member",
-            serde_json::to_value(member).map_err(|error| AppError::General(error.to_string()))?,
-            crate::db_atomic_helpers::get_records_generation(conn)?,
-            actor,
-            &timestamp,
-        )?;
+        // delete_record_atomic already captured the entire cascade before
+        // removing source rows. Capturing twice could resurrect a cancelled
+        // local create after its descriptor was deliberately removed.
         conn.execute("DELETE FROM collection_members WHERE id=?1", [&member.id])?;
         conn.execute("INSERT INTO collection_member_tombstones(id,collectionId,recordId,deletedAt,rev,revActor) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET deletedAt=excluded.deletedAt,rev=excluded.rev,revActor=excluded.revActor", params![member.id,member.collection_id,member.record_id,timestamp,member.rev+1,actor])?;
         changed_collections.push(bump_collection(
