@@ -150,6 +150,27 @@ pub fn replace_library_atomic(
             .filter(|record| !locked_ids.contains(&record.id))
             .collect(),
     )?;
+    let generation = mark_local_records_mutated(&transaction, "library-import")?;
+    let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+    let planned_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .chain(locked_ids.iter().cloned())
+        .collect();
+    capture.retain_records(&planned_ids);
+    let episode_ids = completions
+        .iter()
+        .filter(|item| !locked_ids.contains(&item.record_id))
+        .map(|item| item.id.clone())
+        .chain(capture.locked_episode_ids(&locked_ids))
+        .collect();
+    capture.retain_kind("episode-completion", &episode_ids);
+    capture.prepare_deletions(
+        &transaction,
+        generation,
+        &actor,
+        &crate::s2_lite::local_capture::timestamp(),
+    )?;
     db::replace_all_records_tx(&transaction, records)?;
     crate::collections::reconcile_after_record_replace_tx(
         &transaction,
@@ -157,7 +178,7 @@ pub fn replace_library_atomic(
         &actor,
     )?;
     replace_completions_tx(&transaction, &completions, &locked_ids)?;
-    let generation = mark_local_records_mutated(&transaction, "library-import")?;
+    capture.capture_episode_changes(&transaction, generation)?;
     crate::sync_staging::rebuild_from_current(&transaction, generation)?;
     transaction.commit()?;
     Ok(())
@@ -282,6 +303,88 @@ fn insert_known(
     Ok(())
 }
 
+/// Frozen live uncompletion: retain the entity and write completedAt=null.
+#[allow(dead_code)] // Local boundary only; no new UI command in I6.1.
+pub fn uncomplete(
+    conn: &mut Connection,
+    record_id: &str,
+    episode_number: i32,
+    expected_rev: i64,
+    actor_id: &str,
+) -> Result<(), AppError> {
+    if actor_id.trim().is_empty() || episode_number <= 0 {
+        return Err(invalid("episode_completion_uncomplete_invalid"));
+    }
+    let transaction = conn.transaction()?;
+    let completion = transaction
+        .query_row(
+            "SELECT * FROM episode_completions WHERE recordId=?1 AND episodeNumber=?2",
+            params![record_id, episode_number],
+            row_to_completion,
+        )
+        .optional()?
+        .ok_or_else(|| invalid("episode_completion_not_found"))?;
+    if completion.rev != expected_rev {
+        return Err(invalid("stale_episode_completion"));
+    }
+    if completion.completed_at.is_none() {
+        return Ok(());
+    }
+    let revision = completion
+        .rev
+        .checked_add(1)
+        .ok_or_else(|| invalid("episode_revision_overflow"))?;
+    let capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    transaction.execute("UPDATE episode_completions SET completedAt=NULL, updatedAt=?1, rev=?2, revActor=?3 WHERE id=?4",
+        params![now, revision, actor_id, completion.id])?;
+    let generation = mark_local_records_mutated(&transaction, "episode-completion-uncomplete")?;
+    capture.capture_episode_changes(&transaction, generation)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// A true entity deletion retains the frozen composite identity and revision.
+#[allow(dead_code)] // Local boundary only; no new UI command in I6.1.
+pub fn delete_completion(
+    conn: &mut Connection,
+    record_id: &str,
+    episode_number: i32,
+    expected_rev: i64,
+    actor_id: &str,
+) -> Result<(), AppError> {
+    if actor_id.trim().is_empty() || episode_number <= 0 {
+        return Err(invalid("episode_completion_delete_invalid"));
+    }
+    let transaction = conn.transaction()?;
+    let completion = transaction
+        .query_row(
+            "SELECT * FROM episode_completions WHERE recordId=?1 AND episodeNumber=?2",
+            params![record_id, episode_number],
+            row_to_completion,
+        )
+        .optional()?
+        .ok_or_else(|| invalid("episode_completion_not_found"))?;
+    if completion.rev != expected_rev {
+        return Err(invalid("stale_episode_completion"));
+    }
+    let generation = mark_local_records_mutated(&transaction, "episode-completion-delete")?;
+    crate::s2_lite::local_capture::capture_delete_value(
+        &transaction,
+        "episode-completion",
+        serde_json::to_value(&completion).map_err(|error| invalid(&error.to_string()))?,
+        generation,
+        actor_id,
+        &crate::s2_lite::local_capture::timestamp(),
+    )?;
+    transaction.execute(
+        "DELETE FROM episode_completions WHERE id=?1",
+        [&completion.id],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn enable(
     conn: &mut Connection,
     record_id: &str,
@@ -340,6 +443,7 @@ pub fn set_next(
     }
 
     let transaction = conn.transaction()?;
+    let capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     if let Some(current) = record.next_episode {
         let boundary = next_episode.map_or(total, |target| target - 1);
@@ -359,6 +463,7 @@ pub fn set_next(
         next_episode.is_none(),
     )?;
     let generation = mark_local_records_mutated(&transaction, "episode-progress")?;
+    capture.capture_episode_changes(&transaction, generation)?;
     crate::sync_staging::stage_upsert(&transaction, &record, generation)?;
     transaction.commit()?;
     tracking(conn, record_id)

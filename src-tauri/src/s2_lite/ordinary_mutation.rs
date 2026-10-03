@@ -109,7 +109,13 @@ pub enum LocalEntityValueV1 {
     EpisodeCompletion(LocalEpisodeCompletionV1),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
 pub enum DeleteDescriptorV1 {
     Record {
         id: String,

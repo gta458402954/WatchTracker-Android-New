@@ -60,6 +60,11 @@ pub fn delete_record_atomic(
         [id],
         |row| row.get::<_, i64>(0),
     )?;
+    let generation = mark_local_records_mutated(&transaction, "record-delete")?;
+    let deleted_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+    capture.remove_record(id);
+    capture.prepare_deletions(&transaction, generation, actor_id, &deleted_at)?;
     let (removed_collection_members, changed_collections) =
         crate::collections::detach_record_tx(&transaction, id, actor_id)?;
     transaction.execute("DELETE FROM episode_completions WHERE recordId = ?1", [id])?;
@@ -71,14 +76,13 @@ pub fn delete_record_atomic(
     tombstones.retain(|tombstone| tombstone.id != id);
     tombstones.push(Tombstone {
         id: id.to_string(),
-        deleted_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        deleted_at,
         rev: previous_revision
             .checked_add(1)
             .ok_or_else(|| AppError::General("Record revision overflow".to_string()))?,
         rev_actor: actor_id.to_string(),
     });
     set_tombstones_tx(&transaction, &tombstones)?;
-    let generation = mark_local_records_mutated(&transaction, "record-delete")?;
     crate::sync_staging::stage_delete(&transaction, id, generation)?;
     for member_id in removed_collection_members {
         crate::sync_staging::stage_entity_delete(
@@ -139,6 +143,20 @@ pub fn replace_all_records_atomic(
             record.next_episode = *next_episode;
         }
     }
+    let generation = mark_local_records_mutated(&transaction, "records-replace")?;
+    let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+    let planned_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .chain(locked_ids.iter().cloned())
+        .collect();
+    capture.retain_records(&planned_ids);
+    capture.prepare_deletions(
+        &transaction,
+        generation,
+        &actor,
+        &crate::s2_lite::local_capture::timestamp(),
+    )?;
     db::replace_all_records_tx(&transaction, records)?;
     crate::collections::reconcile_after_record_replace_tx(
         &transaction,
@@ -158,7 +176,7 @@ pub fn replace_all_records_atomic(
         &retained_completions,
         &locked_ids,
     )?;
-    let generation = mark_local_records_mutated(&transaction, "records-replace")?;
+    capture.capture_episode_changes(&transaction, generation)?;
     crate::sync_staging::rebuild_from_current(&transaction, generation)?;
     transaction.commit()?;
     Ok(())

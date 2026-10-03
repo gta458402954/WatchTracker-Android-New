@@ -1354,10 +1354,18 @@ pub fn remove_member(
     if member.rev != expected_rev {
         return Err(AppError::General("stale_collection_member".into()));
     }
+    let generation = mark_local_records_mutated(&tx, "collection-member-remove")?;
+    crate::s2_lite::local_capture::capture_delete_value(
+        &tx,
+        "collection-member",
+        serde_json::to_value(&member).map_err(|error| AppError::General(error.to_string()))?,
+        generation,
+        actor,
+        &timestamp,
+    )?;
     tx.execute("DELETE FROM collection_members WHERE id=?1", [&id])?;
     tx.execute("INSERT INTO collection_member_tombstones(id,collectionId,recordId,deletedAt,rev,revActor) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET deletedAt=excluded.deletedAt,rev=excluded.rev,revActor=excluded.revActor", params![id,collection_id,record_id,timestamp,member.rev+1,actor])?;
     let collection = bump_collection(&tx, collection_id, actor, &timestamp)?;
-    let generation = mark_local_records_mutated(&tx, "collection-member-remove")?;
     crate::sync_staging::stage_entity_delete(&tx, "collection-member", &id, generation)?;
     crate::sync_staging::stage_entity_upsert(
         &tx,
@@ -1462,12 +1470,15 @@ pub fn delete(
         .into_iter()
         .filter(|item| item.collection_id == id)
         .collect::<Vec<_>>();
+    let generation = mark_local_records_mutated(&tx, "collection-delete")?;
+    let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&tx)?;
+    capture.remove_collection(id);
+    capture.prepare_deletions(&tx, generation, actor, &timestamp)?;
     tx.execute("DELETE FROM collections WHERE id=?1", [id])?;
     tx.execute("INSERT INTO collection_tombstones(id,deletedAt,rev,revActor) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET deletedAt=excluded.deletedAt,rev=excluded.rev,revActor=excluded.revActor", params![id,timestamp,collection.rev+1,actor])?;
     for member in &members {
         tx.execute("INSERT INTO collection_member_tombstones(id,collectionId,recordId,deletedAt,rev,revActor) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET deletedAt=excluded.deletedAt,rev=excluded.rev,revActor=excluded.revActor", params![member.id,member.collection_id,member.record_id,timestamp,member.rev+1,actor])?;
     }
-    let generation = mark_local_records_mutated(&tx, "collection-delete")?;
     crate::sync_staging::stage_entity_delete(&tx, "collection", id, generation)?;
     for member in members {
         crate::sync_staging::stage_entity_delete(&tx, "collection-member", &member.id, generation)?;
@@ -1488,6 +1499,14 @@ pub fn detach_record_tx(
         .collect::<Vec<_>>();
     let mut changed_collections = Vec::new();
     for member in &members {
+        crate::s2_lite::local_capture::capture_delete_value(
+            conn,
+            "collection-member",
+            serde_json::to_value(member).map_err(|error| AppError::General(error.to_string()))?,
+            crate::db_atomic_helpers::get_records_generation(conn)?,
+            actor,
+            &timestamp,
+        )?;
         conn.execute("DELETE FROM collection_members WHERE id=?1", [&member.id])?;
         conn.execute("INSERT INTO collection_member_tombstones(id,collectionId,recordId,deletedAt,rev,revActor) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET deletedAt=excluded.deletedAt,rev=excluded.rev,revActor=excluded.revActor", params![member.id,member.collection_id,member.record_id,timestamp,member.rev+1,actor])?;
         changed_collections.push(bump_collection(
@@ -1598,10 +1617,40 @@ pub fn replace_library_atomic(
             .filter(|record| !locked_ids.contains(&record.id))
             .collect(),
     )?;
+    let actor = crate::sync_state::device_id(&transaction)?;
+    let generation = mark_local_records_mutated(&transaction, "library-import-v3")?;
+    let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+    let planned_ids = records
+        .iter()
+        .map(|record| record.id.clone())
+        .chain(locked_ids.iter().cloned())
+        .collect();
+    capture.retain_records(&planned_ids);
+    let episode_ids = completions
+        .iter()
+        .filter(|item| !locked_ids.contains(&item.record_id))
+        .map(|item| item.id.clone())
+        .chain(capture.locked_episode_ids(&locked_ids))
+        .collect();
+    capture.retain_kind("episode-completion", &episode_ids);
+    capture.retain_kind(
+        "collection",
+        &collections.iter().map(|item| item.id.clone()).collect(),
+    );
+    capture.retain_kind(
+        "collection-member",
+        &members.iter().map(|item| item.id.clone()).collect(),
+    );
+    capture.prepare_deletions(
+        &transaction,
+        generation,
+        &actor,
+        &crate::s2_lite::local_capture::timestamp(),
+    )?;
     crate::db::replace_all_records_tx(&transaction, records)?;
     crate::episode_history::replace_completions_tx(&transaction, &completions, &locked_ids)?;
     replace_all_tx(&transaction, &collections, &members, &[], &[])?;
-    let generation = mark_local_records_mutated(&transaction, "library-import-v3")?;
+    capture.capture_episode_changes(&transaction, generation)?;
     crate::sync_staging::rebuild_from_current(&transaction, generation)?;
     transaction.commit()?;
     Ok(())

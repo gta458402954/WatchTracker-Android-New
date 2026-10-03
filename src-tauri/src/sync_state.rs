@@ -814,6 +814,17 @@ pub fn resolve_conflict(
         .and_then(|mut records| records.pop());
 
     let transaction = conn.transaction()?;
+    let generation = mark_local_records_mutated(&transaction, "conflict-resolution")?;
+    if selected.is_none() {
+        let mut capture = crate::s2_lite::local_capture::LocalCaptureSnapshot::read(&transaction)?;
+        capture.remove_record(id);
+        capture.prepare_deletions(
+            &transaction,
+            generation,
+            &device_id(&transaction)?,
+            &crate::s2_lite::local_capture::timestamp(),
+        )?;
+    }
     let mut tombstones = get_tombstones_tx(&transaction)?;
     if let Some(record) = selected {
         db::insert_record(&transaction, record)?;
@@ -837,7 +848,6 @@ pub fn resolve_conflict(
             AppError::General(format!("Could not serialize conflicts: {error}"))
         })?,
     )?;
-    let generation = mark_local_records_mutated(&transaction, "conflict-resolution")?;
     if let Some(record) = db::get_record(&transaction, id)? {
         crate::sync_staging::stage_upsert(&transaction, &record, generation)?;
     } else {

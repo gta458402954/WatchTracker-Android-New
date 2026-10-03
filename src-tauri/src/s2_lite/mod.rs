@@ -10,6 +10,9 @@ pub mod causal;
 pub mod conflict;
 pub mod immutable_publish;
 pub mod local_authority;
+pub(crate) mod local_capture;
+#[cfg(test)]
+mod local_capture_tests;
 pub mod migration_orchestration;
 pub mod ordinary_mutation;
 pub mod remote_discovery;

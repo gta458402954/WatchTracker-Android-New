@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::canonical::{jcs_bytes, validate_canonical_uuid_v4, ProtocolError, Result};
 use super::ordinary_mutation::{
-    map_ordinary_mutation_v1, OrdinaryCausalBaseV1, OrdinaryMutationRequestV1,
+    map_ordinary_mutation_v1, DeleteDescriptorV1, OrdinaryCausalBaseV1, OrdinaryMutationRequestV1,
 };
 use super::types::CommitMutationV1;
 
@@ -41,8 +41,21 @@ pub struct CapturedStagingDescriptorV1 {
     pub causal_anchor: StagingAnchorStateV1,
     pub base: Option<Value>,
     pub local: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_descriptor: Option<DeleteDescriptorV1>,
     pub first_generation: i64,
     pub last_generation: i64,
+}
+
+impl CapturedStagingDescriptorV1 {
+    /// An old S1 staging deletion without immutable evidence is unprepared;
+    /// it must never be reconstructed from surviving mutable state.
+    pub fn frozen_delete_evidence(&self) -> Result<&DeleteDescriptorV1> {
+        if self.operation != "delete" {
+            return Err(CORRUPTION);
+        }
+        self.delete_descriptor.as_ref().ok_or(CORRUPTION)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -96,7 +109,7 @@ fn encode(value: &PersistedMutationV1) -> Result<Vec<u8>> {
 }
 
 fn decode(bytes: &[u8]) -> Result<PersistedMutationV1> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| CORRUPTION)?;
+    let value: Value = s2_serde_json::from_slice(bytes).map_err(|_| CORRUPTION)?;
     let decoded: PersistedMutationV1 =
         serde_json::from_value(value.clone()).map_err(|_| CORRUPTION)?;
     if decoded.state_version != 1
@@ -155,22 +168,18 @@ pub(crate) fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
     for row in rows {
         decode(&row?).map_err(|_| rusqlite::Error::InvalidQuery)?;
     }
-    let mut statement =
-        conn.prepare("SELECT state_json FROM s2_lite_local_staging_descriptor_v1")?;
-    for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
-        decode_staging_descriptor(&row?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    }
+    load_staged_descriptors(conn).map_err(|_| rusqlite::Error::InvalidQuery)?;
     Ok(())
 }
 
 fn decode_staging_descriptor(bytes: &[u8]) -> Result<CapturedStagingDescriptorV1> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| CORRUPTION)?;
+    let value: Value = s2_serde_json::from_slice(bytes).map_err(|_| CORRUPTION)?;
     let decoded: CapturedStagingDescriptorV1 =
         serde_json::from_value(value.clone()).map_err(|_| CORRUPTION)?;
-    if decoded.state_version != 1
+    if !matches!(decoded.state_version, 1 | 2)
         || !matches!(
             decoded.entity_kind.as_str(),
-            "record" | "collection" | "collection-member"
+            "record" | "collection" | "collection-member" | "episode-completion"
         )
         || decoded.entity_id.trim().is_empty()
         || !matches!(decoded.operation.as_str(), "upsert" | "delete")
@@ -181,12 +190,33 @@ fn decode_staging_descriptor(bytes: &[u8]) -> Result<CapturedStagingDescriptorV1
         return Err(CORRUPTION);
     }
     validate_canonical_uuid_v4(&decoded.local_mutation_id).map_err(|_| CORRUPTION)?;
+    if decoded.state_version == 2
+        && (decoded.operation == "delete" && decoded.delete_descriptor.is_none()
+            || decoded.operation == "upsert" && decoded.local.is_none())
+    {
+        return Err(CORRUPTION);
+    }
+    if let Some(delete) = &decoded.delete_descriptor {
+        if decoded.operation != "delete"
+            || decoded.local.is_some()
+            || delete.entity_type() != decoded.entity_kind
+            || delete.wire_value()["id"].as_str() != Some(decoded.entity_id.as_str())
+        {
+            return Err(CORRUPTION);
+        }
+        super::semantic::validate_tombstone(
+            delete.entity_type(),
+            &delete.entity_key(),
+            &delete.wire_value(),
+        )
+        .map_err(|_| CORRUPTION)?;
+    }
     Ok(decoded)
 }
 
 /// Captures the existing S1 atomic staging boundary without changing its S1
-/// payload or network behavior. The initially absent anchor is immutable until
-/// a later projection phase can supply a verified remote frontier.
+/// payload or network behavior. An unavailable first-edit anchor is retained;
+/// subsequent discovery cannot retroactively supply its origin.
 pub fn capture_staged_descriptor(
     conn: &Connection,
     entity_kind: &str,
@@ -203,6 +233,13 @@ pub fn capture_staged_descriptor(
         "SELECT state_json FROM s2_lite_local_staging_descriptor_v1 WHERE entity_kind = ?1 AND entity_id = ?2",
         params![entity_kind, entity_id], |row| row.get::<_, Vec<u8>>(0),
     ).optional())?.map(|bytes| decode_staging_descriptor(&bytes)).transpose()?;
+    let local_is_upsert = local.is_some();
+    if previous
+        .as_ref()
+        .is_some_and(|row| row.entity_kind != entity_kind || row.entity_id != entity_id)
+    {
+        return Err(CORRUPTION);
+    }
     let descriptor = if let Some(previous) = previous {
         CapturedStagingDescriptorV1 {
             operation: if local.is_some() {
@@ -211,6 +248,11 @@ pub fn capture_staged_descriptor(
                 "delete".into()
             },
             local,
+            delete_descriptor: if local_is_upsert {
+                None
+            } else {
+                previous.delete_descriptor.clone()
+            },
             last_generation: generation,
             ..previous
         }
@@ -228,6 +270,7 @@ pub fn capture_staged_descriptor(
             causal_anchor: StagingAnchorStateV1::Unavailable,
             base,
             local,
+            delete_descriptor: None,
             first_generation: generation,
             last_generation: generation,
         }
@@ -248,6 +291,101 @@ pub fn staged_descriptor_keys(conn: &Connection) -> Result<Vec<(String, String)>
     )?;
     let rows = database(statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))))?;
     rows.map(database).collect()
+}
+
+pub fn load_staged_descriptors(conn: &Connection) -> Result<Vec<CapturedStagingDescriptorV1>> {
+    let mut statement = database(conn.prepare(
+        "SELECT entity_kind, entity_id, state_json FROM s2_lite_local_staging_descriptor_v1 ORDER BY entity_kind, entity_id",
+    ))?;
+    let rows = database(statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    }))?;
+    rows.map(|row| {
+        let (kind, id, bytes) = database(row)?;
+        let descriptor = decode_staging_descriptor(&bytes)?;
+        if descriptor.entity_kind != kind || descriptor.entity_id != id {
+            return Err(CORRUPTION);
+        }
+        Ok(descriptor)
+    })
+    .collect()
+}
+
+/// Captures immutable deletion evidence before the caller removes the source
+/// row. The caller owns the business transaction and its generation.
+pub(crate) fn capture_delete(
+    conn: &Connection,
+    delete: DeleteDescriptorV1,
+    before: Value,
+    generation: i64,
+) -> Result<()> {
+    let kind = delete.entity_type();
+    let id = delete.wire_value()["id"]
+        .as_str()
+        .ok_or(CORRUPTION)?
+        .to_owned();
+    super::semantic::validate_tombstone(kind, &delete.entity_key(), &delete.wire_value())
+        .map_err(|_| CORRUPTION)?;
+    let staging = crate::sync_staging::get_staging(conn).map_err(|_| CORRUPTION)?;
+    let staged = staging
+        .entries
+        .iter()
+        .find(|entry| entry.entity_kind == kind && entry.id == id);
+    // Preserve the existing S1 create/delete cancellation. Episode entities
+    // have independent S2 capture and never infer absence from an S1 base.
+    let previous = load_staged_descriptors(conn)?
+        .into_iter()
+        .find(|row| row.entity_kind == kind && row.entity_id == id);
+    if staged.is_some_and(|entry| entry.base.is_none() && entry.local.is_some())
+        && previous.as_ref().is_some_and(|row| {
+            row.base.is_none()
+                && row.delete_descriptor.is_none()
+                && matches!(
+                    row.causal_anchor,
+                    StagingAnchorStateV1::Unavailable | StagingAnchorStateV1::Absent
+                )
+        })
+    {
+        return remove_staged_descriptor(conn, kind, &id);
+    }
+    let base = staged.and_then(|entry| entry.base.clone()).or(Some(before));
+    initialize_writer(conn)?;
+    let descriptor = if let Some(previous) = previous {
+        CapturedStagingDescriptorV1 {
+            state_version: 2,
+            operation: "delete".into(),
+            local: None,
+            delete_descriptor: Some(delete),
+            last_generation: generation,
+            ..previous
+        }
+    } else {
+        CapturedStagingDescriptorV1 {
+            state_version: 2,
+            entity_kind: kind.into(),
+            entity_id: id.clone(),
+            operation: "delete".into(),
+            local_mutation_id: uuid::Uuid::new_v4().to_string(),
+            causal_anchor: StagingAnchorStateV1::Unavailable,
+            base,
+            local: None,
+            delete_descriptor: Some(delete),
+            first_generation: generation,
+            last_generation: generation,
+        }
+    };
+    let bytes = serde_json::to_vec(&descriptor).map_err(|_| CORRUPTION)?;
+    decode_staging_descriptor(&bytes)?;
+    database(conn.execute(
+        "INSERT INTO s2_lite_local_staging_descriptor_v1(entity_kind,entity_id,state_json) VALUES(?1,?2,?3)
+         ON CONFLICT(entity_kind,entity_id) DO UPDATE SET state_json=excluded.state_json",
+        params![kind, id, bytes],
+    ))?;
+    Ok(())
 }
 
 pub fn remove_staged_descriptor(

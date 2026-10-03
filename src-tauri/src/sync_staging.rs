@@ -168,9 +168,16 @@ pub fn set_staging(conn: &Connection, staging: &SyncStaging) -> Result<(), AppEr
         )
         .map_err(|error| AppError::General(error.0.to_string()))?;
     }
-    for (kind, id) in crate::s2_lite::local_authority::staged_descriptor_keys(conn)
+    for descriptor in crate::s2_lite::local_authority::load_staged_descriptors(conn)
         .map_err(|error| AppError::General(error.0.to_string()))?
     {
+        let kind = descriptor.entity_kind;
+        let id = descriptor.entity_id;
+        // These are S2-owned evidence. S1 acknowledgement/rebuild cannot
+        // retire an episode mutation or erase a complete deletion descriptor.
+        if kind == "episode-completion" || descriptor.delete_descriptor.is_some() {
+            continue;
+        }
         if !retained.contains(&(kind.clone(), id.clone())) {
             crate::s2_lite::local_authority::remove_staged_descriptor(conn, &kind, &id)
                 .map_err(|error| AppError::General(error.0.to_string()))?;
