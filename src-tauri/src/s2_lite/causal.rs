@@ -178,62 +178,68 @@ pub fn validate_commit_envelope_v1(commit: &CommitV1) -> Result<()> {
     Ok(())
 }
 
-struct StrictJsonValueV1(Value);
+struct StrictS2JsonValueV1(s2_serde_json::Value);
 
-impl<'de> Deserialize<'de> for StrictJsonValueV1 {
+impl<'de> Deserialize<'de> for StrictS2JsonValueV1 {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(StrictJsonVisitorV1)
+        deserializer.deserialize_any(StrictS2JsonVisitorV1)
     }
 }
 
-struct StrictJsonVisitorV1;
+struct StrictS2JsonVisitorV1;
 
-impl<'de> Visitor<'de> for StrictJsonVisitorV1 {
-    type Value = StrictJsonValueV1;
+impl<'de> Visitor<'de> for StrictS2JsonVisitorV1 {
+    type Value = StrictS2JsonValueV1;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a JSON value without duplicate object keys")
     }
 
     fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::Bool(value)))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Bool(value)))
     }
 
     fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::Number(value.into())))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Number(
+            value.into(),
+        )))
     }
 
     fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::Number(value.into())))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Number(
+            value.into(),
+        )))
     }
 
     fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        serde_json::Number::from_f64(value)
-            .map(Value::Number)
-            .map(StrictJsonValueV1)
+        s2_serde_json::Number::from_f64(value)
+            .map(s2_serde_json::Value::Number)
+            .map(StrictS2JsonValueV1)
             .ok_or_else(|| E::custom("non-finite JSON number"))
     }
 
     fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::String(value.to_owned())))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::String(
+            value.to_owned(),
+        )))
     }
 
     fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::String(value)))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::String(value)))
     }
 
     fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::Null))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Null))
     }
 
     fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
-        Ok(StrictJsonValueV1(Value::Null))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Null))
     }
 
     fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
@@ -241,29 +247,60 @@ impl<'de> Visitor<'de> for StrictJsonVisitorV1 {
         A: SeqAccess<'de>,
     {
         let mut values = Vec::new();
-        while let Some(value) = sequence.next_element::<StrictJsonValueV1>()? {
+        while let Some(value) = sequence.next_element::<StrictS2JsonValueV1>()? {
             values.push(value.0);
         }
-        Ok(StrictJsonValueV1(Value::Array(values)))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Array(values)))
     }
 
     fn visit_map<A>(self, mut object: A) -> std::result::Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut values = Map::new();
+        let mut values = s2_serde_json::Map::new();
         while let Some(key) = object.next_key::<String>()? {
             if values.contains_key(&key) {
                 return Err(de::Error::custom("duplicate JSON object key"));
             }
-            let value = object.next_value::<StrictJsonValueV1>()?;
+            let value = object.next_value::<StrictS2JsonValueV1>()?;
             values.insert(key, value.0);
         }
-        Ok(StrictJsonValueV1(Value::Object(values)))
+        Ok(StrictS2JsonValueV1(s2_serde_json::Value::Object(values)))
     }
 }
 
-fn validate_frozen_json_bytes_v1(raw_json: &[u8]) -> Result<Value> {
+fn into_protocol_value_v1(value: s2_serde_json::Value) -> Result<Value> {
+    match value {
+        s2_serde_json::Value::Null => Ok(Value::Null),
+        s2_serde_json::Value::Bool(value) => Ok(Value::Bool(value)),
+        s2_serde_json::Value::String(value) => Ok(Value::String(value)),
+        s2_serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(into_protocol_value_v1)
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+        s2_serde_json::Value::Object(values) => values
+            .into_iter()
+            .map(|(key, value)| Ok((key, into_protocol_value_v1(value)?)))
+            .collect::<Result<Map<_, _>>>()
+            .map(Value::Object),
+        s2_serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Ok(Value::Number(value.into()))
+            } else if let Some(value) = value.as_u64() {
+                Ok(Value::Number(value.into()))
+            } else {
+                serde_json::Number::from_f64(
+                    value.as_f64().ok_or(ProtocolError("invalid_commit_json"))?,
+                )
+                .map(Value::Number)
+                .ok_or(ProtocolError("invalid_commit_json"))
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_frozen_json_value_v1(raw_json: &[u8]) -> Result<Value> {
     const ENCODING_MARKERS: [&[u8]; 5] = [
         &[0xef, 0xbb, 0xbf],
         &[0xfe, 0xff],
@@ -278,17 +315,17 @@ fn validate_frozen_json_bytes_v1(raw_json: &[u8]) -> Result<Value> {
     {
         return Err(ProtocolError("invalid_commit_json_bytes"));
     }
-    let mut deserializer = serde_json::Deserializer::from_slice(raw_json);
-    let value = StrictJsonValueV1::deserialize(&mut deserializer)
+    let mut deserializer = s2_serde_json::Deserializer::from_slice(raw_json);
+    let value = StrictS2JsonValueV1::deserialize(&mut deserializer)
         .map_err(|_| ProtocolError("invalid_commit_json"))?;
     deserializer
         .end()
         .map_err(|_| ProtocolError("invalid_commit_json"))?;
-    Ok(value.0)
+    into_protocol_value_v1(value.0)
 }
 
 pub fn decode_frozen_wire_commit_v1(raw_json: &[u8]) -> Result<CommitV1> {
-    let mut wire = validate_frozen_json_bytes_v1(raw_json)?;
+    let mut wire = parse_frozen_json_value_v1(raw_json)?;
     let object = wire
         .as_object_mut()
         .ok_or(ProtocolError("invalid_commit_envelope"))?;

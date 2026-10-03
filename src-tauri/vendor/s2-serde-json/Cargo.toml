@@ -1,0 +1,29 @@
+[package]
+name = "s2-serde-json"
+version = "1.0.149"
+edition = "2021"
+rust-version = "1.68"
+license = "MIT OR Apache-2.0"
+description = "Privately vendored serde_json for frozen S2 Lite parsing"
+build = "build.rs"
+
+[features]
+alloc = ["serde_core/alloc"]
+arbitrary_precision = []
+default = ["std"]
+float_roundtrip = []
+preserve_order = ["indexmap", "std"]
+raw_value = []
+std = ["memchr/std", "serde_core/std"]
+unbounded_depth = []
+
+[lib]
+name = "s2_serde_json"
+path = "src/lib.rs"
+
+[dependencies]
+indexmap = { version = "2.2.3", optional = true }
+itoa = "1.0"
+memchr = { version = "2", default-features = false }
+serde_core = { version = "1.0.220", default-features = false }
+zmij = "1.0"

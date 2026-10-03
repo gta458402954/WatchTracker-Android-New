@@ -751,6 +751,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_backup_preserves_baseline_float_bits() {
+        let item = record("roundtrip", "roundtrip", false);
+        let mut bytes = serde_json::to_vec(&envelope(vec![item], vec![], vec![], vec![])).unwrap();
+        let marker = b"\"imdbRating\":null";
+        let offset = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("fixture record has imdbRating");
+        bytes.splice(
+            offset..offset + marker.len(),
+            b"\"imdbRating\":2.3307731538713474".iter().copied(),
+        );
+
+        let backup = parse_backup(&bytes).expect("real S1 backup parser accepts fixture");
+        assert_eq!(
+            backup.records[0].imdb_rating.expect("rating").to_bits(),
+            0x4002_a56c_6532_2d7d
+        );
+    }
+
+    #[test]
     fn malformed_json_is_rejected_and_discarded() {
         let (_root, paths) = TestRoot::new("malformed");
         let conn = database(&paths);

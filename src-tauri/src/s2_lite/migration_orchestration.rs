@@ -10,6 +10,7 @@ use super::bootstrap::build_bootstrap_plan_v1;
 use super::canonical::{
     jcs_bytes, sha256_hex, validate_canonical_uuid_v4, validate_timestamp, ProtocolError, Result,
 };
+use super::causal::parse_frozen_json_value_v1;
 use super::immutable_publish::{
     persist_prepared_activation_intent_before_publish_v1,
     persist_prepared_intent_before_publish_v1, persist_verified_activation_receipt_v1,
@@ -292,8 +293,8 @@ pub struct LegacySnapshotEntryV1 {
 }
 
 pub fn validate_migration_activation_body_v1(bytes: &[u8]) -> Result<Value> {
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| ProtocolError("INVALID_ACTIVATION_BODY"))?;
+    let value =
+        parse_frozen_json_value_v1(bytes).map_err(|_| ProtocolError("INVALID_ACTIVATION_BODY"))?;
     let object = value
         .as_object()
         .ok_or(ProtocolError("INVALID_ACTIVATION_BODY"))?;

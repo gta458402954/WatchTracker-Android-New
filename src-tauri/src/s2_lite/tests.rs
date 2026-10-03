@@ -6,6 +6,7 @@ use super::canonical::{
     validate_canonical_uuid_v4, validate_date, validate_entity_key, validate_float64,
     validate_safe_integer, validate_timestamp,
 };
+use super::causal::parse_frozen_json_value_v1;
 use super::conflict::{
     build_entity_conflict_core_v1, build_relation_conflict_core_v1, entity_conflict_id_v1,
     relation_conflict_id_v1,
@@ -172,7 +173,7 @@ fn raw_json_float_parsing_produces_ecmascript_jcs_number_bytes() {
         ("3.141592653589793", "3.141592653589793"),
     ];
     for (raw, expected) in cases {
-        let parsed: Value = serde_json::from_str(raw).unwrap();
+        let parsed = parse_frozen_json_value_v1(raw.as_bytes()).unwrap();
         assert_eq!(jcs_bytes(&parsed).unwrap(), expected.as_bytes(), "{raw}");
     }
 
@@ -182,7 +183,7 @@ fn raw_json_float_parsing_produces_ecmascript_jcs_number_bytes() {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let value = (f64::from(state) / 4_294_967_296.0) * 10.0;
         let raw = ryu_js::Buffer::new().format_finite(value).to_string();
-        let parsed: Value = serde_json::from_str(&raw).unwrap();
+        let parsed = parse_frozen_json_value_v1(raw.as_bytes()).unwrap();
         if index != 0 {
             output.push(b'\n');
         }
@@ -207,7 +208,7 @@ fn reviewer_float_counterexample_survives_raw_parse_through_conflict_hashing() {
     let mut raw_b = serde_json::to_string(&source_b).unwrap();
     raw_b = raw_b.replace("\"imdbRating\":null", "\"imdbRating\":2.3307731538713474");
     let record_a: Value = serde_json::from_str(&raw_a).unwrap();
-    let record_b: Value = serde_json::from_str(&raw_b).unwrap();
+    let record_b = parse_frozen_json_value_v1(raw_b.as_bytes()).unwrap();
     validate_native_entity(&json!(["record", "r-lock"]), &record_a).unwrap();
     validate_native_entity(&json!(["record", "r-lock"]), &record_b).unwrap();
     let core = build_entity_conflict_core_v1(
