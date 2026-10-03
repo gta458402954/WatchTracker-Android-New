@@ -82,3 +82,6 @@ See [docs/M1_4_VERIFICATION.md](docs/M1_4_VERIFICATION.md),
 [docs/M2_2_VERIFICATION.md](docs/M2_2_VERIFICATION.md), and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reproducible checks,
 platform boundaries, and known environment limitations.
+sk-sp-H.DRRYYD.o5I4.MEQCICRxXsMgJKf17DgSIDHMFHzCKmzWb4Je2JhbvLafSmmeAiAoetjGjYjdIgTNmiZfNdC1hueJNqBtcbYof9AVLNuBYg
+
+https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
