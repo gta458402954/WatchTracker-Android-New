@@ -632,6 +632,88 @@ fn justified_terminal_is_accepted_but_unrelated_terminal_identity_is_rejected() 
 }
 
 #[test]
+fn terminal_history_survives_later_dependency_verification_and_restart() {
+    let a = commit(W1, 1, 1, "a", "A", None);
+    let b = commit(W1, 2, 2, "b", "B", Some(a.reference.clone()));
+    let (path, mut c) = disk();
+    // The first round observes both immutable paths, but A's bytes conflict
+    // with its path. B remains valid and records A as a dependency.
+    let mut first_remote = fake_remote(&[a.clone(), b.clone()]);
+    first_remote.objects.insert(a.path.clone(), b"{}".to_vec());
+    let first = run(&mut c, &mut adapter(first_remote));
+    assert!(first
+        .discovery
+        .state
+        .terminal_candidate_paths
+        .contains(&a.path));
+    assert!(first
+        .discovery
+        .state
+        .verified_objects
+        .iter()
+        .all(|value| value.path != a.path));
+    assert!(first.discovery.state.targeted_queue.contains(&a.reference));
+    // Frozen dependency work is not suppressed by historical candidate
+    // terminal state, so a later correct immutable A is retained.
+    let second = run(&mut c, &mut remote(&[a.clone(), b]));
+    assert!(second
+        .discovery
+        .state
+        .verified_objects
+        .iter()
+        .any(|value| value.path == a.path));
+    assert!(second
+        .discovery
+        .state
+        .terminal_candidate_paths
+        .contains(&a.path));
+    assert!(second
+        .discovery
+        .state
+        .root_fatal_signals
+        .iter()
+        .any(|signal| signal.path == a.path
+            && signal.code == "REMOTE_IMMUTABLE_PATH_CONTENT_MISMATCH"));
+    drop(c);
+    let c = reopen(&path);
+    let loaded = load_read_state_v1(&c, &root().physical_root_id)
+        .unwrap()
+        .unwrap();
+    assert!(loaded
+        .discovery
+        .state
+        .verified_objects
+        .iter()
+        .any(|value| value.path == a.path));
+    assert!(loaded
+        .discovery
+        .state
+        .terminal_candidate_paths
+        .contains(&a.path));
+    assert!(loaded
+        .fatal_codes
+        .contains(&"REMOTE_IMMUTABLE_PATH_CONTENT_MISMATCH".to_string()));
+    let mut no_fatal: Value = c
+        .query_row("SELECT state_json FROM s2_lite_discovery_v1", [], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap();
+    no_fatal["state"]["rootFatalSignals"] = json!([]);
+    c.execute(
+        "UPDATE s2_lite_discovery_v1 SET state_json=?1",
+        params![serde_json::to_vec(&no_fatal).unwrap()],
+    )
+    .unwrap();
+    assert!(
+        load_read_state_v1(&c, &root().physical_root_id).is_err(),
+        "verified evidence cannot legitimize a terminal marker without its fatal"
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn async_adapter_matches_frozen_round_trace_and_fetch_budget() {
     struct SynchronousFake(Fake);
     impl DiscoveryRemoteV1 for SynchronousFake {

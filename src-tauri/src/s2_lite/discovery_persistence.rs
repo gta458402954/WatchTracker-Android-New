@@ -272,10 +272,6 @@ fn validate_discovery(state: &DiscoveryStateV1) -> Result<()> {
             .observed_candidates
             .iter()
             .any(|candidate| candidate.path() == path)
-            || state
-                .verified_objects
-                .iter()
-                .any(|object| object.path == *path)
             || !state.root_fatal_signals.iter().any(|signal| {
                 signal.path == *path && TERMINAL_CANDIDATE_FATALS.contains(&signal.code.as_str())
             })
