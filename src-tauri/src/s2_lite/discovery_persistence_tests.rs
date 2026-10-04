@@ -550,6 +550,88 @@ fn corrupt_remote_commit_and_unsupported_activation_remain_fatal_after_restart()
 }
 
 #[test]
+fn terminal_candidates_require_exact_path_fatal_evidence_across_reopen() {
+    let a = commit(W1, 1, 1, "c1", "One", None);
+    let (path, mut c) = disk();
+    // A retained listing plus a 404 is unresolved, so it has no terminal
+    // authority and remains eligible for a later exact GET.
+    let mut unavailable = fake_remote(std::slice::from_ref(&a));
+    unavailable.objects.remove(&a.path);
+    let unresolved = run(&mut c, &mut adapter(unavailable));
+    assert_eq!(unresolved.discovery.state.observed_candidates.len(), 1);
+    assert!(unresolved
+        .discovery
+        .state
+        .terminal_candidate_paths
+        .is_empty());
+    drop(c);
+    let c = Connection::open(&path).unwrap();
+    assert!(load_read_state_v1(&c, &root().physical_root_id).is_ok());
+    let mut corrupt: Value = c
+        .query_row("SELECT state_json FROM s2_lite_discovery_v1", [], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap();
+    corrupt["state"]["terminalCandidatePaths"] = json!([a.path.clone()]);
+    let corrupt_bytes = serde_json::to_vec(&corrupt).unwrap();
+    c.execute(
+        "UPDATE s2_lite_discovery_v1 SET state_json=?1",
+        params![&corrupt_bytes],
+    )
+    .unwrap();
+    drop(c);
+    let c = Connection::open(&path).unwrap();
+    assert!(load_read_state_v1(&c, &root().physical_root_id).is_err());
+    let retained: Vec<u8> = c
+        .query_row("SELECT state_json FROM s2_lite_discovery_v1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(retained, corrupt_bytes, "corruption must not be repaired");
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn justified_terminal_is_accepted_but_unrelated_terminal_identity_is_rejected() {
+    let a = commit(W1, 1, 1, "c1", "One", None);
+    let (path, mut c) = disk();
+    let mut invalid = fake_remote(std::slice::from_ref(&a));
+    invalid.objects.insert(a.path.clone(), b"{}".to_vec());
+    let terminal = run(&mut c, &mut adapter(invalid));
+    assert_eq!(
+        terminal.discovery.state.terminal_candidate_paths,
+        vec![a.path.clone()]
+    );
+    assert!(terminal
+        .discovery
+        .state
+        .root_fatal_signals
+        .iter()
+        .any(|signal| signal.path == a.path
+            && signal.code == "REMOTE_IMMUTABLE_PATH_CONTENT_MISMATCH"));
+    drop(c);
+    let c = reopen(&path);
+    assert!(load_read_state_v1(&c, &root().physical_root_id).is_ok());
+    let mut corrupt: Value = c
+        .query_row("SELECT state_json FROM s2_lite_discovery_v1", [], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap();
+    corrupt["state"]["terminalCandidatePaths"] = json!(["activations/30000000-0000-4000-8000-000000000001--0000000000000000000000000000000000000000000000000000000000000000.json"]);
+    c.execute(
+        "UPDATE s2_lite_discovery_v1 SET state_json=?1",
+        params![serde_json::to_vec(&corrupt).unwrap()],
+    )
+    .unwrap();
+    assert!(load_read_state_v1(&c, &root().physical_root_id).is_err());
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn async_adapter_matches_frozen_round_trace_and_fetch_budget() {
     struct SynchronousFake(Fake);
     impl DiscoveryRemoteV1 for SynchronousFake {

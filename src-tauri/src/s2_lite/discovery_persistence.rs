@@ -255,6 +255,34 @@ fn validate_discovery(state: &DiscoveryStateV1) -> Result<()> {
             return Err(CORRUPTION);
         }
     }
+    // `terminal_candidate_paths` is scheduler suppression authority, not a
+    // cache.  Frozen discovery adds an entry only after an exact GET returned
+    // bytes for an already retained candidate and verification produced an
+    // exact-path terminal fatal.  A persisted marker without that durable
+    // evidence could otherwise suppress an unresolved retained observation
+    // forever after restart.
+    const TERMINAL_CANDIDATE_FATALS: &[&str] = &[
+        "REMOTE_IMMUTABLE_PATH_CONTENT_MISMATCH",
+        "REMOTE_S2_OBJECT_INVALID",
+        "REMOTE_S2_PATH_BODY_IDENTITY_MISMATCH",
+        "REMOTE_S2_UNSUPPORTED_FEATURE",
+    ];
+    for path in &state.terminal_candidate_paths {
+        if !state
+            .observed_candidates
+            .iter()
+            .any(|candidate| candidate.path() == path)
+            || state
+                .verified_objects
+                .iter()
+                .any(|object| object.path == *path)
+            || !state.root_fatal_signals.iter().any(|signal| {
+                signal.path == *path && TERMINAL_CANDIDATE_FATALS.contains(&signal.code.as_str())
+            })
+        {
+            return Err(CORRUPTION);
+        }
+    }
     // Missing dependency targets are derived from verified bytes, not a
     // mutable progress shortcut. Corrupt queue removal must not starve replay.
     if aggregate
