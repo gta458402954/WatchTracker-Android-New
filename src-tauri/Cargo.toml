@@ -39,6 +39,10 @@ fern = "0.6"
 thiserror = "2.0.19"
 aes-gcm = "0.10.3"
 sha2 = "0.10.9"
+async-trait = "0.1"
+# Reuse Tauri's locked parser version rather than introduce a second XML
+# implementation; this adapter only uses its stable namespace event surface.
+quick-xml = "0.39"
 infer = "0.22.0"
 uuid = { version = "1.23.1", features = ["v4"] }
 zeroize = "1.8.2"

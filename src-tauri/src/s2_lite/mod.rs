@@ -18,6 +18,9 @@ pub mod ordinary_mutation;
 pub mod remote_discovery;
 pub mod semantic;
 pub mod types;
+// Deliberately unreferenced by the S1 coordinator.  I6.2 supplies the
+// platform-safe transport capability; later phases decide when it is used.
+pub mod webdav_adapter;
 
 #[cfg(test)]
 mod activation_cutover_tests;
