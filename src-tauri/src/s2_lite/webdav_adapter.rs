@@ -450,13 +450,6 @@ impl<T: WebDavTransportV1> WebDavS2AdapterV1<T> {
     }
 }
 
-#[derive(Default)]
-struct DavResponseV1 {
-    href: Option<String>,
-    collection: bool,
-    response_status: Option<bool>,
-}
-
 fn is_xml_s(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
 }
@@ -530,9 +523,18 @@ fn validate_xml_declaration(declaration: &BytesDecl<'_>) -> bool {
     count > 0 && last_order >= 1
 }
 
-fn success_status(value: &str) -> bool {
-    let mut fields = value.split_ascii_whitespace();
-    matches!((fields.next(), fields.next()), (Some(version), Some(code)) if version.starts_with("HTTP/") && matches!(code.parse::<u16>(), Ok(200..=299)))
+fn is_success_http_status_line(status: &str) -> bool {
+    let mut tokens = status.split_ascii_whitespace();
+    let Some(version) = tokens.next() else {
+        return false;
+    };
+    let Some(code) = tokens.next() else {
+        return false;
+    };
+    version.starts_with("HTTP/")
+        && code.len() == 3
+        && code.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(code.parse::<u16>(), Ok(200..=299))
 }
 
 fn decode_segment(segment: &str) -> Option<String> {
@@ -656,201 +658,577 @@ fn directory_child(
     }
 }
 
-/// Narrow namespace-aware DAV parser shared by collection proof and listing.
-/// It admits only one complete DAV multistatus document and never treats a
-/// status code alone, an arbitrary XML document, or an incomplete response as
-/// authoritative evidence.
-fn parse_dav_responses(xml: &[u8]) -> Option<Vec<DavResponseV1>> {
+fn collection_href_matches(root: &WebDavRootV1, path: &str, href: &str) -> bool {
+    // Frozen depth-zero collection proof resolves relative DAV hrefs from the
+    // configured WebDAV root.  Listing deliberately uses the requested
+    // directory as its base (see `parse_listing` below).
+    Url::parse(&root.canonical_url)
+        .ok()
+        .and_then(|url| directory_child(root, path, &url, href))
+        == Some(None)
+}
+
+// Ported from WatchTracker-Rust 0c51434e6249a391d6fc1621fe6751e5eba48f27.
+// Frozen desktop exact-resource collection proof: unsuccessful unrelated
+// propstats contribute no collection evidence; they do not invalidate it.
+fn depth_zero_is_collection(root: &WebDavRootV1, path: &str, xml: &[u8]) -> bool {
+    #[derive(Clone)]
+    struct Element {
+        local: Vec<u8>,
+        is_dav: bool,
+    }
+    #[derive(Default)]
+    struct Propstat {
+        has_collection: bool,
+        status_success: Option<bool>,
+    }
+    #[derive(Default)]
+    struct Response {
+        href: Option<String>,
+        collection: bool,
+    }
+    enum Capture {
+        Href(String),
+        ResponseStatus(String),
+        PropstatStatus(String),
+    }
+    #[derive(Eq, PartialEq)]
+    enum DocumentPhase {
+        Before,
+        Inside,
+        After,
+    }
+
     let mut reader = NsReader::from_reader(xml);
     reader.config_mut().trim_text(false);
-    let mut stack = Vec::<(Vec<u8>, bool)>::new();
-    let mut responses = Vec::new();
-    let mut current = None::<DavResponseV1>;
-    // (element name, whether it is the propstat status, captured text)
-    let mut capture = None::<(Vec<u8>, bool, String)>;
-    let mut propstat = None::<(bool, Option<bool>)>;
-    let mut root_seen = false;
+    let mut stack = Vec::<Element>::new();
+    let mut response = None::<Response>;
+    let mut propstat = None::<Propstat>;
+    let mut capture = None::<Capture>;
+    let mut matched = false;
     let mut root_closed = false;
+    let mut phase = DocumentPhase::Before;
     let mut declaration_seen = false;
     let mut prolog_consumed = false;
+
+    let start = |namespace: ResolveResult<'_>, local: Vec<u8>, stack: &mut Vec<Element>| {
+        let is_dav = matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+        stack.push(Element { local, is_dav });
+    };
+
     loop {
         match reader.read_resolved_event() {
             Ok((namespace, Event::Start(event))) => {
-                if root_closed {
-                    return None;
+                if root_closed || phase == DocumentPhase::After {
+                    return false;
                 }
-                let dav =
-                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
                 let local = event.local_name().as_ref().to_vec();
                 let depth = stack.len();
-                if depth == 0 && (!dav || local != b"multistatus" || root_seen) {
-                    return None;
-                }
-                if depth == 1 && (!dav || local != b"response" || current.is_some()) {
-                    return None;
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                if depth == 0 {
+                    if phase != DocumentPhase::Before || !is_dav || local != b"multistatus" {
+                        return false;
+                    }
+                    phase = DocumentPhase::Inside;
                 }
                 if depth == 1 {
-                    current = Some(DavResponseV1::default());
-                }
-                if depth == 2 && dav && (local == b"href" || local == b"status") {
-                    if capture.is_some() {
-                        return None;
+                    if !is_dav || local != b"response" || response.is_some() {
+                        return false;
                     }
-                    capture = Some((local.clone(), false, String::new()));
-                }
-                if depth == 2 && dav && local == b"propstat" {
-                    if propstat.is_some() {
-                        return None;
+                    response = Some(Response::default());
+                } else if response.is_some() {
+                    match (depth, local.as_slice()) {
+                        (2, b"href") if is_dav && capture.is_none() => {
+                            capture = Some(Capture::Href(String::new()));
+                        }
+                        (2, b"status") if is_dav && capture.is_none() => {
+                            capture = Some(Capture::ResponseStatus(String::new()));
+                        }
+                        (2, b"propstat") if is_dav && propstat.is_none() => {
+                            propstat = Some(Propstat::default());
+                        }
+                        (3, b"status")
+                            if is_dav
+                                && stack.last().is_some_and(|parent| {
+                                    parent.is_dav && parent.local == b"propstat"
+                                })
+                                && capture.is_none() =>
+                        {
+                            capture = Some(Capture::PropstatStatus(String::new()));
+                        }
+                        (5, b"collection")
+                            if is_dav
+                                && matches!(
+                                    stack.as_slice(),
+                                    [
+                                        Element { local, is_dav: true },
+                                        Element { local: response, is_dav: true },
+                                        Element { local: propstat, is_dav: true },
+                                        Element { local: prop, is_dav: true },
+                                        Element { local: resource_type, is_dav: true },
+                                    ] if local == b"multistatus"
+                                        && response == b"response"
+                                        && propstat == b"propstat"
+                                        && prop == b"prop"
+                                        && resource_type == b"resourcetype"
+                                ) =>
+                        {
+                            let Some(current) = propstat.as_mut() else {
+                                return false;
+                            };
+                            current.has_collection = true;
+                        }
+                        _ => {}
                     }
-                    propstat = Some((false, None));
                 }
-                if depth == 3 && dav && local == b"status" && propstat.is_some() {
-                    if capture.is_some() {
-                        return None;
-                    }
-                    capture = Some((local.clone(), true, String::new()));
-                }
-                if depth == 5
-                    && dav
-                    && local == b"collection"
-                    && matches!(stack.as_slice(), [(a,true),(b,true),(c,true),(d,true),(e,true)] if a == b"multistatus" && b == b"response" && c == b"propstat" && d == b"prop" && e == b"resourcetype")
-                {
-                    propstat.as_mut()?.0 = true;
-                }
-                stack.push((local, dav));
-                root_seen = true;
+                start(namespace, local, &mut stack);
             }
             Ok((namespace, Event::Empty(event))) => {
-                let dav =
-                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
-                let local = event.local_name().as_ref().to_vec();
-                if stack.is_empty() {
-                    if !dav || local != b"multistatus" || root_seen {
-                        return None;
-                    }
-                    root_seen = true;
-                    root_closed = true;
-                    continue;
+                if root_closed || phase == DocumentPhase::After {
+                    return false;
                 }
-                if stack.len() == 5
-                    && dav
+                let local = event.local_name().as_ref().to_vec();
+                let depth = stack.len();
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                if depth == 0 {
+                    if phase != DocumentPhase::Before || !is_dav || local != b"multistatus" {
+                        return false;
+                    }
+                    phase = DocumentPhase::Inside;
+                }
+                if depth == 1 {
+                    return false;
+                }
+                if depth == 5
                     && local == b"collection"
-                    && matches!(stack.as_slice(), [(a,true),(b,true),(c,true),(d,true),(e,true)] if a == b"multistatus" && b == b"response" && c == b"propstat" && d == b"prop" && e == b"resourcetype")
+                    && is_dav
+                    && matches!(
+                        stack.as_slice(),
+                        [
+                            Element { local, is_dav: true },
+                            Element { local: response, is_dav: true },
+                            Element { local: propstat, is_dav: true },
+                            Element { local: prop, is_dav: true },
+                            Element { local: resource_type, is_dav: true },
+                        ] if local == b"multistatus"
+                            && response == b"response"
+                            && propstat == b"propstat"
+                            && prop == b"prop"
+                            && resource_type == b"resourcetype"
+                    )
                 {
-                    propstat.as_mut()?.0 = true;
+                    let Some(current) = propstat.as_mut() else {
+                        return false;
+                    };
+                    current.has_collection = true;
+                }
+                start(namespace, local.clone(), &mut stack);
+                let Some(closed) = stack.pop() else {
+                    return false;
+                };
+                if closed.local != local || closed.is_dav != is_dav {
+                    return false;
+                }
+                if local == b"multistatus" {
+                    root_closed = true;
+                    phase = DocumentPhase::After;
                 }
             }
             Ok((_, Event::Text(event))) => {
-                if let Some((_, _, text)) = capture.as_mut() {
-                    text.push_str(&unescape(&event.xml_content().ok()?).ok()?);
-                } else if stack.iter().any(|(local, dav)| *dav && local == b"prop") {
-                    let _ = event.xml_content().ok()?;
-                } else {
+                if let Some(value) = capture.as_mut() {
+                    let Ok(decoded) = event.xml10_content() else {
+                        return false;
+                    };
+                    let Ok(text) = unescape(&decoded) else {
+                        return false;
+                    };
+                    match value {
+                        Capture::Href(text_out)
+                        | Capture::ResponseStatus(text_out)
+                        | Capture::PropstatStatus(text_out) => text_out.push_str(&text),
+                    }
+                } else if stack.is_empty() {
                     let raw: &[u8] = event.as_ref();
                     if !raw.iter().all(|byte| is_xml_s(*byte)) {
-                        return None;
+                        return false;
                     }
-                    if !root_seen {
+                    if phase == DocumentPhase::Before {
                         prolog_consumed = true;
                     }
                 }
             }
+            Ok((_, Event::GeneralRef(event))) => {
+                if let Some(value) = capture.as_mut() {
+                    let Ok(name) = std::str::from_utf8(event.as_ref()) else {
+                        return false;
+                    };
+                    let escaped = format!("&{name};");
+                    let Ok(text) = unescape(&escaped) else {
+                        return false;
+                    };
+                    match value {
+                        Capture::Href(out)
+                        | Capture::ResponseStatus(out)
+                        | Capture::PropstatStatus(out) => out.push_str(&text),
+                    }
+                } else if stack.is_empty() {
+                    return false;
+                }
+            }
+            Ok((_, Event::CData(event))) => {
+                let Ok(text) = std::str::from_utf8(event.as_ref()) else {
+                    return false;
+                };
+                let Some(value) = capture.as_mut() else {
+                    return false;
+                };
+                match value {
+                    Capture::Href(text_out)
+                    | Capture::ResponseStatus(text_out)
+                    | Capture::PropstatStatus(text_out) => text_out.push_str(text),
+                }
+            }
             Ok((namespace, Event::End(event))) => {
-                let dav =
-                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
                 let local = event.local_name().as_ref().to_vec();
-                let (open, open_dav) = stack.pop()?;
-                if open != local || open_dav != dav {
-                    return None;
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                let Some(closed) = stack.pop() else {
+                    return false;
+                };
+                if closed.local != local || closed.is_dav != is_dav {
+                    return false;
                 }
-                if local == b"href" {
-                    let (_, _, value) = capture.take()?;
-                    if value.is_empty() || current.as_mut()?.href.replace(value).is_some() {
-                        return None;
-                    }
-                }
-                if local == b"status" {
-                    let (_, in_propstat, value) = capture.take()?;
-                    let successful = success_status(&value);
-                    if !successful {
-                        return None;
-                    }
-                    if in_propstat {
-                        if propstat.as_mut()?.1.replace(true).is_some() {
-                            return None;
+                match local.as_slice() {
+                    b"href" => {
+                        let Some(Capture::Href(value)) = capture.take() else {
+                            return false;
+                        };
+                        let Some(current) = response.as_mut() else {
+                            return false;
+                        };
+                        if value.is_empty() || current.href.replace(value).is_some() {
+                            return false;
                         }
-                    } else if current.as_mut()?.response_status.replace(true).is_some() {
-                        return None;
                     }
-                }
-                if local == b"propstat" {
-                    let (collection, status) = propstat.take()?;
-                    if status != Some(true) {
-                        return None;
+                    b"status" => match capture.take() {
+                        Some(Capture::ResponseStatus(value)) => {
+                            if !is_success_http_status_line(&value) {
+                                return false;
+                            }
+                        }
+                        Some(Capture::PropstatStatus(value)) => {
+                            let Some(current) = propstat.as_mut() else {
+                                return false;
+                            };
+                            if current
+                                .status_success
+                                .replace(is_success_http_status_line(&value))
+                                .is_some()
+                            {
+                                return false;
+                            }
+                        }
+                        _ => return false,
+                    },
+                    b"propstat" => {
+                        let Some(current_propstat) = propstat.take() else {
+                            return false;
+                        };
+                        if current_propstat.has_collection
+                            && current_propstat.status_success == Some(true)
+                        {
+                            let Some(current_response) = response.as_mut() else {
+                                return false;
+                            };
+                            current_response.collection = true;
+                        }
                     }
-                    if collection {
-                        current.as_mut()?.collection = true;
+                    b"response" => {
+                        let Some(current) = response.take() else {
+                            return false;
+                        };
+                        let Some(href) = current.href else {
+                            return false;
+                        };
+                        if collection_href_matches(root, path, &href) {
+                            if matched || !current.collection {
+                                return false;
+                            }
+                            matched = true;
+                        }
                     }
-                }
-                if local == b"response" {
-                    let response = current.take()?;
-                    if response.href.is_none() || propstat.is_some() {
-                        return None;
+                    b"multistatus" => {
+                        if !stack.is_empty() || root_closed {
+                            return false;
+                        }
+                        root_closed = true;
+                        phase = DocumentPhase::After;
                     }
-                    responses.push(response);
+                    _ => {}
                 }
-                if local == b"multistatus" {
-                    if !stack.is_empty() {
-                        return None;
-                    }
-                    root_closed = true;
-                }
-            }
-            Ok((_, Event::Eof)) => {
-                return (root_seen
-                    && root_closed
-                    && stack.is_empty()
-                    && capture.is_none()
-                    && current.is_none())
-                .then_some(responses)
-            }
-            Ok((_, Event::Decl(declaration))) => {
-                if root_seen
-                    || declaration_seen
-                    || prolog_consumed
-                    || !validate_xml_declaration(&declaration)
-                {
-                    return None;
-                }
-                declaration_seen = true;
             }
             Ok((_, Event::Comment(_) | Event::PI(_))) => {
-                if !root_seen {
+                if phase == DocumentPhase::Before {
                     prolog_consumed = true;
                 }
             }
-            Ok((_, Event::DocType(_) | Event::CData(_) | Event::GeneralRef(_))) | Err(_) => {
-                return None
+            Ok((_, Event::Decl(declaration))) => {
+                if phase != DocumentPhase::Before || declaration_seen || prolog_consumed {
+                    return false;
+                }
+                if !validate_xml_declaration(&declaration) {
+                    return false;
+                }
+                declaration_seen = true;
             }
+            Ok((_, Event::DocType(_))) => return false,
+            Ok((_, Event::Eof)) => {
+                return phase == DocumentPhase::After
+                    && root_closed
+                    && stack.is_empty()
+                    && capture.is_none()
+                    && matched
+            }
+            Err(_) => return false,
         }
     }
 }
 
-fn depth_zero_is_collection(root: &WebDavRootV1, path: &str, xml: &[u8]) -> bool {
-    let directory_url = match child_url(root, path) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    parse_dav_responses(xml).is_some_and(|responses| {
-        responses.into_iter().any(|response| {
-            response.collection
-                && response
-                    .href
-                    .as_deref()
-                    .and_then(|href| directory_child(root, path, &directory_url, href))
-                    .is_some_and(|child| child.is_none())
-        })
-    })
+// Frozen desktop listing document machine. Property subtrees are opaque;
+// response and propstat controls retain their distinct placement/status rules.
+fn parse_listing_hrefs(xml: &[u8]) -> Option<Vec<String>> {
+    let mut reader = NsReader::from_reader(xml);
+    reader.config_mut().trim_text(false);
+    let mut hrefs = Vec::new();
+    let mut depth = 0_usize;
+    let mut response_href = None;
+    let mut response_status_seen = false;
+    let mut propstat_seen = false;
+    let mut in_propstat = false;
+    let mut propstat_status_seen = false;
+    let mut prop_depth = None;
+    let mut in_href = false;
+    let mut in_status = false;
+    let mut text = String::new();
+    #[derive(Eq, PartialEq)]
+    enum DocumentPhase {
+        Before,
+        Inside,
+        After,
+    }
+    let mut phase = DocumentPhase::Before;
+    let mut declaration_seen = false;
+    let mut prolog_consumed = false;
+    macro_rules! start_element {
+        ($is_dav:expr, $local:expr) => {{
+            if phase == DocumentPhase::After {
+                return None;
+            }
+            if depth == 0 {
+                if phase != DocumentPhase::Before || !$is_dav || $local != b"multistatus" {
+                    return None;
+                }
+                phase = DocumentPhase::Inside;
+            } else if depth == 1 {
+                if !$is_dav || $local != b"response" {
+                    return None;
+                }
+                response_href = None;
+                response_status_seen = false;
+                propstat_seen = false;
+                in_propstat = false;
+                propstat_status_seen = false;
+                prop_depth = None;
+            } else if prop_depth.is_some() {
+                // A DAV:prop value is opaque provider data.  In
+                // particular, nested extension elements (or DAV names
+                // such as href/status) are not response control fields.
+            } else if $is_dav && $local == b"prop" && depth == 3 && in_propstat {
+                prop_depth = Some(depth + 1);
+            } else if $local == b"propstat" {
+                if !$is_dav || depth != 2 || in_propstat || response_status_seen {
+                    return None;
+                }
+                propstat_seen = true;
+                in_propstat = true;
+                propstat_status_seen = false;
+            } else if $local == b"href" {
+                if !$is_dav || depth != 2 || in_href {
+                    return None;
+                }
+                in_href = true;
+                text.clear();
+            } else if $local == b"status" {
+                if !$is_dav || in_status {
+                    return None;
+                }
+                if depth == 2 {
+                    if response_status_seen || propstat_seen {
+                        return None;
+                    }
+                    response_status_seen = true;
+                } else if depth == 3 && in_propstat {
+                    if propstat_status_seen {
+                        return None;
+                    }
+                    propstat_status_seen = true;
+                } else {
+                    return None;
+                }
+                in_status = true;
+                text.clear();
+            }
+            depth += 1;
+        }};
+    }
+    macro_rules! end_element {
+        ($is_dav:expr, $local:expr) => {{
+            if depth == 0 {
+                return None;
+            }
+            if let Some(open_depth) = prop_depth {
+                if depth == open_depth {
+                    if !$is_dav || $local != b"prop" {
+                        return None;
+                    }
+                    prop_depth = None;
+                }
+            } else if $local == b"href" {
+                if !$is_dav || !in_href || depth != 3 || text.is_empty() {
+                    return None;
+                }
+                response_href = Some(text.clone());
+                in_href = false;
+            } else if $local == b"status" {
+                if !$is_dav || !in_status || !is_success_http_status_line(&text) {
+                    return None;
+                }
+                in_status = false;
+            } else if $local == b"propstat" {
+                if !$is_dav
+                    || depth != 3
+                    || !in_propstat
+                    || !propstat_status_seen
+                    || in_status
+                    || prop_depth.is_some()
+                {
+                    return None;
+                }
+                in_propstat = false;
+            } else if $local == b"response" {
+                if depth != 2
+                    || !$is_dav
+                    || response_href.is_none()
+                    || in_propstat
+                    || in_status
+                    || prop_depth.is_some()
+                {
+                    return None;
+                }
+                hrefs.push(response_href.take().unwrap());
+            } else if $local == b"multistatus" {
+                if !$is_dav || depth != 1 {
+                    return None;
+                }
+                phase = DocumentPhase::After;
+            }
+            depth -= 1;
+        }};
+    }
+    loop {
+        match reader.read_resolved_event() {
+            Ok((namespace, Event::Start(e))) => {
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                let local = e.local_name().as_ref().to_vec();
+                start_element!(is_dav, local);
+            }
+            Ok((namespace, Event::Empty(e))) => {
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                let local = e.local_name().as_ref().to_vec();
+                start_element!(is_dav, local);
+                end_element!(is_dav, local);
+            }
+            Ok((_, Event::Text(e))) => {
+                if in_href || in_status {
+                    let value = e.xml10_content().ok()?;
+                    text.push_str(&unescape(&value).ok()?);
+                } else if prop_depth.is_some_and(|open_depth| depth > open_depth) {
+                    let value = e.xml10_content().ok()?;
+                    unescape(&value).ok()?;
+                } else {
+                    let raw: &[u8] = e.as_ref();
+                    if !raw.iter().all(|byte| is_xml_s(*byte)) {
+                        return None;
+                    }
+                    if phase == DocumentPhase::Before {
+                        prolog_consumed = true;
+                    }
+                }
+            }
+            Ok((_, Event::GeneralRef(e))) => {
+                let name = std::str::from_utf8(e.as_ref()).ok()?;
+                let escaped = format!("&{name};");
+                let value = unescape(&escaped).ok()?;
+                if in_href || in_status {
+                    text.push_str(&value);
+                } else if !prop_depth.is_some_and(|open_depth| depth > open_depth) {
+                    return None;
+                }
+            }
+            Ok((_, Event::CData(e))) => {
+                if in_href || in_status {
+                    let raw: &[u8] = e.as_ref();
+                    let Ok(value) = std::str::from_utf8(raw) else {
+                        return None;
+                    };
+                    text.push_str(value);
+                } else if prop_depth.is_some_and(|open_depth| depth > open_depth) {
+                    if std::str::from_utf8(e.as_ref()).is_err() {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Ok((namespace, Event::End(e))) => {
+                let is_dav =
+                    matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == b"DAV:");
+                let local = e.local_name().as_ref().to_vec();
+                end_element!(is_dav, local);
+            }
+            Ok((_, Event::Comment(_) | Event::PI(_))) => {
+                if phase == DocumentPhase::Before {
+                    prolog_consumed = true;
+                }
+            }
+            Ok((_, Event::Decl(declaration))) => {
+                if phase != DocumentPhase::Before || declaration_seen || prolog_consumed {
+                    return None;
+                }
+                if !validate_xml_declaration(&declaration) {
+                    return None;
+                }
+                declaration_seen = true;
+            }
+            Ok((_, Event::DocType(_))) => return None,
+            Ok((_, Event::Eof))
+                if phase == DocumentPhase::After
+                    && depth == 0
+                    && !in_href
+                    && !in_status
+                    && prop_depth.is_none() =>
+            {
+                break
+            }
+            Ok((_, Event::Eof)) => return None,
+            Err(_) => return None,
+        }
+    }
+    Some(hrefs)
 }
 
 fn parse_listing(root: &WebDavRootV1, directory: &str, xml: &[u8]) -> Option<Vec<String>> {
@@ -859,8 +1237,8 @@ fn parse_listing(root: &WebDavRootV1, directory: &str, xml: &[u8]) -> Option<Vec
         .join(&format!("{directory}/"))
         .ok()?;
     let mut entries = Vec::new();
-    for response in parse_dav_responses(xml)? {
-        match directory_child(root, directory, &directory_url, response.href.as_deref()?)? {
+    for href in parse_listing_hrefs(xml)? {
+        match directory_child(root, directory, &directory_url, &href)? {
             None => {}
             Some(child) => entries.push(format!("{directory}/{child}")),
         }
@@ -1192,6 +1570,232 @@ mod tests {
                 "/dav/writers/123e4567-e89b-42d3-a456-426614174000/"
             ),
             Some(Some("123e4567-e89b-42d3-a456-426614174000".into()))
+        );
+    }
+
+    fn dav_document(inner: &str) -> Vec<u8> {
+        format!("<d:multistatus xmlns:d='DAV:'>{inner}</d:multistatus>").into_bytes()
+    }
+
+    #[test]
+    fn empty_controls_follow_expanded_listing_semantics() {
+        let root = webdav_root_v1("https://example.test/dav", "alice").unwrap();
+        // All frozen control elements, in their relevant structural context.
+        for (name, before, after, accepted) in [
+            ("multistatus", "", "", true),
+            ("response", "<d:multistatus xmlns:d='DAV:'>", "</d:multistatus>", false),
+            ("href", "<d:multistatus xmlns:d='DAV:'><d:response>", "</d:response></d:multistatus>", false),
+            ("status", "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/activations/</d:href>", "</d:response></d:multistatus>", false),
+            ("propstat", "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/activations/</d:href>", "</d:response></d:multistatus>", false),
+            ("prop", "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/activations/</d:href><d:propstat>", "<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>", true),
+            ("resourcetype", "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/activations/</d:href><d:propstat><d:prop>", "</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>", true),
+            ("collection", "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/activations/</d:href><d:propstat><d:prop><d:resourcetype>", "</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>", true),
+        ] {
+            let empty = format!("{before}<d:{name} xmlns:d='DAV:' />{after}");
+            let expanded = format!("{before}<d:{name} xmlns:d='DAV:'></d:{name}>{after}");
+            let result = parse_listing(&root, "activations", empty.as_bytes());
+            assert_eq!(result, parse_listing(&root, "activations", expanded.as_bytes()), "{name}");
+            assert_eq!(result.is_some(), accepted, "{name}");
+            // The two proof spellings yield the same result in these contexts.
+            assert_eq!(depth_zero_is_collection(&root, "activations", empty.as_bytes()), depth_zero_is_collection(&root, "activations", expanded.as_bytes()), "{name}");
+        }
+        for control in ["<d:propstat/>", "<d:status/>"] {
+            let body = dav_document(&format!(
+                "<d:response><d:href>/dav/activations/a.json</d:href>{control}</d:response>"
+            ));
+            assert_eq!(
+                block(adapter(vec![response(207, &body)]).list_directory("activations")),
+                DirectoryListResultV1::Indeterminate
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_listing_properties_do_not_capture_href_status_or_cdata() {
+        for property in [
+            "<d:owner><d:href>owner</d:href></d:owner>",
+            "<d:displayname><![CDATA[activations]]></d:displayname>",
+            "<x:property xmlns:x='urn:custom'><d:status>not an HTTP status</d:status><x:nested>text</x:nested></x:property>",
+            "<d:displayname>a&amp;b&#32;&#x41;</d:displayname>",
+            "<x:property xmlns:x='urn:custom'><d:response><d:propstat><d:href>opaque</d:href></d:propstat></d:response></x:property>",
+        ] {
+            let body = dav_document(&format!("<d:response><d:href>/dav/activations/a.json</d:href><d:propstat><d:prop>{property}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"));
+            assert_eq!(block(adapter(vec![response(207, &body)]).list_directory("activations")), DirectoryListResultV1::Entries(vec!["activations/a.json".into()]), "{property}");
+        }
+    }
+
+    #[test]
+    fn collection_proof_and_listing_have_distinct_failed_property_policies() {
+        let good = "<d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>";
+        let unrelated = "<d:propstat><d:prop><d:unsupported/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>";
+        for properties in [format!("{good}{unrelated}"), format!("{unrelated}{good}")] {
+            let body = dav_document(&format!(
+                "<d:response><d:href>/dav/activations</d:href>{properties}</d:response>"
+            ));
+            assert!(block(
+                adapter(vec![response(405, b""), response(207, &body)])
+                    .ensure_collection("activations")
+            )
+            .is_ok());
+            assert_eq!(
+                block(adapter(vec![response(207, &body)]).list_directory("activations")),
+                DirectoryListResultV1::Indeterminate
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_declarations_and_document_phases_are_preserved() {
+        let root = webdav_root_v1("https://example.test/dav", "alice").unwrap();
+        let empty = "<d:multistatus xmlns:d='DAV:'/>";
+        for declaration in [
+            "",
+            "<?xml version='1.0'?>",
+            "<?xml version = '1.0' encoding = 'utf-8' standalone = 'yes'?>",
+            "<?xml version='1.0' standalone='no'?>",
+            "\u{feff}<?xml version='1.0'?>",
+        ] {
+            assert_eq!(
+                parse_listing(
+                    &root,
+                    "activations",
+                    format!("{declaration}{empty}").as_bytes()
+                ),
+                Some(vec![])
+            );
+        }
+        for declaration in [
+            "<?xml version='2.0'?>",
+            "<?xml encoding='utf-8'?>",
+            "<?xml version='1.0' version='1.0'?>",
+            "<?xml version='1.0' encoding='windows-1252'?>",
+            "<?xml version='1.0' vendor='x'?>",
+            "<?xml version='1.0' standalone='invalid'?>",
+            "<?xml version='1.0' malformed?>",
+            "<?xml version='1.0'?><?xml version='1.0'?>",
+            " <?xml version='1.0'?>",
+            "<!--before--><?xml version='1.0'?>",
+            "<?xml version\x0b='1.0'?>",
+        ] {
+            assert_eq!(
+                parse_listing(
+                    &root,
+                    "activations",
+                    format!("{declaration}{empty}").as_bytes()
+                ),
+                None,
+                "{declaration}"
+            );
+        }
+        for body in [
+            format!("{empty}<?xml version='1.0'?>"),
+            "<d:multistatus xmlns:d='DAV:'><?xml version='1.0'?></d:multistatus>".to_owned(),
+            format!("{empty}{empty}"),
+            format!("{empty}junk"),
+            "<html/>".into(),
+            "<d:multistatus xmlns:d='DAV:'>".into(),
+            "".into(),
+        ] {
+            assert_eq!(
+                parse_listing(&root, "activations", body.as_bytes()),
+                None,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn listing_control_placement_and_status_width_match_frozen_policy() {
+        let root = webdav_root_v1("https://example.test/dav", "alice").unwrap();
+        for inner in [
+            "<d:response><d:href>/dav/activations/a.json</d:href><d:status>HTTP/1.1 0200 OK</d:status></d:response>",
+            "<d:response><d:href>/dav/activations/a.json</d:href><d:status>HTTP/1.1 200 OK</d:status><d:propstat><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+            "<d:response><d:href>/dav/activations/a.json</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+            "<d:response><d:href>/dav/activations/a.json</d:href><d:propstat><d:prop><d:displayname>text</d:displayname></d:prop></d:propstat></d:response>",
+            "<d:response><d:response><d:href>/dav/activations/a.json</d:href></d:response></d:response>",
+        ] {
+            assert_eq!(parse_listing(&root,"activations",&dav_document(inner)),None,"{inner}");
+        }
+    }
+
+    #[test]
+    fn collection_evidence_is_exact_successful_and_unique() {
+        let root = webdav_root_v1("https://example.test/dav", "alice").unwrap();
+        let good = "<d:response><d:href>/dav/activations</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>";
+        assert!(depth_zero_is_collection(
+            &root,
+            "activations",
+            &dav_document(good)
+        ));
+        assert!(!depth_zero_is_collection(
+            &root,
+            "activations",
+            &dav_document(&format!("{good}{good}"))
+        ));
+        assert!(!depth_zero_is_collection(
+            &root,
+            "activations",
+            &dav_document(&good.replace("/dav/activations", "/dav/other"))
+        ));
+        assert!(!depth_zero_is_collection(
+            &root,
+            "activations",
+            &dav_document(&good.replace("200 OK", "404 Not Found"))
+        ));
+        assert!(!depth_zero_is_collection(
+            &root,
+            "activations",
+            &dav_document(&good.replace(
+                "<d:propstat>",
+                "<d:status>HTTP/1.1 403 Forbidden</d:status><d:propstat>"
+            ))
+        ));
+    }
+    #[test]
+    fn collection_proof_resolves_relative_href_from_root_but_listing_stays_directory_relative() {
+        let root = webdav_root_v1("https://example.test/dav/", "alice").unwrap();
+        let collection = "writers/123e4567-e89b-42d3-a456-426614174000/segments";
+        let relative = format!("<d:response><d:href>{collection}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>");
+        assert!(depth_zero_is_collection(
+            &root,
+            collection,
+            &dav_document(&relative)
+        ));
+        for escaped in [
+            "writers/123e4567-e89b-42d3-a456-426614174000/other",
+            "writers/123e4567-e89b-42d3-a456-426614174000/../segments",
+        ] {
+            let body = relative.replace(collection, escaped);
+            assert!(!depth_zero_is_collection(
+                &root,
+                collection,
+                &dav_document(&body)
+            ));
+        }
+        assert_eq!(
+            parse_listing(
+                &root,
+                "activations",
+                &dav_document("<d:response><d:href>a.json</d:href></d:response>")
+            ),
+            Some(vec!["activations/a.json".into()])
+        );
+    }
+    #[test]
+    fn xml10_status_text_does_not_normalize_nel_and_entities_still_unescape() {
+        let root = webdav_root_v1("https://example.test/dav", "alice").unwrap();
+        let nel_listing = dav_document("<d:response><d:href>/dav/activations/a.json</d:href><d:status>HTTP/1.1\u{85}200 OK</d:status></d:response>");
+        assert_eq!(parse_listing(&root, "activations", &nel_listing), None);
+        let nel_collection = dav_document("<d:response><d:href>/dav/activations</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1\u{85}200 OK</d:status></d:propstat></d:response>");
+        assert!(!depth_zero_is_collection(
+            &root,
+            "activations",
+            &nel_collection
+        ));
+        let entity_status = dav_document("<d:response><d:href>/dav/activations/a.json</d:href><d:status>HTTP/1.1&#32;200 OK</d:status></d:response>");
+        assert_eq!(
+            parse_listing(&root, "activations", &entity_status),
+            Some(vec!["activations/a.json".into()])
         );
     }
     #[test]
