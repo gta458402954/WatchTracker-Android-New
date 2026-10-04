@@ -38,3 +38,9 @@ mod ordinary_mutation_tests;
 mod remote_discovery_tests;
 #[cfg(test)]
 mod tests;
+
+pub mod discovery_persistence;
+#[cfg(test)]
+mod discovery_persistence_tests;
+pub mod discovery_runtime;
+pub mod materialized_projection;

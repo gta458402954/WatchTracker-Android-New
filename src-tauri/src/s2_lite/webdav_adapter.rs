@@ -279,6 +279,10 @@ impl<T: WebDavTransportV1> WebDavS2AdapterV1<T> {
             .await
     }
 
+    pub fn physical_root_id(&self) -> &str {
+        &self.root.physical_root_id
+    }
+
     pub async fn get_exact(&mut self, path: &str) -> WebDavGetResultV1 {
         if !valid_immutable_object_path(path) {
             return WebDavGetResultV1::Indeterminate;
