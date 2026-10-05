@@ -47,7 +47,7 @@ use super::remote_discovery::{
     create_discovery_state_v1, DiscoveryStateV1, VerifiedFingerprintEvidenceV1,
     VerifiedRemoteObjectV1,
 };
-use super::types::CommitRef;
+use super::types::{CommitRef, CommitV1};
 
 const STORE_FAILURE: ProtocolError = ProtocolError("S2_DURABLE_PERSISTENCE_FAILURE");
 const STORE_CORRUPTION: ProtocolError = ProtocolError("S2_DURABLE_STATE_CORRUPTION");
@@ -1162,6 +1162,55 @@ fn validate_outbound_batch(batch: &OutboundBatchV1, root_id: &str) -> Result<()>
     Ok(())
 }
 
+/// The durable batch is redundant recovery metadata for one exact immutable
+/// intent. It is authority only when its frozen membership is a bijection with
+/// that intent; an individually valid duplicate must not hide an omitted
+/// mutation from post-freeze cancellation.
+fn validate_outbound_batch_intent_bijection(
+    batch: &OutboundBatchV1,
+    frozen: &CommitV1,
+) -> Result<()> {
+    if batch.mutations.len() != frozen.mutations.len() {
+        return Err(STORE_CORRUPTION);
+    }
+    let mut batch_ids = std::collections::BTreeSet::new();
+    let mut batch_keys = Vec::new();
+    for batch_mutation in &batch.mutations {
+        validate_outbound_batch_mutation_identity(batch_mutation)?;
+        if !batch_ids.insert(batch_mutation.local_mutation_id.as_str())
+            || batch_keys.contains(&&batch_mutation.entity_key)
+        {
+            return Err(STORE_CORRUPTION);
+        }
+        batch_keys.push(&batch_mutation.entity_key);
+    }
+
+    let matches = |batch_mutation: &OutboundBatchMutationV1,
+                   frozen_mutation: &super::types::CommitMutationV1| {
+        batch_mutation.local_mutation_id == frozen_mutation.local_mutation_id
+            && batch_mutation.entity_kind == frozen_mutation.entity_type
+            && batch_mutation.entity_key == frozen_mutation.entity_key
+    };
+    if batch.mutations.iter().any(|batch_mutation| {
+        frozen
+            .mutations
+            .iter()
+            .filter(|frozen_mutation| matches(batch_mutation, frozen_mutation))
+            .count()
+            != 1
+    }) || frozen.mutations.iter().any(|frozen_mutation| {
+        batch
+            .mutations
+            .iter()
+            .filter(|batch_mutation| matches(batch_mutation, frozen_mutation))
+            .count()
+            != 1
+    }) {
+        return Err(STORE_CORRUPTION);
+    }
+    Ok(())
+}
+
 fn validate_materialized_projection(
     projection: &DurableMaterializedProjectionV1,
     root_id: &str,
@@ -1592,14 +1641,7 @@ pub(crate) fn descriptor_has_frozen_publication_v1(
         let frozen = decode_frozen_wire_commit_v1(&intent.exact_bytes)?;
         if frozen.previous_writer_commit != batch.previous_writer_ref
             || frozen.basis_clock != batch.basis_clock
-            || frozen.mutations.len() != batch.mutations.len()
-            || batch.mutations.iter().any(|item| {
-                !frozen.mutations.iter().any(|wire| {
-                    wire.local_mutation_id == item.local_mutation_id
-                        && wire.entity_type == item.entity_kind
-                        && wire.entity_key == item.entity_key
-                })
-            })
+            || validate_outbound_batch_intent_bijection(&batch, &frozen).is_err()
         {
             return Err(STORE_CORRUPTION);
         }
@@ -3658,7 +3700,9 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             return Err(STORE_CORRUPTION);
         }
         let frozen_commit = decode_frozen_wire_commit_v1(&intent.exact_bytes)?;
-        if batch.previous_writer_ref != frozen_commit.previous_writer_commit {
+        if batch.previous_writer_ref != frozen_commit.previous_writer_commit
+            || validate_outbound_batch_intent_bijection(batch, &frozen_commit).is_err()
+        {
             return Err(STORE_CORRUPTION);
         }
         let mut metadata = intent.clone();
@@ -3975,6 +4019,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let frozen = decode_frozen_wire_commit_v1(&intent.exact_bytes)?;
         if frozen.commit_ref() != batch.commit_ref
             || frozen.previous_writer_commit != batch.previous_writer_ref
+            || validate_outbound_batch_intent_bijection(&batch, &frozen).is_err()
         {
             return Err(STORE_CORRUPTION);
         }
@@ -4134,14 +4179,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         if frozen.commit_ref() != batch.commit_ref
             || frozen.previous_writer_commit != batch.previous_writer_ref
             || frozen.basis_clock != batch.basis_clock
-            || frozen.mutations.len() != batch.mutations.len()
-            || batch.mutations.iter().any(|captured| {
-                !frozen.mutations.iter().any(|mutation| {
-                    mutation.local_mutation_id == captured.local_mutation_id
-                        && mutation.entity_type == captured.entity_kind
-                        && mutation.entity_key == captured.entity_key
-                })
-            })
+            || validate_outbound_batch_intent_bijection(&batch, &frozen).is_err()
         {
             return Err(STORE_CORRUPTION);
         }

@@ -267,6 +267,23 @@ fn corrupt_frozen_batch_entity_id(
     .unwrap();
 }
 
+fn mutate_frozen_batch(conn: &Connection, update: impl FnOnce(&mut Vec<Value>)) {
+    let bytes: Vec<u8> = conn
+        .query_row(
+            "SELECT state_json FROM s2_lite_outbound_batch_v1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut persisted: Value = serde_json::from_slice(&bytes).unwrap();
+    update(persisted["payload"]["mutations"].as_array_mut().unwrap());
+    conn.execute(
+        "UPDATE s2_lite_outbound_batch_v1 SET state_json=?1",
+        [serde_json::to_vec(&persisted).unwrap()],
+    )
+    .unwrap();
+}
+
 fn create_and_freeze_all_ordinary_entity_kinds(
     c: &Mutex<Connection>,
     id: &str,
@@ -2720,6 +2737,82 @@ fn i65_astra_corrupt_frozen_collection_identity_fails_closed_across_restart() {
 }
 
 #[test]
+fn i65_astra_duplicate_frozen_membership_fails_closed_across_restart() {
+    let path = temp_path();
+    let (mut c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let first = crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Astra frozen A"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let second = crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Astra frozen C"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap();
+    let mut guard = c.lock().unwrap();
+    let descriptors = super::local_authority::load_staged_descriptors(&guard).unwrap();
+    let staging = crate::sync_staging::get_staging(&guard).unwrap();
+    mutate_frozen_batch(&guard, |mutations| {
+        let first = mutations
+            .iter()
+            .find(|mutation| mutation["entityId"] == first.id)
+            .unwrap()
+            .clone();
+        let second = mutations
+            .iter_mut()
+            .find(|mutation| mutation["entityId"] == second.id)
+            .unwrap();
+        *second = first;
+    });
+    let frozen: Vec<u8> = guard
+        .query_row(
+            "SELECT state_json FROM s2_lite_outbound_batch_v1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(crate::collections::delete(&mut guard, &second.id, second.rev, "device").is_err());
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&guard).unwrap(),
+        descriptors
+    );
+    assert_eq!(crate::sync_staging::get_staging(&guard).unwrap(), staging);
+    assert_eq!(
+        guard
+            .query_row(
+                "SELECT state_json FROM s2_lite_outbound_batch_v1",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap(),
+        frozen
+    );
+    assert!(crate::collections::all(&guard)
+        .unwrap()
+        .iter()
+        .any(|row| row.id == second.id));
+    drop(guard);
+    drop(c);
+    c = reopen(&path);
+    let mut guard = c.lock().unwrap();
+    assert!(crate::collections::delete(&mut guard, &second.id, second.rev, "device").is_err());
+    assert!(crate::collections::all(&guard)
+        .unwrap()
+        .iter()
+        .any(|row| row.id == second.id));
+    drop(guard);
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn i65_frozen_batch_rejects_record_and_composite_identity_mismatches() {
     for kind in ["record", "collection-member", "episode-completion"] {
         let (c, id) = database(None);
@@ -2766,6 +2859,172 @@ fn i65_frozen_batch_rejects_record_and_composite_identity_mismatches() {
             .any(|row| row.id == collection_id));
     }
 }
+
+#[test]
+fn i65_frozen_batch_intent_bijection_rejects_missing_extra_and_substitution() {
+    for corruption in ["duplicate-id", "missing", "extra", "substitution"] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let first = crate::collections::create(
+            &mut c.lock().unwrap(),
+            serde_json::from_value(json!({"name":"Batch A"})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        let second = crate::collections::create(
+            &mut c.lock().unwrap(),
+            serde_json::from_value(json!({"name":"Batch C"})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap();
+        let mut guard = c.lock().unwrap();
+        let descriptors = super::local_authority::load_staged_descriptors(&guard).unwrap();
+        let staging = crate::sync_staging::get_staging(&guard).unwrap();
+        mutate_frozen_batch(&guard, |mutations| {
+            let first_index = mutations
+                .iter()
+                .position(|mutation| mutation["entityId"] == first.id)
+                .unwrap();
+            let second_index = mutations
+                .iter()
+                .position(|mutation| mutation["entityId"] == second.id)
+                .unwrap();
+            match corruption {
+                "duplicate-id" => {
+                    mutations[second_index]["localMutationId"] =
+                        mutations[first_index]["localMutationId"].clone();
+                }
+                "missing" => {
+                    mutations.remove(second_index);
+                }
+                "extra" => mutations.push(mutations[first_index].clone()),
+                "substitution" => {
+                    mutations[second_index] = json!({
+                        "entityKind":"record",
+                        "entityId":"replacement-record",
+                        "entityKey":["record","replacement-record"],
+                        "capturedLastGeneration":0,
+                        "localMutationId":uuid::Uuid::new_v4().to_string()
+                    });
+                }
+                _ => unreachable!(),
+            }
+        });
+        assert!(crate::collections::delete(&mut guard, &second.id, second.rev, "device").is_err());
+        assert_eq!(
+            super::local_authority::load_staged_descriptors(&guard).unwrap(),
+            descriptors,
+            "{corruption} must roll back descriptor mutation"
+        );
+        assert_eq!(
+            crate::sync_staging::get_staging(&guard).unwrap(),
+            staging,
+            "{corruption} must roll back S1 staging"
+        );
+        assert!(crate::collections::all(&guard)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == second.id));
+    }
+}
+
+#[test]
+fn i65_frozen_batch_reordered_exact_membership_remains_valid() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Ordered A"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let second = crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Ordered C"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap();
+    mutate_frozen_batch(&c.lock().unwrap(), |mutations| mutations.reverse());
+    crate::collections::delete(&mut c.lock().unwrap(), &second.id, second.rev, "device").unwrap();
+    let delete = super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.entity_id == second.id)
+        .unwrap();
+    assert_eq!(delete.operation, "delete");
+}
+
+#[test]
+fn i65_frozen_batch_rejects_duplicated_composite_membership() {
+    for duplicated_kind in ["collection-member", "episode-completion"] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let mutations = create_and_freeze_all_ordinary_entity_kinds(&c, &id);
+        let collection_id = mutations
+            .iter()
+            .find(|(kind, _)| kind == "collection")
+            .unwrap()
+            .1
+            .clone();
+        let other_kind = if duplicated_kind == "collection-member" {
+            "episode-completion"
+        } else {
+            "collection-member"
+        };
+        let duplicated_id = mutations
+            .iter()
+            .find(|(kind, _)| kind == duplicated_kind)
+            .unwrap()
+            .1
+            .clone();
+        let omitted_id = mutations
+            .iter()
+            .find(|(kind, _)| kind == other_kind)
+            .unwrap()
+            .1
+            .clone();
+        let mut guard = c.lock().unwrap();
+        let descriptors = super::local_authority::load_staged_descriptors(&guard).unwrap();
+        mutate_frozen_batch(&guard, |batch| {
+            let duplicated = batch
+                .iter()
+                .find(|mutation| mutation["entityId"] == duplicated_id)
+                .unwrap()
+                .clone();
+            let omitted = batch
+                .iter_mut()
+                .find(|mutation| mutation["entityId"] == omitted_id)
+                .unwrap();
+            *omitted = duplicated;
+        });
+        let collection = crate::collections::all(&guard)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == collection_id)
+            .unwrap();
+        assert!(
+            crate::collections::delete(&mut guard, &collection.id, collection.rev, "device")
+                .is_err()
+        );
+        assert_eq!(
+            super::local_authority::load_staged_descriptors(&guard).unwrap(),
+            descriptors
+        );
+        assert!(crate::collections::all(&guard)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == collection_id));
+    }
+}
+
 #[test]
 fn i65_post_freeze_delete_crash_interleaving_matrix() {
     for boundary in ["mutable", "prepared", "ambiguous", "receipt"] {
