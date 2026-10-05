@@ -62,6 +62,7 @@ const PERSISTENCE_FORMAT_VERSION: u8 = 1;
 pub enum OrdinaryPublishExclusiveResultV1<T> {
     Executed(T),
     RejectedRootFrozen,
+    RejectedAuthority,
 }
 
 /// Admission outcome for the fixed normal-S2 discovery infrastructure
@@ -343,7 +344,6 @@ pub enum OutboundCompletionResultV1 {
 /// Inputs captured under the outbound freezer's one authoritative SQLite
 /// transaction. Nothing in this value is a transport fact.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Frozen ordinary publication authority; execution deferred to I6.5.
 pub(crate) struct OutboundFreezeTransactionContextV1 {
     pub binding: TargetRootBindingV1,
     pub root_state: DesktopRootStateV1,
@@ -351,9 +351,9 @@ pub(crate) struct OutboundFreezeTransactionContextV1 {
     pub discovery_generation: u64,
     pub root_safety_generation: u64,
     pub staging: crate::sync_staging::SyncStaging,
+    pub descriptors: Vec<super::local_authority::CapturedStagingDescriptorV1>,
 }
 
-#[allow(dead_code)] // Frozen ordinary publication authority; execution deferred to I6.5.
 pub(crate) enum OutboundFreezeTransactionPlanV1 {
     NoSemanticMutation,
     Blocked,
@@ -364,7 +364,6 @@ pub(crate) enum OutboundFreezeTransactionPlanV1 {
     },
 }
 
-#[allow(dead_code)] // Frozen ordinary publication authority; execution deferred to I6.5.
 pub(crate) enum OutboundFreezeTransactionResultV1 {
     Frozen {
         batch: Box<OutboundBatchV1>,
@@ -1015,6 +1014,7 @@ pub fn validate_normal_s2_completion_authority_in_transaction_v1(
         return Ok(NormalS2CompletionAuthorityV1::TargetChanged);
     }
 
+    reconcile_read_root_safety_v1(conn, &binding.physical_root_id)?;
     let safety = load_root_safety_from(conn, &binding.physical_root_id)?.ok_or(STORE_CORRUPTION)?;
     if !safety.root_fatal_signals.is_empty() || !safety.cutover_state.root_fatal_signals.is_empty()
     {
@@ -1445,6 +1445,86 @@ fn reconcile_read_root_safety_v1(conn: &Connection, root_id: &str) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// A retained remote commit cannot claim a locally reserved sequence with a
+/// different identity. The local intent and remote alternative remain durable.
+fn check_ordinary_writer_ownership_v1(conn: &Connection, root_id: &str) -> Result<bool> {
+    let writer = load_desktop_root_state_from(conn, root_id)?.ok_or(STORE_CORRUPTION)?;
+    let Some(read) = super::discovery_persistence::load_read_state_v1(conn, root_id)? else {
+        return Ok(false);
+    };
+    // Retain ownership evidence for every prepared sequence, including history
+    // not yet observed by discovery when a process died after completion.
+    let mut statement = database(conn.prepare(
+        "SELECT remote_path FROM s2_lite_prepared_intent_v1
+         WHERE root_id=?1 AND intent_kind='commit' ORDER BY remote_path",
+    ))?;
+    let paths = database(statement.query_map([root_id], |row| row.get::<_, String>(0)))?;
+    let mut owned = Vec::new();
+    for path in paths {
+        let intent =
+            load_commit_intent_from(conn, root_id, &database(path)?)?.ok_or(STORE_CORRUPTION)?;
+        if intent.commit_ref.writer_id == writer.local_writer_id {
+            owned.push(intent.commit_ref);
+        }
+    }
+    let mismatch = super::local_authority::initialize_writer(conn)?.writer_id
+        != writer.local_writer_id
+        || read
+            .discovery
+            .state
+            .verified_objects
+            .iter()
+            .filter_map(|object| object.commit_ref.as_ref())
+            .any(|commit| {
+                commit.writer_id == writer.local_writer_id
+                    && !owned.iter().any(|expected| expected == commit)
+            });
+    if mismatch {
+        let mut safety = load_root_safety_from(conn, root_id)?.ok_or(STORE_CORRUPTION)?;
+        let code = "S2_LOCAL_WRITER_OWNERSHIP_MISMATCH";
+        if !safety
+            .root_fatal_signals
+            .iter()
+            .any(|fatal| fatal.code == code)
+        {
+            safety.generation = safety.generation.checked_add(1).ok_or(STORE_CORRUPTION)?;
+            safety
+                .root_fatal_signals
+                .push(MigrationRootFatalV1 { code: code.into() });
+            safety
+                .root_fatal_signals
+                .sort_by(|left, right| left.code.cmp(&right.code));
+            save_root_safety(conn, &safety)?;
+        }
+        if let Some(mut migration) = load_migration_from(conn, root_id)? {
+            if add_fatal(&mut migration, code)? {
+                save_migration(conn, &migration)?;
+            }
+        }
+    }
+    Ok(!mismatch)
+}
+
+fn load_outbound_batch_from_for_admission_v1(
+    conn: &Connection,
+    root_id: &str,
+) -> Result<Option<OutboundBatchV1>> {
+    let row = database(
+        conn.query_row(
+            "SELECT state_json FROM s2_lite_outbound_batch_v1 WHERE root_id=?1",
+            [root_id],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional(),
+    )?;
+    row.map(|bytes| {
+        let batch: OutboundBatchV1 = decode(&bytes)?;
+        validate_outbound_batch(&batch, root_id)?;
+        Ok(batch)
+    })
+    .transpose()
 }
 
 fn load_root_safety_from(
@@ -3420,6 +3500,16 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         Ok(output)
     }
 
+    pub fn verify_ordinary_writer_ownership_v1(&mut self) -> Result<bool> {
+        let mut conn = self.connection()?;
+        let tx = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
+        ensure_root_authority(&tx, self.root_id)?;
+        reconcile_read_root_safety_v1(&tx, self.root_id)?;
+        let admitted = check_ordinary_writer_ownership_v1(&tx, self.root_id)?;
+        database(tx.commit())?;
+        Ok(admitted)
+    }
+
     pub fn load_unfinished_outbound_batch(&mut self) -> Result<Option<OutboundBatchV1>> {
         let conn = self.connection()?;
         let bytes = database(
@@ -3521,7 +3611,6 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
     /// Captures every authority input and durably reserves one outbound commit
     /// in a single `BEGIN IMMEDIATE` transaction.  The callback has no store
     /// handle and therefore cannot publish or alter unrelated durable state.
-    #[allow(dead_code)] // Frozen ordinary publication authority; execution deferred to I6.5.
     pub(crate) fn run_outbound_freeze_transaction(
         &mut self,
         target_id: &str,
@@ -3614,6 +3703,11 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         if !safety.root_fatal_signals.is_empty() {
             return Ok(OutboundFreezeTransactionResultV1::Blocked);
         }
+        if validate_normal_s2_completion_authority_in_transaction_v1(&transaction, &binding)?
+            != NormalS2CompletionAuthorityV1::Valid
+        {
+            return Ok(OutboundFreezeTransactionResultV1::Blocked);
+        }
         let discovery_generation = database(
             transaction
                 .query_row(
@@ -3650,6 +3744,9 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         ) || projection.source_discovery_generation != discovery_generation
             || projection.source_root_safety_generation != safety.generation
         {
+            return Ok(OutboundFreezeTransactionResultV1::Blocked);
+        }
+        if !projection_matches_read_authority_v1(&transaction, self.root_id, &projection)? {
             return Ok(OutboundFreezeTransactionResultV1::Blocked);
         }
         let root_bytes = database(
@@ -3712,9 +3809,31 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             discovery_generation,
             root_safety_generation: safety.generation,
             staging,
+            descriptors: super::local_authority::load_staged_descriptors(&transaction)?,
         };
         let plan = build(&context)?;
         let OutboundFreezeTransactionPlanV1::Frozen { batch, intent } = plan else {
+            if matches!(plan, OutboundFreezeTransactionPlanV1::NoSemanticMutation) {
+                let mut remaining = context.staging.clone();
+                for descriptor in &context.descriptors {
+                    remaining.entries.retain(|entry| {
+                        !(entry.entity_kind == descriptor.entity_kind
+                            && entry.id == descriptor.entity_id
+                            && entry.last_generation == descriptor.last_generation)
+                    });
+                    database(transaction.execute("DELETE FROM s2_lite_local_staging_descriptor_v1 WHERE entity_kind=?1 AND entity_id=?2",params![descriptor.entity_kind,descriptor.entity_id]))?;
+                }
+                crate::sync_staging::set_staging_for_target(&transaction, target_id, &remaining)
+                    .map_err(|_| STORE_FAILURE)?;
+                if remaining.entries.is_empty()
+                    && super::local_authority::load_staged_descriptors(&transaction)?.is_empty()
+                {
+                    let generation = crate::db_atomic_helpers::get_records_generation(&transaction)
+                        .map_err(|_| STORE_FAILURE)?;
+                    crate::db_atomic_helpers::acknowledge_sync_outbox(&transaction, generation)
+                        .map_err(|_| STORE_FAILURE)?;
+                }
+            }
             database(transaction.commit())?;
             return Ok(match plan {
                 OutboundFreezeTransactionPlanV1::NoSemanticMutation => {
@@ -3988,9 +4107,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             captured_keys.push(mutation.entity_key.clone());
             let mut matching = Vec::new();
             for (index, entry) in staging.entries.iter().enumerate() {
-                let key = crate::sync_staging::staged_entry_entity_key(entry)
-                    .map_err(|_| STORE_CORRUPTION)?;
-                if key == mutation.entity_key {
+                if entry.entity_kind == mutation.entity_kind && entry.id == mutation.entity_id {
                     matching.push((index, entry.last_generation));
                 }
             }
@@ -4015,6 +4132,27 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             return Err(STORE_FAILURE);
         }
 
+        for descriptor in super::local_authority::load_staged_descriptors(&transaction)? {
+            if batch.mutations.iter().any(|captured| {
+                captured.entity_kind == descriptor.entity_kind
+                    && captured.entity_id == descriptor.entity_id
+                    && captured.local_mutation_id == descriptor.local_mutation_id
+                    && captured.captured_last_generation == descriptor.last_generation
+            }) {
+                database(transaction.execute("DELETE FROM s2_lite_local_staging_descriptor_v1 WHERE entity_kind=?1 AND entity_id=?2", params![descriptor.entity_kind, descriptor.entity_id]))?;
+            }
+        }
+        if crate::sync_targets::active_target(&transaction).map_err(|_| STORE_FAILURE)?
+            == Some((batch.target_id.clone(), batch.target_epoch))
+            && staging.entries.is_empty()
+            && super::local_authority::load_staged_descriptors(&transaction)?.is_empty()
+        {
+            crate::db_atomic_helpers::acknowledge_sync_outbox(
+                &transaction,
+                batch.captured_local_generation,
+            )
+            .map_err(|_| STORE_FAILURE)?;
+        }
         root_state.writer_head = Some(batch.commit_ref.clone());
         validate_desktop_root_state(&root_state, self.root_id)?;
         database(transaction.execute(
@@ -4519,7 +4657,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let exact_bytes = intent.exact_bytes.clone();
         match self.run_root_publication_admission(
             root_id,
-            |_transaction, _safety| Ok(()),
+            |_transaction, _safety| Ok(true),
             move |transaction, safety| {
                 if safety.cutover_state.state_version != 1 {
                     return Err(STORE_CORRUPTION);
@@ -4529,12 +4667,72 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
                 if durable.intent_fingerprint != fingerprint || durable.exact_bytes != exact_bytes {
                     return Err(STORE_CORRUPTION);
                 }
-                Ok(None::<()>)
+                let Some(batch) = load_outbound_batch_from_for_admission_v1(transaction, root_id)?
+                else {
+                    return Ok(Some(false));
+                };
+                let binding = load_target_root_binding_from(
+                    transaction,
+                    &batch.target_id,
+                    batch.target_epoch,
+                )?
+                .ok_or(STORE_CORRUPTION)?;
+                if batch.bookkeeping_completed
+                    || batch.prepared_intent_path != remote_path
+                    || batch.prepared_intent_fingerprint != fingerprint
+                    || validate_normal_s2_completion_authority_in_transaction_v1(
+                        transaction,
+                        &binding,
+                    )? != NormalS2CompletionAuthorityV1::Valid
+                {
+                    return Ok(Some(false));
+                }
+                let writer =
+                    load_desktop_root_state_from(transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
+                if writer.local_writer_id != batch.writer_id
+                    || writer.next_writer_sequence
+                        != batch
+                            .writer_sequence
+                            .checked_add(1)
+                            .ok_or(STORE_CORRUPTION)?
+                    || writer.writer_head != batch.previous_writer_ref
+                {
+                    return Err(STORE_CORRUPTION);
+                }
+                if !check_ordinary_writer_ownership_v1(transaction, root_id)? {
+                    return Ok(Some(true));
+                }
+                let Some(read) =
+                    super::discovery_persistence::load_read_state_v1(transaction, root_id)?
+                else {
+                    return Ok(Some(false));
+                };
+                if !super::discovery_persistence::publication_discovery_ready_v1(
+                    &read.discovery.state,
+                ) || !matches!(
+                    read.projection.state.status,
+                    super::materialized_projection::MaterializedProjectionStatusV1::Complete
+                ) || read
+                    .projection
+                    .state
+                    .entities
+                    .iter()
+                    .any(|entity| entity.conflict)
+                    || !read
+                        .projection
+                        .state
+                        .relation_blocked_entity_keys
+                        .is_empty()
+                {
+                    return Ok(Some(false));
+                }
+                Ok(None::<bool>)
             },
             operation,
         )? {
             Ok(value) => Ok(OrdinaryPublishExclusiveResultV1::Executed(value)),
-            Err(()) => Ok(OrdinaryPublishExclusiveResultV1::RejectedRootFrozen),
+            Err(true) => Ok(OrdinaryPublishExclusiveResultV1::RejectedRootFrozen),
+            Err(false) => Ok(OrdinaryPublishExclusiveResultV1::RejectedAuthority),
         }
     }
 

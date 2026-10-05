@@ -1138,3 +1138,47 @@ pub async fn s2_migration_step(
     .await
     .map_err(|error| crate::error::AppError::General(error.to_string()))?
 }
+
+/// One normal sync invocation for mobile events or manual sync. Rust owns route,
+/// durable admission and completion; the caller supplies only its target observation.
+#[tauri::command]
+pub async fn s2_sync_cycle(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    paths: State<'_, AppPaths>,
+    input: crate::s2_lite::ordinary_runtime::MobileSyncAdmissionV1,
+    proxy: Option<String>,
+) -> Result<crate::s2_lite::ordinary_runtime::OrdinaryCycleResultV1, crate::error::AppError> {
+    let (url, username, password) = {
+        let mut guard = lock_database(state.inner())?;
+        crate::sync_targets::active_request_credentials(
+            &mut guard,
+            paths.inner(),
+            &input.target_id,
+            input.target_epoch,
+        )?
+    };
+    let config = s2_webdav_config(&url, &username, password.to_string(), proxy)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let db = app.state::<DbState>();
+        let coordinator =
+            app.state::<crate::s2_lite::root_coordinator::RootExecutionCoordinatorV1>();
+        let transport = crate::s2_lite::webdav_adapter::ReqwestWebDavTransportV1::new(&config)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let adapter = crate::s2_lite::webdav_adapter::WebDavS2AdapterV1::new(config, transport)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let mut remote = crate::s2_lite::migration_runtime::BlockingWebDavRemoteV1::new(adapter)
+            .map_err(s2_error)?;
+        crate::s2_lite::ordinary_runtime::run_mobile_sync_with_adapter_v1(
+            &db.conn,
+            &coordinator,
+            &mut remote,
+            &input,
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
+        .map_err(s2_error)
+    })
+    .await
+    .map_err(|error| crate::error::AppError::General(error.to_string()))?
+}

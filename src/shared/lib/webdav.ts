@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+import { getSettingAsync, getSyncRuntimeState } from './database.ts';
 /** Compatibility facade for the legacy WebDAV module path. */
 import type { WatchRecord } from '../types';
 import {
@@ -29,9 +31,20 @@ export async function probeSyncTarget(creds: WebDAVCreds): Promise<SyncTargetPro
 }
 
 /** Keeps the old ignored-records argument while the service reads its snapshot from Rust. */
-export async function syncToWebDAV(_ignoredRecords?: WatchRecord[]): Promise<SyncResult> {
+export async function syncToWebDAV(_ignoredRecords?: WatchRecord[], automatic = false): Promise<SyncResult> {
   const creds = await getCreds();
   if (!creds) return { ok: false, error: '未配置凭据' };
+  if (creds.targetId && creds.targetEpoch !== undefined) {
+    try {
+      const expectedAttemptAt = automatic ? (await getSyncRuntimeState()).scheduler.lastAttemptAt : null;
+      const status = await invoke<string>('s2_sync_cycle', { input: { targetId: creds.targetId, targetEpoch: creds.targetEpoch, automatic, expectedAttemptAt }, proxy: await getSettingAsync('network_proxy') });
+      if (status !== 'legacyS1Required') {
+        return { ok: status === 'success', s2Managed: true, skipped: status === 'automaticSkipped', error: status === 'success' ? undefined : `s2_${status}` };
+      }
+    } catch (error) {
+      return { ok: false, s2Managed: true, error: String(error) };
+    }
+  }
   return syncToWebDAVWithCreds(creds, _ignoredRecords, {
     confirm: message => window.confirm(message),
   });

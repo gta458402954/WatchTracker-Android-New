@@ -8,6 +8,7 @@ import type { LocalImportPreview } from '../../src/features/backup/localImport';
 
 export interface MockIpcOptions {
   records?: WatchRecord[];
+  s2CycleStatus?: string;
   episodeCompletions?: EpisodeCompletion[];
   collections?: WatchCollection[];
   collectionMembers?: CollectionMember[];
@@ -100,7 +101,7 @@ declare global {
 
 export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
   await page.addInitScript(
-    ({ records, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPropfindEtagSequence, webdavPropfindText, webdavPropfindNetworkFailure, webdavFullGetResponses, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, webdavRangeNetworkFailure, legacyWebdavStatus, legacyNetworkFailure, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
+    ({ records, s2CycleStatus, episodeCompletions: initialEpisodeCompletions, collections: initialCollections, collectionMembers: initialCollectionMembers, failRecordLoads, settings, tmdbSearchResults, tmdbDetail, tmdbDetails, tmdbSeasonDetails, tmdbDelayMs, updateFailureCounts, webdavRemote, webdavV3Remote, webdavV3Etag, webdavGetEtag, webdavPropfindEtag, webdavPropfindEtagSequence, webdavPropfindText, webdavPropfindNetworkFailure, webdavFullGetResponses, webdavPreconditionFailures, rotateEtagOnPreconditionFailure, mutateLocalDuringPut, omitPutEtag, omitGetEtag, webdavConditionalGet, webdavPropfindStatus, webdavRangeStatus, webdavRangeEtag, webdavRangeContentRange, webdavRangeBodyLength, webdavRangeNetworkFailure, legacyWebdavStatus, legacyNetworkFailure, omitConditionalGetEtag, mutateLocalDuringConditionalGet, mutateLocalDuringPropfind, webdavFailureStatus, webdavFailureCount, webdavSyncFailureCount, webdavCredentialState, databaseCompatibilityIssue, recoveryPoints, failSettingWrites, documentExportResult, documentExportDelayMs, documentImportResult, documentImportPreview, documentImportRecords, documentImportEpisodeCompletions, documentImportCollections, documentImportCollectionMembers, documentImportPreviewError, documentImportCommitError }) => {
       const controlledRecords = sessionStorage.getItem('__WATCHTRACKER_CONTROLLED_RECORDS__');
       const controlledRuntime = sessionStorage.getItem('__WATCHTRACKER_SYNC_RUNTIME__');
       const restoredRuntime = controlledRuntime ? JSON.parse(controlledRuntime) as {
@@ -810,6 +811,26 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
                 stagedCount: JSON.parse(snapshot.settings.sync_staging_v1 || '{"entries":[]}').entries.length,
                 publishPending: Boolean(snapshot.settings.sync_publish_intent_v1),
               };
+            case 's2_sync_cycle': {
+              requireKeys(command, args, ['input', 'proxy']);
+              const input = args.input as { targetId: string; targetEpoch: number; automatic: boolean; expectedAttemptAt: string | null };
+              verifySyncContext(input.targetId, input.targetEpoch);
+              if (s2CycleStatus !== 'legacyS1Required' && s2CycleStatus !== 'automaticSkipped') {
+                scheduler.lastAttemptAt = new Date().toISOString();
+                scheduler.lastRemoteCheckAt = scheduler.lastAttemptAt;
+                if (s2CycleStatus === 'success') {
+                  scheduler.lastSuccessAt = scheduler.lastAttemptAt;
+                  scheduler.lastErrorCode = null; scheduler.nextAttemptAt = null; scheduler.consecutiveFailures = 0;
+                  outbox.pending = false;
+                } else {
+                  scheduler.lastErrorCode = `s2_${s2CycleStatus}`;
+                  scheduler.consecutiveFailures += 1;
+                  scheduler.nextAttemptAt = s2CycleStatus === 'readOnlyFrozen' ? null : new Date(Date.now() + 60_000).toISOString();
+                }
+                persistRuntime();
+              }
+              return s2CycleStatus;
+            }
             case 'record_sync_failure':
               requireKeys(command, args, ['code', 'nextAttemptAt', 'targetEpoch', 'targetId']);
               verifySyncContext(args.targetId, args.targetEpoch);
@@ -1202,6 +1223,7 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
     },
     {
       records: options.records ?? [],
+      s2CycleStatus: options.s2CycleStatus ?? 'legacyS1Required',
       episodeCompletions: options.episodeCompletions ?? [],
       collections: options.collections ?? [],
       collectionMembers: options.collectionMembers ?? [],

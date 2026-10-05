@@ -549,3 +549,29 @@ pub fn resolve_verified_anchor_v1(
         resolve_ordinary_causal_base_v1(&snapshot.projection.state, key)?,
     ))
 }
+
+/// Execution readiness over retained discovery knowledge. A clean projection
+/// alone cannot establish that unresolved remote observations are safe to ignore.
+pub(crate) fn publication_discovery_ready_v1(
+    state: &super::remote_discovery::DiscoveryStateV1,
+) -> bool {
+    !state.last_round_indeterminate
+        && state.known_gaps.is_empty()
+        && state.targeted_queue.is_empty()
+        && state.observed_activations.iter().all(|path| {
+            state
+                .verified_objects
+                .iter()
+                .any(|object| object.path == *path)
+        })
+        && state.observed_candidates.iter().all(|candidate| {
+            state
+                .verified_objects
+                .iter()
+                .any(|object| object.path == candidate.path())
+                || state
+                    .terminal_candidate_paths
+                    .iter()
+                    .any(|path| path == candidate.path())
+        })
+}

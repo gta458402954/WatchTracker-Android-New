@@ -1642,3 +1642,903 @@ fn direct_migration_publish_admission_observes_read_fork_without_refresh() {
         .root_fatal_signals
         .is_empty());
 }
+
+fn ordinary(
+    c: &Mutex<Connection>,
+    id: &str,
+    cloud: &Arc<Mutex<Cloud>>,
+) -> super::ordinary_runtime::OrdinaryCycleResultV1 {
+    super::ordinary_runtime::run_ordinary_cycle_v1(c, &mut remote(cloud), id, 1, NOW).unwrap()
+}
+#[test]
+fn i65_first_ordinary_publication_preserves_capture_identity_and_retires_only_after_receipt() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let captured = {
+        let mut guard = c.lock().unwrap();
+        crate::collections::update(
+            &mut guard,
+            "c1",
+            serde_json::from_value(json!({"name":"Ordinary","expectedRev":1})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        super::local_authority::load_staged_descriptors(&guard).unwrap()[0].clone()
+    };
+    let root = root_id();
+    let before = SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_desktop_root_state()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let after = store.load_desktop_root_state().unwrap().unwrap();
+    assert_eq!(after.local_writer_id, before.local_writer_id);
+    assert_eq!(after.next_writer_sequence, before.next_writer_sequence + 1);
+    let (path, bytes) = cloud.lock().unwrap().puts.last().unwrap().clone();
+    let commit = super::causal::decode_frozen_wire_commit_v1(&bytes).unwrap();
+    assert_eq!(commit.previous_writer_commit, before.writer_head);
+    assert_eq!(
+        commit.mutations[0].local_mutation_id,
+        captured.local_mutation_id
+    );
+    assert!(store.load_published_receipt(&path).unwrap().is_some());
+    assert!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let retried = store.load_desktop_root_state().unwrap().unwrap();
+    assert_eq!(retried.next_writer_sequence, after.next_writer_sequence);
+    assert_eq!(retried.writer_head, after.writer_head);
+    assert_eq!(retried.local_writer_id, after.local_writer_id);
+}
+#[test]
+fn i65_collection_tombstone_is_published_from_durable_evidence_after_source_deletion() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    {
+        let mut guard = c.lock().unwrap();
+        crate::collections::delete(&mut guard, "c1", 1, "device").unwrap();
+    }
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let commit =
+        super::causal::decode_frozen_wire_commit_v1(&cloud.lock().unwrap().puts.last().unwrap().1)
+            .unwrap();
+    assert_eq!(commit.mutations[0].entity_type, "collection");
+    assert!(crate::collections::all(&c.lock().unwrap())
+        .unwrap()
+        .is_empty());
+}
+
+fn update_ordinary_collection(c: &Mutex<Connection>, name: &str, rev: i64) {
+    crate::collections::update(
+        &mut c.lock().unwrap(),
+        "c1",
+        serde_json::from_value(json!({"name":name,"expectedRev":rev})).unwrap(),
+        "device",
+    )
+    .unwrap();
+}
+fn mobile(
+    c: &Mutex<Connection>,
+    id: &str,
+    cloud: &Arc<Mutex<Cloud>>,
+    coordinator: &super::root_coordinator::RootExecutionCoordinatorV1,
+    automatic: bool,
+    attempt: Option<&str>,
+) -> super::ordinary_runtime::OrdinaryCycleResultV1 {
+    super::ordinary_runtime::run_mobile_sync_with_adapter_v1(
+        c,
+        coordinator,
+        &mut remote(cloud),
+        &super::ordinary_runtime::MobileSyncAdmissionV1 {
+            target_id: id.into(),
+            target_epoch: 1,
+            automatic,
+            expected_attempt_at: attempt.map(str::to_owned),
+        },
+        NOW,
+    )
+    .unwrap()
+}
+#[test]
+fn i65_coalesced_mutations_publish_one_batch_with_stable_ids() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "First", 1);
+    let first =
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0].clone();
+    update_ordinary_collection(&c, "Final", 2);
+    crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Second entity"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let before = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), before + 1);
+    let commit =
+        super::causal::decode_frozen_wire_commit_v1(&cloud.lock().unwrap().puts.last().unwrap().1)
+            .unwrap();
+    assert_eq!(commit.mutations.len(), 2);
+    let changed = commit
+        .mutations
+        .iter()
+        .find(|mutation| mutation.local_mutation_id == first.local_mutation_id)
+        .unwrap();
+    assert_eq!(changed.value["name"], "Final");
+}
+#[test]
+fn i65_restart_captured_before_prepare_keeps_mutation_and_writer_identity() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Restarted", 1);
+    let original = super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+        original
+    );
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let commit =
+        super::causal::decode_frozen_wire_commit_v1(&cloud.lock().unwrap().puts.last().unwrap().1)
+            .unwrap();
+    assert_eq!(
+        commit.mutations[0].local_mutation_id,
+        original[0].local_mutation_id
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_restart_after_prepared_before_put_reuses_exact_identity() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Prepared", 1);
+    let (batch, intent) =
+        match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+            super::outbound_freeze::OutboundFreezeResultV1::Frozen { batch, intent } => {
+                (*batch, *intent)
+            }
+            other => panic!("{other:?}"),
+        };
+    let before = cloud.lock().unwrap().puts.len();
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(
+        cloud.lock().unwrap().puts[before],
+        (intent.remote_path.clone(), intent.exact_bytes)
+    );
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert_eq!(
+        store
+            .load_desktop_root_state()
+            .unwrap()
+            .unwrap()
+            .writer_head,
+        Some(batch.commit_ref)
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_reservation_and_intent_failure_rolls_back_without_put_or_sequence_loss() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Atomic prepare", 1);
+    let root = root_id();
+    let before = SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_desktop_root_state()
+        .unwrap()
+        .unwrap();
+    let puts = cloud.lock().unwrap().puts.len();
+    c.lock().unwrap().execute_batch("CREATE TRIGGER fail_ordinary_intent BEFORE INSERT ON s2_lite_prepared_intent_v1 BEGIN SELECT RAISE(ABORT,'process death'); END").unwrap();
+    assert!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .is_err()
+    );
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let after = store.load_desktop_root_state().unwrap().unwrap();
+    assert_eq!(after.next_writer_sequence, before.next_writer_sequence);
+    assert_eq!(after.writer_head, before.writer_head);
+    assert!(store.load_unfinished_outbound_batch().unwrap().is_none());
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[test]
+fn i65_lost_put_response_and_failed_verification_retry_reuse_path_bytes_and_sequence() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Retry", 1);
+    {
+        let mut fake = cloud.lock().unwrap();
+        fake.lost = true;
+        fake.unavailable_after_next_put = true;
+    }
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let batch = store.load_unfinished_outbound_batch().unwrap().unwrap();
+    let intent = store
+        .load_prepared_intent(&batch.prepared_intent_path)
+        .unwrap()
+        .unwrap();
+    let before = cloud.lock().unwrap().puts.len();
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), before);
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert_eq!(
+        store
+            .load_prepared_intent(&intent.remote_path)
+            .unwrap()
+            .unwrap(),
+        intent
+    );
+    assert_eq!(
+        store
+            .load_desktop_root_state()
+            .unwrap()
+            .unwrap()
+            .writer_head,
+        Some(batch.commit_ref)
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_verification_before_receipt_and_receipt_before_retirement_restart_safely() {
+    for (table, action) in [
+        ("s2_lite_published_receipt_v1", "INSERT"),
+        ("s2_lite_local_staging_descriptor_v1", "DELETE"),
+    ] {
+        let path = temp_path();
+        let (c, id) = database(Some(&path));
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        update_ordinary_collection(&c, "Crash boundary", 1);
+        c.lock().unwrap().execute_batch(&format!("CREATE TRIGGER fail_ordinary_completion BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'process death'); END")).unwrap();
+        assert!(super::ordinary_runtime::run_ordinary_cycle_v1(
+            &c,
+            &mut remote(&cloud),
+            &id,
+            1,
+            NOW
+        )
+        .is_err());
+        let root = root_id();
+        let batch = SqliteS2LiteStoreV1::open(&c, &root)
+            .unwrap()
+            .load_unfinished_outbound_batch()
+            .unwrap()
+            .unwrap();
+        let puts = cloud.lock().unwrap().puts.len();
+        assert!(
+            !super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        drop(c);
+        let c = reopen(&path);
+        c.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_ordinary_completion")
+            .unwrap();
+        assert_eq!(
+            ordinary(&c, &id, &cloud),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        );
+        assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+        assert_eq!(
+            SqliteS2LiteStoreV1::open(&c, &root)
+                .unwrap()
+                .load_desktop_root_state()
+                .unwrap()
+                .unwrap()
+                .writer_head,
+            Some(batch.commit_ref)
+        );
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+#[test]
+fn i65_episode_progress_two_to_five_publishes_each_completion_independently() {
+    let (c, id) = database(None);
+    {
+        let guard = c.lock().unwrap();
+        crate::db::insert_record(&guard,serde_json::from_value(json!({"id":"r1","originalName":"Series","chineseName":"Series","progress":"","totalEpisodes":6,"status":"未看","platform":"","notes":"","createdAt":NOW,"mediaType":"剧集","rev":3,"revActor":"seed","episodeTrackingEnabled":true,"nextEpisode":2})).unwrap()).unwrap();
+    }
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    crate::episode_history::set_next(&mut c.lock().unwrap(), "r1", Some(5), 3, "device").unwrap();
+    let captured = super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+    assert_eq!(
+        captured
+            .iter()
+            .filter(|row| row.entity_kind == "episode-completion")
+            .count(),
+        3
+    );
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let commit =
+        super::causal::decode_frozen_wire_commit_v1(&cloud.lock().unwrap().puts.last().unwrap().1)
+            .unwrap();
+    assert_eq!(
+        commit
+            .mutations
+            .iter()
+            .filter(|mutation| mutation.entity_type == "episode-completion")
+            .count(),
+        3
+    );
+    for row in captured {
+        assert!(commit
+            .mutations
+            .iter()
+            .any(|mutation| mutation.local_mutation_id == row.local_mutation_id));
+    }
+}
+#[test]
+fn i65_all_entity_tombstones_publish_after_rows_and_s1_staging_are_gone() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed_all(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    {
+        let mut guard = c.lock().unwrap();
+        crate::db_atomic_crud::delete_record_atomic(&mut guard, "r1", "device").unwrap();
+        crate::collections::delete(&mut guard, "c1", 2, "device").unwrap();
+        crate::sync_staging::set_staging_for_target(
+            &guard,
+            &id,
+            &crate::sync_staging::SyncStaging::default(),
+        )
+        .unwrap();
+    }
+    let captured = super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+    assert!(captured.iter().all(|row| row.operation == "delete"));
+    assert_eq!(captured.len(), 4);
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let commit =
+        super::causal::decode_frozen_wire_commit_v1(&cloud.lock().unwrap().puts.last().unwrap().1)
+            .unwrap();
+    assert_eq!(commit.mutations.len(), 4);
+    for row in captured {
+        assert!(commit
+            .mutations
+            .iter()
+            .any(
+                |mutation| mutation.local_mutation_id == row.local_mutation_id
+                    && mutation.value["revActor"] == "device"
+                    && mutation.changed_fields == ["$tombstone"]
+            ));
+    }
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_online_foreground_race_serializes_one_publication() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Raced events", 1);
+    let before = cloud.lock().unwrap().puts.len();
+    let c = Arc::new(c);
+    let coordinator = Arc::new(super::root_coordinator::RootExecutionCoordinatorV1::default());
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut threads = vec![];
+    for _ in 0..2 {
+        let c = c.clone();
+        let id = id.clone();
+        let cloud = cloud.clone();
+        let coordinator = coordinator.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            mobile(&c, &id, &cloud, &coordinator, true, None)
+        }));
+    }
+    barrier.wait();
+    let results = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+    assert!(results.contains(&super::ordinary_runtime::OrdinaryCycleResultV1::Success));
+    assert!(results.contains(&super::ordinary_runtime::OrdinaryCycleResultV1::AutomaticSkipped));
+    assert_eq!(cloud.lock().unwrap().puts.len(), before + 1);
+}
+#[test]
+fn i65_stale_retry_after_newer_manual_success_cannot_override_bookkeeping() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Manual wins", 1);
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let before = crate::sync_state::runtime_state(&c.lock().unwrap())
+        .unwrap()
+        .scheduler;
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, true, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::AutomaticSkipped
+    );
+    assert_eq!(
+        crate::sync_state::runtime_state(&c.lock().unwrap())
+            .unwrap()
+            .scheduler,
+        before
+    );
+}
+#[test]
+fn i65_fatal_during_ordinary_verification_retains_local_capture_and_freezes_manual_retry() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Fatal", 1);
+    cloud.lock().unwrap().mismatch_on_put_prefix = Some("writers/");
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    let puts = cloud.lock().unwrap().puts.len();
+    assert!(
+        !super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+}
+#[test]
+fn i65_remote_fork_before_publication_blocks_all_writer_puts() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Fork gate", 1);
+    put_collection(&cloud, 1, 1, "Fork A");
+    put_collection(&cloud, 1, 2, "Fork B");
+    let puts = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+}
+#[test]
+fn i65_pre_cutover_legacy_route_and_post_cutover_permanent_s1_gate() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::LegacyS1Required
+    );
+    assert!(cloud.lock().unwrap().puts.is_empty());
+    finish(&c, &id, &cloud);
+    let called = std::cell::Cell::new(false);
+    assert!(
+        run_legacy_put_with_adapter_v1(&c, &mut remote(&cloud), &id, 1, || {
+            called.set(true);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!called.get());
+}
+#[test]
+fn i65_pending_backoff_survives_restart_and_cannot_report_success() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Pending", 1);
+    cloud.lock().unwrap().deny_object_get = true;
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    let state = crate::sync_state::runtime_state(&c.lock().unwrap())
+        .unwrap()
+        .scheduler;
+    assert!(state.last_success_at.is_none());
+    assert!(state.next_attempt_at.is_some());
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        crate::sync_state::runtime_state(&c.lock().unwrap())
+            .unwrap()
+            .scheduler,
+        state
+    );
+    assert_eq!(
+        mobile(
+            &c,
+            &id,
+            &cloud,
+            &coordinator,
+            true,
+            state.last_attempt_at.as_deref()
+        ),
+        super::ordinary_runtime::OrdinaryCycleResultV1::AutomaticSkipped
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_no_semantic_change_retires_without_allocating_writer_sequence() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "One", 1);
+    let puts = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+    assert!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn i65_new_local_generation_after_freeze_is_not_retired_by_older_receipt() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Frozen value", 1);
+    let root = root_id();
+    let batch = match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { batch, .. } => batch,
+        other => panic!("{other:?}"),
+    };
+    update_ordinary_collection(&c, "Newer local value", 2);
+    let newer =
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0].clone();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0],
+        newer
+    );
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert_eq!(
+        store
+            .load_desktop_root_state()
+            .unwrap()
+            .unwrap()
+            .writer_head,
+        Some(batch.commit_ref)
+    );
+    let puts = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+    assert_eq!(
+        crate::collections::all(&c.lock().unwrap()).unwrap()[0].name,
+        "Newer local value"
+    );
+}
+#[test]
+fn i65_target_epoch_replacement_after_freeze_rejects_direct_publication_callback() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Epoch protected", 1);
+    let intent = match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+        other => panic!("{other:?}"),
+    };
+    c.lock().unwrap().execute("UPDATE settings SET value=json_set(value,'$.targetEpoch',2) WHERE key='sync_targets_v1'",[]).unwrap();
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let called = std::cell::Cell::new(false);
+    let result = store.run_ordinary_publish_exclusive(&root, &intent, || {
+        called.set(true);
+        Ok(())
+    });
+    assert!(!called.get());
+    assert!(
+        result.is_err()
+            || matches!(
+                result.unwrap(),
+                super::durable_persistence::OrdinaryPublishExclusiveResultV1::RejectedAuthority
+            )
+    );
+}
+#[test]
+fn i65_foreign_commit_at_reserved_own_writer_sequence_freezes_before_local_put() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Local pending", 1);
+    let intent = match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+        other => panic!("{other:?}"),
+    };
+    let mut foreign = super::causal::parse_frozen_json_value_v1(&intent.exact_bytes).unwrap();
+    foreign["commitId"] = json!(uuid::Uuid::new_v4().to_string());
+    foreign["mutations"][0]["localMutationId"] = json!(uuid::Uuid::new_v4().to_string());
+    foreign["mutations"][0]["value"]["name"] = json!("Foreign sequence");
+    foreign["mutations"][0]["value"]["normalizedName"] = json!("foreign sequence");
+    let foreign = super::immutable_publish::prepare_commit_intent_v1(
+        &super::canonical::jcs_bytes(&foreign).unwrap(),
+        NOW,
+    )
+    .unwrap();
+    cloud
+        .lock()
+        .unwrap()
+        .objects
+        .insert(foreign.remote_path.clone(), foreign.exact_bytes);
+    let puts = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+    drop(c);
+    let c = reopen(&path);
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert!(store
+        .load_root_safety(&root)
+        .unwrap()
+        .root_fatal_signals
+        .iter()
+        .any(|fatal| fatal.code == "S2_LOCAL_WRITER_OWNERSHIP_MISMATCH"));
+    assert_eq!(
+        store
+            .load_prepared_intent(&intent.remote_path)
+            .unwrap()
+            .unwrap(),
+        *intent
+    );
+    assert!(
+        super::discovery_persistence::load_read_state_v1(&c.lock().unwrap(), &root)
+            .unwrap()
+            .unwrap()
+            .discovery
+            .state
+            .verified_objects
+            .iter()
+            .any(|object| object.path == foreign.remote_path)
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn i65_final_success_cannot_overwrite_newer_local_capture_or_durable_fatal() {
+    for fatal in [false, true] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let root = root_id();
+        let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+            .unwrap()
+            .binding;
+        if fatal {
+            SqliteS2LiteStoreV1::open(&c, &root)
+                .unwrap()
+                .persist_root_fatal(&root, "late_fatal")
+                .unwrap();
+        } else {
+            update_ordinary_collection(&c, "Late local write", 1);
+        }
+        let result = crate::sync_state::record_mobile_s2_result_v1(
+            &mut c.lock().unwrap(),
+            &binding,
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success,
+        )
+        .unwrap();
+        assert_ne!(
+            result,
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        );
+        assert!(crate::sync_state::runtime_state(&c.lock().unwrap())
+            .unwrap()
+            .scheduler
+            .last_success_at
+            .is_none());
+    }
+}
+#[test]
+fn i65_late_s1_failure_cannot_overwrite_s2_success() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "S2 wins", 1);
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let guard = c.lock().unwrap();
+    let before = crate::sync_state::runtime_state(&guard).unwrap().scheduler;
+    assert!(
+        crate::sync_state::record_failure(&guard, "network", None, Some(&id), Some(1)).is_err()
+    );
+    assert_eq!(
+        crate::sync_state::runtime_state(&guard).unwrap().scheduler,
+        before
+    );
+}
+
+#[test]
+fn i65_resume_after_pause_admits_pending_retry_without_rewriting_basis() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .binding;
+    let mut guard = c.lock().unwrap();
+    crate::sync_state::record_mobile_s2_result_v1(
+        &mut guard,
+        &binding,
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending,
+    )
+    .unwrap();
+    crate::sync_state::set_paused(&guard, true, Some(&id), Some(1)).unwrap();
+    crate::sync_state::set_paused(&guard, false, Some(&id), Some(1)).unwrap();
+    let scheduler = crate::sync_state::runtime_state(&guard).unwrap().scheduler;
+    assert_eq!(scheduler.last_error_code.as_deref(), Some("s2_pending"));
+    assert!(crate::sync_state::admit_mobile_automatic_v1(
+        &mut guard,
+        &id,
+        1,
+        scheduler.last_attempt_at.as_deref()
+    )
+    .unwrap());
+}
+#[test]
+fn i65_historical_own_sequence_alternative_freezes_without_prior_remote_observation() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    update_ordinary_collection(&c, "Published local", 1);
+    c.lock().unwrap().execute_batch("CREATE TRIGGER fail_ack BEFORE DELETE ON s2_lite_local_staging_descriptor_v1 BEGIN SELECT RAISE(ABORT,'process death'); END").unwrap();
+    assert!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .is_err()
+    );
+    c.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_ack")
+        .unwrap();
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let batch = store.load_unfinished_outbound_batch().unwrap().unwrap();
+    let intent = store
+        .load_prepared_intent(&batch.prepared_intent_path)
+        .unwrap()
+        .unwrap();
+    store.complete_verified_outbound_batch().unwrap();
+    let mut alternative = super::causal::parse_frozen_json_value_v1(&intent.exact_bytes).unwrap();
+    alternative["commitId"] = json!(uuid::Uuid::new_v4().to_string());
+    alternative["mutations"][0]["localMutationId"] = json!(uuid::Uuid::new_v4().to_string());
+    let alternative = super::immutable_publish::prepare_commit_intent_v1(
+        &super::canonical::jcs_bytes(&alternative).unwrap(),
+        NOW,
+    )
+    .unwrap();
+    {
+        let mut cloud = cloud.lock().unwrap();
+        cloud.objects.remove(&intent.remote_path);
+        cloud
+            .objects
+            .insert(alternative.remote_path.clone(), alternative.exact_bytes);
+    }
+    drop(c);
+    let c = reopen(&path);
+    let puts = cloud.lock().unwrap().puts.len();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts);
+    assert!(SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_root_safety(&root)
+        .unwrap()
+        .root_fatal_signals
+        .iter()
+        .any(|fatal| fatal.code == "S2_LOCAL_WRITER_OWNERSHIP_MISMATCH"));
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}

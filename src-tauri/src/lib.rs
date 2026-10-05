@@ -200,6 +200,7 @@ pub fn run() {
             commands::clean_poster_cache,
             commands::webdav_request,
             commands::s2_migration_step,
+            commands::s2_sync_cycle,
             commands::probe_webdav_request,
         ])
         .run(tauri::generate_context!())

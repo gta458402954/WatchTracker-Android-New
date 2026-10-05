@@ -81,12 +81,20 @@ export function useSyncCoordinator(
       rerunRequestedRef.current = true;
       return syncInFlightRef.current;
     }
-    const task = syncToWebDAV();
+    const task = syncToWebDAV(undefined, !manual);
     syncInFlightRef.current = task;
     setIsSyncing(true);
+    let rustManaged = false;
     try {
       const result = await task;
-      if (result.ok) {
+      rustManaged = Boolean(result.s2Managed);
+      if (result.s2Managed) {
+        if (result.ok) lastNotifiedErrorRef.current = null;
+        const runtime = await refreshSyncRuntime();
+        if (!result.skipped) await reloadRecords();
+        if (runtime.scheduler.nextAttemptAt) queueAutomaticRef.current('retry', Math.max(0, Date.parse(runtime.scheduler.nextAttemptAt) - Date.now()));
+        if (!result.ok && !result.skipped && !manual) notifyBackgroundFailure(result.error);
+      } else if (result.ok) {
         lastNotifiedErrorRef.current = null;
         await reloadRecords();
         const runtime = await refreshSyncRuntime();
@@ -115,6 +123,10 @@ export function useSyncCoordinator(
     } catch (error) {
       reportOperationFailure('Sync.Coordinator', error);
       const message = String(error);
+      if (rustManaged) {
+        if (!manual) notifyBackgroundFailure(message);
+        return { ok: false, s2Managed: true, error: message };
+      }
       const current = runtimeRef.current ?? await getSyncRuntimeState();
       const nextAttemptAt = nextRetryAt(current.scheduler.consecutiveFailures + 1, Date.now());
       updateRuntime(await recordSyncFailure(safeFailureCode(message), nextAttemptAt, current.targetId, current.targetEpoch));
@@ -137,6 +149,7 @@ export function useSyncCoordinator(
     try {
       const runtime = await refreshSyncRuntime();
       if (runtime.scheduler.paused || !await hasCreds()) return;
+      if (trigger === 'retry' && !runtime.scheduler.nextAttemptAt && !runtime.outbox.pending) return;
       const retryFixedConditionalWriteOnStartup = trigger === 'startup'
         && ['conditional_write_unsupported', 'conditional_validator_rejected']
           .includes(runtime.scheduler.lastErrorCode ?? '');

@@ -462,19 +462,174 @@ pub fn record_failure(
     target_id: Option<&str>,
     target_epoch: Option<u64>,
 ) -> Result<SyncRuntimeState, AppError> {
-    crate::sync_targets::verify_context(conn, target_id, target_epoch)?;
     let code = code.trim();
     if code.is_empty() || code.len() > 80 {
         return Err(AppError::General("Invalid sync error code".to_string()));
     }
-    let mut scheduler = scheduler_state(conn)?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    crate::sync_targets::verify_context(&tx, target_id, target_epoch)?;
+    crate::s2_lite::durable_persistence::admit_legacy_business_ack_v1(&tx)
+        .map_err(|error| AppError::General(error.0.into()))?;
+    let mut scheduler = scheduler_state(&tx)?;
     scheduler.consecutive_failures = scheduler.consecutive_failures.saturating_add(1);
     scheduler.last_attempt_at =
         Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     scheduler.last_error_code = Some(code.to_string());
     scheduler.next_attempt_at = next_attempt_at;
-    set_scheduler_state(conn, &scheduler)?;
-    runtime_state(conn)
+    set_scheduler_state(&tx, &scheduler)?;
+    let runtime = runtime_state(&tx)?;
+    tx.commit()?;
+    Ok(runtime)
+}
+
+/// Rust admission for lifecycle events. Timers/UI never grant sync authority.
+pub(crate) fn admit_mobile_automatic_v1(
+    conn: &mut Connection,
+    target_id: &str,
+    target_epoch: u64,
+    expected_attempt_at: Option<&str>,
+) -> Result<bool, AppError> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if crate::sync_targets::active_target(&tx)? != Some((target_id.to_owned(), target_epoch)) {
+        return Ok(false);
+    }
+    let scheduler = scheduler_state(&tx)?;
+    if scheduler.last_attempt_at.as_deref() != expected_attempt_at || scheduler.paused {
+        return Ok(false);
+    }
+    if let Some(due) = &scheduler.next_attempt_at {
+        let due = chrono::DateTime::parse_from_rfc3339(due)
+            .map_err(|_| AppError::General("Invalid retry deadline".into()))?;
+        if due > Utc::now() {
+            return Ok(false);
+        }
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Final durable completion classification and scheduler bookkeeping are one
+/// transaction. A stale success cannot clear a newer fatal or local mutation.
+pub(crate) fn record_mobile_s2_result_v1(
+    conn: &mut Connection,
+    binding: &crate::s2_lite::durable_persistence::TargetRootBindingV1,
+    mut result: crate::s2_lite::ordinary_runtime::OrdinaryCycleResultV1,
+) -> Result<crate::s2_lite::ordinary_runtime::OrdinaryCycleResultV1, AppError> {
+    use crate::s2_lite::ordinary_runtime::OrdinaryCycleResultV1 as Status;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if crate::sync_targets::active_target(&tx)?
+        != Some((binding.target_id.clone(), binding.target_epoch))
+    {
+        return Ok(Status::TargetChanged);
+    }
+    if matches!(result, Status::LegacyS1Required | Status::AutomaticSkipped) {
+        return Ok(result);
+    }
+    if result == Status::Success {
+        use crate::s2_lite::durable_persistence::{
+            validate_normal_s2_completion_authority_in_transaction_v1,
+            NormalS2CompletionAuthorityV1,
+        };
+        let authority = validate_normal_s2_completion_authority_in_transaction_v1(&tx, binding)
+            .map_err(|error| AppError::General(error.0.into()))?;
+        result = match authority {
+            NormalS2CompletionAuthorityV1::Valid => Status::Success,
+            NormalS2CompletionAuthorityV1::ReadOnlyFrozen => Status::ReadOnlyFrozen,
+            NormalS2CompletionAuthorityV1::TargetChanged => Status::TargetChanged,
+            _ => Status::Pending,
+        };
+        let read = crate::s2_lite::discovery_persistence::load_read_state_v1(
+            &tx,
+            &binding.physical_root_id,
+        )
+        .map_err(|error| AppError::General(error.0.into()))?;
+        if let Some(read) = read {
+            if !read.fatal_codes.is_empty() {
+                result = Status::ReadOnlyFrozen;
+            } else if read
+                .projection
+                .state
+                .entities
+                .iter()
+                .any(|entity| entity.conflict)
+                || !read
+                    .projection
+                    .state
+                    .relation_blocked_entity_keys
+                    .is_empty()
+            {
+                result = Status::Conflicts;
+            } else if !crate::s2_lite::discovery_persistence::publication_discovery_ready_v1(
+                &read.discovery.state,
+            ) || !matches!(
+                read.projection.state.status,
+                crate::s2_lite::materialized_projection::MaterializedProjectionStatusV1::Complete
+            ) {
+                result = Status::Pending;
+            }
+        } else {
+            result = Status::Pending;
+        }
+        if result == Status::Success
+            && (!crate::s2_lite::local_authority::load_staged_descriptors(&tx)
+                .map_err(|error| AppError::General(error.0.into()))?
+                .is_empty()
+                || !crate::sync_staging::get_staging(&tx)?.entries.is_empty())
+        {
+            result = Status::Pending;
+        }
+    }
+    let now = Utc::now();
+    let mut scheduler = scheduler_state(&tx)?;
+    let previous = scheduler
+        .last_attempt_at
+        .as_deref()
+        .map(chrono::DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|_| AppError::General("Invalid scheduler attempt timestamp".into()))?;
+    // The attempt token is strictly increasing even within the same millisecond.
+    let token_time = previous
+        .filter(|previous| previous.timestamp_millis() >= now.timestamp_millis())
+        .map(|previous| previous.with_timezone(&Utc) + chrono::Duration::milliseconds(1))
+        .unwrap_or(now);
+    let stamp = token_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    scheduler.last_attempt_at = Some(stamp.clone());
+    scheduler.last_remote_check_at = Some(stamp.clone());
+    if result == Status::Success {
+        scheduler.last_success_at = Some(stamp);
+        scheduler.consecutive_failures = 0;
+        scheduler.last_error_code = None;
+        scheduler.next_attempt_at = None;
+        acknowledge_sync_outbox(&tx, get_records_generation(&tx)?)?;
+    } else {
+        scheduler.consecutive_failures = scheduler.consecutive_failures.saturating_add(1);
+        scheduler.last_error_code = Some(
+            match result {
+                Status::ReadOnlyFrozen => "s2_root_frozen",
+                Status::Conflicts => "s2_conflicts",
+                Status::AuthOrCapabilityBlocked => "s2_auth_or_capability",
+                _ => "s2_pending",
+            }
+            .into(),
+        );
+        scheduler.next_attempt_at = if matches!(
+            result,
+            Status::ReadOnlyFrozen | Status::AuthOrCapabilityBlocked | Status::TargetChanged
+        ) {
+            None
+        } else {
+            let delays = [10, 30, 120, 300, 900];
+            let index =
+                (scheduler.consecutive_failures.saturating_sub(1) as usize).min(delays.len() - 1);
+            Some(
+                (now + chrono::Duration::seconds(delays[index]))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            )
+        };
+    }
+    set_scheduler_state(&tx, &scheduler)?;
+    tx.commit()?;
+    Ok(result)
 }
 
 pub fn record_remote_unchanged(

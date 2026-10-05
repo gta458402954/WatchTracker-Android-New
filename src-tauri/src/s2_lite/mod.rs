@@ -1,6 +1,6 @@
 //! S2 Lite v1 protocol and Android durable integration.
-//! I6.4 exposes bounded migration/cutover authority and permanent legacy PUT
-//! admission. Ordinary writer execution and mobile scheduling remain deferred.
+//! Durable read, migration/cutoff and ordinary writer execution share Rust
+//! authority; mobile events signal the same root-coordinated runtime.
 pub mod activation_cutover;
 pub mod bootstrap;
 pub mod canonical;
@@ -51,3 +51,7 @@ pub mod migration_runtime;
 
 #[cfg(test)]
 mod migration_runtime_tests;
+
+pub mod ordinary_runtime;
+pub mod outbound_completion;
+pub mod outbound_freeze;

@@ -3,6 +3,8 @@ import type { SyncConflictV3 } from '../../../shared/lib/syncMerge';
 
 export interface SyncResult {
   ok: boolean;
+  s2Managed?: boolean;
+  skipped?: boolean;
   error?: string;
   records?: WatchRecord[];
   conflictCount?: number;
