@@ -110,6 +110,12 @@ pub struct MigrationStateV1 {
 }
 
 pub trait MigrationStateStoreV1 {
+    /// A strict durable store can require the frozen canonical recovery form.
+    /// In-memory pure stores retain the frozen executor's explicit boundaries.
+    fn transition_for_storage_v1(&self, state: &MigrationStateV1) -> Result<MigrationStateV1> {
+        Ok(state.clone())
+    }
+
     fn authority_identity(&self) -> u64;
     fn claim_or_load(&mut self, candidate: &MigrationStateV1) -> Result<MigrationStateV1>;
     fn load(&mut self, root_id: &str) -> Result<Option<MigrationStateV1>>;
@@ -856,6 +862,7 @@ fn persist_transition<M: MigrationStateStoreV1>(
         .generation
         .checked_add(1)
         .ok_or(ProtocolError("LOCAL_MIGRATION_STATE_CORRUPTION"))?;
+    next = store.transition_for_storage_v1(&next)?;
     if store.compare_and_swap(&prior.root_id, &prior.migration_id, prior.generation, &next)? {
         return Ok(next);
     }

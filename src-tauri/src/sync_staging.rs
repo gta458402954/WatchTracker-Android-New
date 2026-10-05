@@ -596,3 +596,55 @@ pub fn finish_publish(
     set_staging(conn, &staging)?;
     Ok(staging)
 }
+
+/// Explicit historical target access for frozen migration/projection authority.
+pub fn get_staging_for_target(
+    conn: &Connection,
+    target_id: &str,
+) -> Result<Option<SyncStaging>, AppError> {
+    if target_id.is_empty() {
+        return Err(AppError::General("Invalid staging target".into()));
+    }
+    let scoped = crate::sync_targets::scoped_key(target_id, "staging_v1");
+    if get_setting_tx(conn, &scoped)?.is_none() {
+        return Ok(None);
+    }
+    get_staging_for_key(conn, &scoped).map(Some)
+}
+pub fn set_staging_for_target(
+    conn: &Connection,
+    target_id: &str,
+    staging: &SyncStaging,
+) -> Result<(), AppError> {
+    if target_id.is_empty() {
+        return Err(AppError::General("Invalid staging target".into()));
+    }
+    let raw = serde_json::to_string(staging)
+        .map_err(|_| AppError::General("Invalid staging state".into()))?;
+    set_setting_tx(
+        conn,
+        &crate::sync_targets::scoped_key(target_id, "staging_v1"),
+        &raw,
+    )?;
+    Ok(())
+}
+pub fn staged_entry_entity_key(entry: &StagedRecord) -> Result<Value, AppError> {
+    match entry.entity_kind.as_str() {
+        "record" | "collection" => Ok(serde_json::json!([entry.entity_kind, entry.id])),
+        "collection-member" => {
+            let value = entry
+                .local
+                .as_ref()
+                .or(entry.base.as_ref())
+                .ok_or_else(|| AppError::General("staging_composite_identity_missing".into()))?;
+            let collection = value["collectionId"]
+                .as_str()
+                .ok_or_else(|| AppError::General("staging_composite_identity_missing".into()))?;
+            let record = value["recordId"]
+                .as_str()
+                .ok_or_else(|| AppError::General("staging_composite_identity_missing".into()))?;
+            Ok(serde_json::json!(["collection-member", collection, record]))
+        }
+        _ => Err(AppError::General("Invalid staging entity kind".into())),
+    }
+}

@@ -39,6 +39,8 @@ pub struct CapturedStagingDescriptorV1 {
     pub operation: String,
     pub local_mutation_id: String,
     pub causal_anchor: StagingAnchorStateV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_basis: Option<VerifiedBasisEvidenceV1>,
     pub base: Option<Value>,
     pub local: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,6 +57,109 @@ impl CapturedStagingDescriptorV1 {
             return Err(CORRUPTION);
         }
         self.delete_descriptor.as_ref().ok_or(CORRUPTION)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifiedBasisEvidenceV1 {
+    pub physical_root_id: String,
+    pub basis_clock: Vec<super::types::CommitRef>,
+    pub base_frontier: Vec<super::types::CommitRef>,
+}
+
+pub fn descriptor_entity_key(row: &CapturedStagingDescriptorV1) -> Result<Value> {
+    if let Some(delete) = &row.delete_descriptor {
+        return Ok(delete.entity_key());
+    }
+    entity_key_for_capture(
+        &row.entity_kind,
+        &row.entity_id,
+        row.local.as_ref().or(row.base.as_ref()),
+    )
+}
+fn entity_key_for_capture(kind: &str, id: &str, value: Option<&Value>) -> Result<Value> {
+    let key = match kind {
+        "record" | "collection" => serde_json::json!([kind, id]),
+        "collection-member" => {
+            let value = value.ok_or(CORRUPTION)?;
+            serde_json::json!([
+                kind,
+                value["collectionId"].as_str().ok_or(CORRUPTION)?,
+                value["recordId"].as_str().ok_or(CORRUPTION)?
+            ])
+        }
+        "episode-completion" => {
+            let value = value.ok_or(CORRUPTION)?;
+            serde_json::json!([
+                kind,
+                value["recordId"].as_str().ok_or(CORRUPTION)?,
+                value["episodeNumber"].as_i64().ok_or(CORRUPTION)?
+            ])
+        }
+        _ => return Err(CORRUPTION),
+    };
+    super::canonical::validate_entity_key(&key)?;
+    Ok(key)
+}
+fn first_verified_basis(
+    conn: &Connection,
+    key: &Value,
+) -> Result<(StagingAnchorStateV1, Option<VerifiedBasisEvidenceV1>)> {
+    let Some(registry) = crate::sync_targets::registry(conn).map_err(|_| CORRUPTION)? else {
+        return Ok((StagingAnchorStateV1::Unavailable, None));
+    };
+    let Some(target) = registry
+        .targets
+        .iter()
+        .find(|target| Some(target.id.as_str()) == registry.active_target_id.as_deref())
+    else {
+        return Ok((StagingAnchorStateV1::Unavailable, None));
+    };
+    let root = super::webdav_adapter::webdav_root_v1(&target.normalized_url, &target.username)
+        .map_err(|_| CORRUPTION)?;
+    if super::durable_persistence::entity_projection_overlay_blocker_exists_v1(
+        conn,
+        &root.physical_root_id,
+        &target.id,
+        key,
+    )? {
+        return Ok((StagingAnchorStateV1::Unavailable, None));
+    }
+    let projection =
+        match super::durable_persistence::admit_applied_projection_for_staging_anchor_v1(
+            conn,
+            &root.physical_root_id,
+        )? {
+            super::durable_persistence::StagingAnchorProjectionAdmissionV1::Ready(projection) => {
+                projection
+            }
+            super::durable_persistence::StagingAnchorProjectionAdmissionV1::Unavailable(
+                _reason,
+            ) => return Ok((StagingAnchorStateV1::Unavailable, None)),
+        };
+    match super::materialized_projection::resolve_ordinary_causal_base_v1(&projection.state, key)? {
+        super::materialized_projection::OrdinaryCausalBaseResolutionV1::Ready {
+            causal_base,
+            basis_clock,
+            base_frontier,
+        } => {
+            let anchor = match causal_base {
+                OrdinaryCausalBaseV1::Live(value) => StagingAnchorStateV1::Live { value },
+                OrdinaryCausalBaseV1::Absent | OrdinaryCausalBaseV1::Tombstone => {
+                    StagingAnchorStateV1::Absent
+                }
+            };
+            Ok((
+                anchor,
+                Some(VerifiedBasisEvidenceV1 {
+                    physical_root_id: root.physical_root_id,
+                    basis_clock,
+                    base_frontier,
+                }),
+            ))
+        }
+        _ => Ok((StagingAnchorStateV1::Unavailable, None)),
     }
 }
 
@@ -196,6 +301,31 @@ fn decode_staging_descriptor(bytes: &[u8]) -> Result<CapturedStagingDescriptorV1
     {
         return Err(CORRUPTION);
     }
+    if let Some(evidence) = &decoded.verified_basis {
+        let hash = evidence
+            .physical_root_id
+            .strip_prefix("s2-root-v1:")
+            .ok_or(CORRUPTION)?;
+        if matches!(decoded.causal_anchor, StagingAnchorStateV1::Unavailable)
+            || hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(CORRUPTION);
+        }
+        for refs in [&evidence.basis_clock, &evidence.base_frontier] {
+            if !refs
+                .windows(2)
+                .all(|pair| super::canonical::compare_commit_ref_v1(&pair[0], &pair[1]).is_lt())
+            {
+                return Err(CORRUPTION);
+            }
+        }
+        for reference in evidence.basis_clock.iter().chain(&evidence.base_frontier) {
+            super::canonical::validate_commit_ref(reference)?;
+        }
+    }
     if let Some(delete) = &decoded.delete_descriptor {
         if decoded.operation != "delete"
             || decoded.local.is_some()
@@ -257,6 +387,8 @@ pub fn capture_staged_descriptor(
             ..previous
         }
     } else {
+        let key = entity_key_for_capture(entity_kind, entity_id, local.as_ref().or(base.as_ref()))?;
+        let (causal_anchor, verified_basis) = first_verified_basis(conn, &key)?;
         CapturedStagingDescriptorV1 {
             state_version: 1,
             entity_kind: entity_kind.into(),
@@ -267,7 +399,8 @@ pub fn capture_staged_descriptor(
                 "delete".into()
             },
             local_mutation_id: uuid::Uuid::new_v4().to_string(),
-            causal_anchor: StagingAnchorStateV1::Unavailable,
+            causal_anchor,
+            verified_basis,
             base,
             local,
             delete_descriptor: None,
@@ -364,13 +497,15 @@ pub(crate) fn capture_delete(
             ..previous
         }
     } else {
+        let (causal_anchor, verified_basis) = first_verified_basis(conn, &delete.entity_key())?;
         CapturedStagingDescriptorV1 {
             state_version: 2,
             entity_kind: kind.into(),
             entity_id: id.clone(),
             operation: "delete".into(),
             local_mutation_id: uuid::Uuid::new_v4().to_string(),
-            causal_anchor: StagingAnchorStateV1::Unavailable,
+            causal_anchor,
+            verified_basis,
             base,
             local: None,
             delete_descriptor: Some(delete),

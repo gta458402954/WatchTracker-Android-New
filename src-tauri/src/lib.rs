@@ -131,6 +131,7 @@ pub fn run() {
 
             app.manage(paths);
             app.manage(db_state);
+            app.manage(s2_lite::root_coordinator::RootExecutionCoordinatorV1::default());
             app.manage(poster_cache::PosterDownloadState::default());
             Ok(())
         })
@@ -198,6 +199,7 @@ pub fn run() {
             commands::get_poster_cache_stats,
             commands::clean_poster_cache,
             commands::webdav_request,
+            commands::s2_migration_step,
             commands::probe_webdav_request,
         ])
         .run(tauri::generate_context!())

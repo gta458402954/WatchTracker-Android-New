@@ -863,6 +863,7 @@ pub fn clean_poster_cache(
 
 #[tauri::command]
 pub async fn webdav_request(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     paths: State<'_, AppPaths>,
     request: net::StoredWebDavRequest,
@@ -904,10 +905,13 @@ pub async fn webdav_request(
         request.if_dav_etag.as_deref(),
         request.range.as_deref(),
     )?;
-    net::webdav_request(net::WebDavRequest {
+    let legacy_put = request.method == "PUT";
+    let target_id = request.target_id.clone();
+    let target_epoch = request.target_epoch;
+    let wire = net::WebDavRequest {
         method: request.method,
         url: request.url,
-        username,
+        username: username.clone(),
         password: password.to_string(),
         body: request.body,
         proxy: request.proxy,
@@ -915,9 +919,51 @@ pub async fn webdav_request(
         if_none_match: request.if_none_match,
         if_dav_etag: request.if_dav_etag,
         range: request.range,
+    };
+    if !legacy_put {
+        return net::webdav_request(wire)
+            .await
+            .map_err(crate::error::AppError::General);
+    }
+    let config = s2_webdav_config(
+        &base_url,
+        &username,
+        password.to_string(),
+        wire.proxy.clone(),
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let db = app.state::<DbState>();
+        let coordinator =
+            app.state::<crate::s2_lite::root_coordinator::RootExecutionCoordinatorV1>();
+        let _root_lock = coordinator
+            .acquire_blocking(&config.root.physical_root_id)
+            .map_err(s2_error)?;
+        let transport = crate::s2_lite::webdav_adapter::ReqwestWebDavTransportV1::new(&config)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let adapter = crate::s2_lite::webdav_adapter::WebDavS2AdapterV1::new(config, transport)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let mut remote = crate::s2_lite::migration_runtime::BlockingWebDavRemoteV1::new(adapter)
+            .map_err(s2_error)?;
+        let result = crate::s2_lite::migration_runtime::run_legacy_put_with_adapter_v1(
+            &db.conn,
+            &mut remote,
+            &target_id,
+            target_epoch,
+            || Ok(tauri::async_runtime::block_on(net::webdav_request(wire))),
+        )
+        .map_err(s2_error)?;
+        match result {
+            crate::s2_lite::durable_persistence::LegacyS1PublishAdmissionV1::Executed(response) => {
+                response.map_err(crate::error::AppError::General)
+            }
+            _ => Err(crate::error::AppError::General(
+                "S2_LEGACY_PUT_BLOCKED".into(),
+            )),
+        }
     })
     .await
-    .map_err(crate::error::AppError::General)
+    .map_err(|error| crate::error::AppError::General(error.to_string()))?
 }
 
 #[tauri::command]
@@ -1024,4 +1070,71 @@ mod command_tests {
             validate_webdav_conditions("PUT", None, None, Some("\"bad\r\nheader\""), None).is_err()
         );
     }
+}
+
+fn s2_error(error: crate::s2_lite::canonical::ProtocolError) -> crate::error::AppError {
+    crate::error::AppError::General(error.0.into())
+}
+fn s2_webdav_config(
+    url: &str,
+    username: &str,
+    password: String,
+    proxy: Option<String>,
+) -> Result<crate::s2_lite::webdav_adapter::WebDavS2ConfigV1, crate::error::AppError> {
+    Ok(crate::s2_lite::webdav_adapter::WebDavS2ConfigV1 {
+        root: crate::s2_lite::webdav_adapter::webdav_root_v1(url, username)
+            .map_err(|code| crate::error::AppError::General(code.into()))?,
+        username: username.into(),
+        password,
+        proxy,
+        timeout: std::time::Duration::from_secs(60),
+    })
+}
+
+/// Explicit, bounded migration invocation. Mobile lifecycle scheduling is deferred.
+#[tauri::command]
+pub async fn s2_migration_step(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    paths: State<'_, AppPaths>,
+    target_id: String,
+    target_epoch: u64,
+    proxy: Option<String>,
+) -> Result<Option<crate::s2_lite::migration_orchestration::MigrationStateV1>, crate::error::AppError>
+{
+    let (url, username, password) = {
+        let mut guard = lock_database(state.inner())?;
+        crate::sync_targets::active_request_credentials(
+            &mut guard,
+            paths.inner(),
+            &target_id,
+            target_epoch,
+        )?
+    };
+    let config = s2_webdav_config(&url, &username, password.to_string(), proxy)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let db = app.state::<DbState>();
+        let coordinator =
+            app.state::<crate::s2_lite::root_coordinator::RootExecutionCoordinatorV1>();
+        let _root_lock = coordinator
+            .acquire_blocking(&config.root.physical_root_id)
+            .map_err(s2_error)?;
+        let transport = crate::s2_lite::webdav_adapter::ReqwestWebDavTransportV1::new(&config)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let adapter = crate::s2_lite::webdav_adapter::WebDavS2AdapterV1::new(config, transport)
+            .map_err(|code| crate::error::AppError::General(code.into()))?;
+        let mut remote = crate::s2_lite::migration_runtime::BlockingWebDavRemoteV1::new(adapter)
+            .map_err(s2_error)?;
+        crate::s2_lite::migration_runtime::execute_migration_step_with_adapter_v1(
+            &db.conn,
+            &mut remote,
+            &target_id,
+            target_epoch,
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        )
+        .map_err(s2_error)
+    })
+    .await
+    .map_err(|error| crate::error::AppError::General(error.to_string()))?
 }

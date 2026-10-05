@@ -1,8 +1,6 @@
-//! Frozen S2 Lite v1 pure protocol core.
-//!
-//! This Android bootstrap intentionally exposes no production coordinator,
-//! persistence, or WebDAV transport surface.  S1 remains the only live sync
-//! path until a later integration phase explicitly wires S2.
+//! S2 Lite v1 protocol and Android durable integration.
+//! I6.4 exposes bounded migration/cutover authority and permanent legacy PUT
+//! admission. Ordinary writer execution and mobile scheduling remain deferred.
 pub mod activation_cutover;
 pub mod bootstrap;
 pub mod canonical;
@@ -18,8 +16,6 @@ pub mod ordinary_mutation;
 pub mod remote_discovery;
 pub mod semantic;
 pub mod types;
-// Deliberately unreferenced by the S1 coordinator.  I6.2 supplies the
-// platform-safe transport capability; later phases decide when it is used.
 pub mod webdav_adapter;
 
 #[cfg(test)]
@@ -44,3 +40,14 @@ pub mod discovery_persistence;
 mod discovery_persistence_tests;
 pub mod discovery_runtime;
 pub mod materialized_projection;
+
+pub mod business_projection;
+pub mod durable_persistence;
+pub mod migration_admission;
+pub mod root_coordinator;
+pub mod target_root_binding;
+
+pub mod migration_runtime;
+
+#[cfg(test)]
+mod migration_runtime_tests;

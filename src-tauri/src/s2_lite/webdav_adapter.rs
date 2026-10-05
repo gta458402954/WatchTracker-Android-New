@@ -1803,7 +1803,17 @@ mod tests {
         );
     }
     #[test]
-    fn adapter_is_not_registered_with_s1_sync() {
-        assert!(!include_str!("../commands.rs").contains("s2_lite::webdav_adapter"));
+    fn migration_bridge_refuses_unconditional_put_without_network() {
+        use crate::s2_lite::immutable_publish::{ImmutableObjectRemoteV1, RemotePutResultV1};
+        // I6.4 authorizes bounded migration and legacy admission. The former
+        // I6.2 source isolation assertion no longer describes that scope.
+        let mut bridge =
+            crate::s2_lite::migration_runtime::BlockingWebDavRemoteV1::new(adapter(vec![]))
+                .unwrap();
+        assert_eq!(
+            bridge.put_exact(WRITER, b"exact", false),
+            RemotePutResultV1::Indeterminate
+        );
+        assert!(bridge.adapter.transport.calls.is_empty());
     }
 }

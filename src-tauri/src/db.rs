@@ -522,6 +522,7 @@ pub(crate) fn setup_db(conn: &Connection) -> Result<()> {
     crate::collections::migrate_schema(conn)?;
     crate::s2_lite::local_authority::migrate_schema(conn)?;
     crate::s2_lite::discovery_persistence::migrate_schema(conn)?;
+    crate::s2_lite::durable_persistence::migrate_schema(conn)?;
 
     Ok(())
 }

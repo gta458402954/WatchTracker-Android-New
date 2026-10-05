@@ -282,6 +282,9 @@ pub fn schema_ready(conn: &Connection) -> rusqlite::Result<bool> {
 }
 
 pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
+    // Completed schemas must not rewrite business rows on restart, especially
+    // while a frozen S2 migration owns the source snapshot.
+    let needs_data_upgrade = !schema_ready(conn)?;
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS collections (
@@ -366,7 +369,9 @@ pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
     transaction.execute("INSERT INTO settings(key,value) VALUES('tmdb_identity_schema_version','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
-    transaction.execute("UPDATE collections SET collectionKind=CASE sourceKind WHEN 'tmdb-tv-show' THEN 'tv-series' WHEN 'tmdb-movie-collection' THEN 'movie-series' ELSE collectionKind END, orderMode=CASE WHEN sourceKind='manual' THEN orderMode ELSE 'chronological' END", [])?;
+    if needs_data_upgrade {
+        transaction.execute("UPDATE collections SET collectionKind=CASE sourceKind WHEN 'tmdb-tv-show' THEN 'tv-series' WHEN 'tmdb-movie-collection' THEN 'movie-series' ELSE collectionKind END, orderMode=CASE WHEN sourceKind='manual' THEN orderMode ELSE 'chronological' END", [])?;
+    }
     transaction.execute("INSERT INTO settings(key,value) VALUES('collections_schema_version','2') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
     let raw = transaction
         .query_row(

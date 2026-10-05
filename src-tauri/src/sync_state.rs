@@ -494,6 +494,8 @@ pub fn record_remote_unchanged(
         input.target_id.as_deref(),
         input.target_epoch,
     )?;
+    crate::s2_lite::durable_persistence::admit_legacy_business_ack_v1(&transaction)
+        .map_err(|error| AppError::General(error.0.into()))?;
     if get_records_generation(&transaction)? != input.expected_generation {
         return Err(AppError::General("stale_local_snapshot".to_string()));
     }
@@ -672,6 +674,8 @@ pub fn commit(
         input.target_id.as_deref(),
         input.target_epoch,
     )?;
+    crate::s2_lite::durable_persistence::admit_legacy_business_ack_v1(&transaction)
+        .map_err(|error| AppError::General(error.0.into()))?;
     if get_records_generation(&transaction)? != input.expected_generation {
         return Err(AppError::General("stale_local_snapshot".to_string()));
     }
