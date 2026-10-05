@@ -58,6 +58,10 @@ impl<T: WebDavTransportV1> ImmutableObjectRemoteV1 for BlockingWebDavRemoteV1<T>
             }
         }
     }
+    fn prepare_immutable_parent_collections(&mut self, path: &str) -> RemotePutResultV1 {
+        self.runtime
+            .block_on(self.adapter.prepare_frozen_immutable_parents_v1(path))
+    }
     fn put_exact(
         &mut self,
         path: &str,
@@ -67,19 +71,8 @@ impl<T: WebDavTransportV1> ImmutableObjectRemoteV1 for BlockingWebDavRemoteV1<T>
         if !if_none_match_star {
             return RemotePutResultV1::Indeterminate;
         }
-        match self.runtime.block_on(self.adapter.put_immutable(
-            path,
-            bytes,
-            &super::canonical::sha256_hex(bytes),
-        )) {
-            ImmutablePutResultV1::Published | ImmutablePutResultV1::AlreadyPresentExact => {
-                RemotePutResultV1::Success
-            }
-            ImmutablePutResultV1::AuthOrCapabilityFailure => {
-                RemotePutResultV1::AuthOrCapabilityFailure
-            }
-            _ => RemotePutResultV1::Indeterminate,
-        }
+        self.runtime
+            .block_on(self.adapter.put_frozen_if_absent_v1(path, bytes))
     }
 }
 

@@ -15,6 +15,10 @@ struct Cloud {
     puts: Vec<(String, Vec<u8>)>,
     lost: bool,
     deny_object_get: bool,
+    mismatch_next_verification: bool,
+    mismatch_on_put_prefix: Option<&'static str>,
+    unavailable_after_next_put: bool,
+    unavailable_next_get: bool,
 }
 #[derive(Clone)]
 struct Fake(Arc<Mutex<Cloud>>);
@@ -35,6 +39,23 @@ impl WebDavTransportV1 for Fake {
             .to_string();
         let mut cloud = self.0.lock().unwrap();
         if method == Method::GET {
+            if cloud.unavailable_next_get {
+                cloud.unavailable_next_get = false;
+                return Ok(WebDavResponseV1 {
+                    status: 503,
+                    body: vec![],
+                });
+            }
+            if cloud.mismatch_next_verification
+                && cloud.objects.contains_key(&path)
+                && cloud.puts.iter().any(|(put_path, _)| put_path == &path)
+            {
+                cloud.mismatch_next_verification = false;
+                return Ok(WebDavResponseV1 {
+                    status: 200,
+                    body: b"observed immutable corruption".to_vec(),
+                });
+            }
             if cloud.deny_object_get && path.ends_with(".json") {
                 return Ok(WebDavResponseV1 {
                     status: 503,
@@ -54,6 +75,17 @@ impl WebDavTransportV1 for Fake {
             assert!(headers
                 .iter()
                 .any(|(key, value)| key.eq_ignore_ascii_case("if-none-match") && value == "*"));
+            if cloud
+                .mismatch_on_put_prefix
+                .is_some_and(|prefix| path.starts_with(prefix))
+            {
+                cloud.mismatch_on_put_prefix = None;
+                cloud.mismatch_next_verification = true;
+            }
+            if cloud.unavailable_after_next_put {
+                cloud.unavailable_after_next_put = false;
+                cloud.unavailable_next_get = true;
+            }
             let bytes = body.unwrap();
             cloud.puts.push((path.clone(), bytes.clone()));
             cloud.objects.entry(path).or_insert(bytes);
@@ -1164,5 +1196,449 @@ fn snapshot_plan_guard_and_execution_capture_failure_is_atomic() {
     assert_eq!(crate::collections::all(&guard).unwrap()[0].name, "One");
     assert!(super::local_authority::load_staged_descriptors(&guard)
         .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn astra_p1_old_legacy_ticket_cannot_put_after_durable_activation_without_refresh() {
+    let (c, id) = database(None);
+    let root = root_id();
+    let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .binding;
+    let ticket = super::durable_persistence::capture_legacy_route_ticket_v1(&c, &binding).unwrap();
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    put_activation(&cloud, serde_json::Value::Null, 1, json!([]));
+    let mut remote = remote(&cloud);
+    remote.discover(&c).unwrap();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let called = std::cell::Cell::new(false);
+    let _ = store.run_legacy_bound_put_v1(&ticket, || {
+        called.set(true);
+        Ok(())
+    });
+    assert!(
+        !called.get(),
+        "PUT must not begin after durable activation, even before refresh"
+    );
+}
+#[test]
+fn astra_p1_new_local_update_cannot_capture_stale_live_before_projection_refresh() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    put_collection(&cloud, 1, 1, "Remote conflict");
+    let mut remote = remote(&cloud);
+    remote.discover(&c).unwrap();
+    let mut guard = c.lock().unwrap();
+    let read = super::discovery_persistence::load_read_state_v1(&guard, &root_id())
+        .unwrap()
+        .unwrap();
+    assert!(read
+        .projection
+        .state
+        .entities
+        .iter()
+        .any(|entity| entity.conflict));
+    crate::collections::update(
+        &mut guard,
+        "c1",
+        serde_json::from_value(json!({"name":"Offline update","expectedRev":1})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let row = super::local_authority::load_staged_descriptors(&guard)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.entity_id == "c1")
+        .unwrap();
+    assert_eq!(
+        row.causal_anchor,
+        super::local_authority::StagingAnchorStateV1::Unavailable
+    );
+}
+#[test]
+fn astra_p1_observed_put_verification_mismatch_cannot_be_erased_by_later_exact_get() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud {
+        mismatch_next_verification: true,
+        ..Cloud::default()
+    }));
+    let mut remote = remote(&cloud);
+    let mut state = None;
+    for _ in 0..10 {
+        let next = execute_migration_step_with_adapter_v1(&c, &mut remote, &id, 1, NOW)
+            .unwrap()
+            .unwrap();
+        let terminal = matches!(
+            next.status,
+            MigrationStatusV1::RootFrozen | MigrationStatusV1::MigrationComplete
+        );
+        state = Some(next);
+        if terminal {
+            break;
+        }
+    }
+    assert_eq!(
+        state.unwrap().status,
+        MigrationStatusV1::RootFrozen,
+        "observed mismatch must not be healed by a second verification GET"
+    );
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert!(!store
+        .load_root_safety(&root)
+        .unwrap()
+        .root_fatal_signals
+        .is_empty());
+}
+
+#[test]
+fn direct_legacy_admission_after_discovery_before_refresh_survives_restart() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    let root = root_id();
+    let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .binding;
+    let ticket = super::durable_persistence::capture_legacy_route_ticket_v1(&c, &binding).unwrap();
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    let mut remote = remote(&cloud);
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert!(matches!(
+        store.run_legacy_bound_put_v1(&ticket, || Ok(17)).unwrap(),
+        super::durable_persistence::LegacyS1PublishAdmissionV1::Executed(17)
+    ));
+    put_activation(&cloud, serde_json::Value::Null, 1, json!([]));
+    remote.discover(&c).unwrap();
+    assert_eq!(
+        super::durable_persistence::validate_legacy_route_ticket_v1(&c.lock().unwrap(), &ticket)
+            .unwrap(),
+        super::durable_persistence::LegacyRouteTicketValidationV1::NoLongerLegacy
+    );
+    drop(c);
+    let c = reopen(&path);
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let called = std::cell::Cell::new(false);
+    assert!(matches!(
+        store
+            .run_legacy_bound_put_v1(&ticket, || {
+                called.set(true);
+                Ok(())
+            })
+            .unwrap(),
+        super::durable_persistence::LegacyS1PublishAdmissionV1::RejectedActivation
+    ));
+    assert!(!called.get());
+    assert!(
+        store
+            .load_root_safety(&root)
+            .unwrap()
+            .cutover_state
+            .remote_s2_activated
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn stale_live_and_absent_capture_after_restart_remain_unavailable_after_refresh() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    put_collection(&cloud, 1, 1, "Remote conflict");
+    remote(&cloud).discover(&c).unwrap();
+    drop(c);
+    let c = reopen(&path);
+    let original = {
+        let mut guard = c.lock().unwrap();
+        crate::collections::update(
+            &mut guard,
+            "c1",
+            serde_json::from_value(json!({"name":"Offline", "expectedRev":1})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        let created = crate::collections::create(
+            &mut guard,
+            serde_json::from_value(json!({"name":"New in stale window"})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        let rows = super::local_authority::load_staged_descriptors(&guard).unwrap();
+        for entity in ["c1", created.id.as_str()] {
+            assert_eq!(
+                rows.iter()
+                    .find(|row| row.entity_id == entity)
+                    .unwrap()
+                    .causal_anchor,
+                super::local_authority::StagingAnchorStateV1::Unavailable
+            );
+        }
+        rows
+    };
+    let root = root_id();
+    SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .refresh_from_read_authority_v1()
+        .unwrap();
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+        original
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn verification_mismatch_on_bootstrap_or_activation_stays_fatal_after_exact_get_and_restart() {
+    for prefix in ["writers/", "activations/"] {
+        let path = temp_path();
+        let (c, id) = database(Some(&path));
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud {
+            mismatch_on_put_prefix: Some(prefix),
+            ..Cloud::default()
+        }));
+        let mut remote = remote(&cloud);
+        let mut frozen = None;
+        for _ in 0..10 {
+            let state = execute_migration_step_with_adapter_v1(&c, &mut remote, &id, 1, NOW)
+                .unwrap()
+                .unwrap();
+            assert_ne!(state.status, MigrationStatusV1::MigrationComplete);
+            if state.status == MigrationStatusV1::RootFrozen {
+                frozen = Some(state);
+                break;
+            }
+        }
+        let frozen = frozen.expect("verification mismatch freezes migration");
+        let root = root_id();
+        let fatal = SqliteS2LiteStoreV1::open(&c, &root)
+            .unwrap()
+            .load_root_safety(&root)
+            .unwrap()
+            .root_fatal_signals;
+        assert!(!fatal.is_empty());
+        let (object_path, exact) = cloud.lock().unwrap().puts.last().unwrap().clone();
+        assert_eq!(
+            super::immutable_publish::ImmutableObjectRemoteV1::get_exact(&mut remote, &object_path),
+            super::immutable_publish::RemoteExactGetResultV1::DefinitelyPresent(exact)
+        );
+        drop(c);
+        let c = reopen(&path);
+        remote.discover(&c).unwrap();
+        let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+        store.refresh_from_read_authority_v1().unwrap();
+        assert_eq!(
+            store.load_root_safety(&root).unwrap().root_fatal_signals,
+            fatal
+        );
+        assert_eq!(
+            store.load(&root).unwrap().unwrap().status,
+            MigrationStatusV1::RootFrozen
+        );
+        let before = cloud.lock().unwrap().puts.len();
+        let result = execute_migration_step_with_adapter_v1(&c, &mut remote, &id, 1, NOW);
+        assert!(
+            result.is_err()
+                || result
+                    .unwrap()
+                    .is_some_and(|state| state.status == MigrationStatusV1::RootFrozen)
+        );
+        assert_eq!(cloud.lock().unwrap().puts.len(), before);
+        assert_eq!(
+            store.load(&root).unwrap().unwrap().migration_id,
+            frozen.migration_id
+        );
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn prepared_retry_same_path_mismatch_remains_fatal_after_provider_restores_bytes() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud {
+        lost: true,
+        unavailable_after_next_put: true,
+        ..Cloud::default()
+    }));
+    let mut remote = remote(&cloud);
+    let pending = execute_migration_step_with_adapter_v1(&c, &mut remote, &id, 1, NOW)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.status, MigrationStatusV1::StageAPublishing);
+    assert!(pending.stage_a[0].receipt.is_none());
+    let (object_path, exact) = cloud.lock().unwrap().puts[0].clone();
+    cloud
+        .lock()
+        .unwrap()
+        .objects
+        .insert(object_path.clone(), b"retry corruption".to_vec());
+    let result = execute_migration_step_with_adapter_v1(&c, &mut remote, &id, 1, NOW);
+    assert!(
+        result.is_err()
+            || result
+                .unwrap()
+                .is_some_and(|state| state.status == MigrationStatusV1::RootFrozen)
+    );
+    let root = root_id();
+    let fatal = SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_root_safety(&root)
+        .unwrap()
+        .root_fatal_signals;
+    assert!(!fatal.is_empty());
+    cloud.lock().unwrap().objects.insert(object_path, exact);
+    drop(c);
+    let c = reopen(&path);
+    remote.discover(&c).unwrap();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    store.refresh_from_read_authority_v1().unwrap();
+    assert_eq!(
+        store.load_root_safety(&root).unwrap().root_fatal_signals,
+        fatal
+    );
+    assert_eq!(
+        store.load(&root).unwrap().unwrap().status,
+        MigrationStatusV1::RootFrozen
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn unchanged_replay_new_read_generation_invalidates_anchor_and_projection_application() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let cached = store.load_materialized_projection().unwrap().unwrap();
+    remote(&cloud).discover(&c).unwrap();
+    {
+        let guard = c.lock().unwrap();
+        let current = super::discovery_persistence::load_read_state_v1(&guard, &root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.projection.state, cached.state);
+        assert!(
+            Some(current.discovery.storage_generation) > cached.source_read_discovery_generation
+        );
+        assert!(matches!(
+            super::durable_persistence::admit_applied_projection_for_staging_anchor_v1(
+                &guard, &root
+            )
+            .unwrap(),
+            super::durable_persistence::StagingAnchorProjectionAdmissionV1::Unavailable(_)
+        ));
+    }
+    let called = std::cell::Cell::new(false);
+    assert!(store
+        .run_business_projection_transaction(cached.projection_generation, |_, _| {
+            called.set(true);
+            Ok(())
+        })
+        .is_err());
+    assert!(!called.get());
+    store.refresh_from_read_authority_v1().unwrap();
+    let refreshed = store.load_materialized_projection().unwrap().unwrap();
+    assert!(refreshed.projection_generation > cached.projection_generation);
+    assert_eq!(refreshed.business_projection_applied_generation, None);
+}
+
+#[test]
+fn original_live_basis_is_not_rewritten_by_conflict_discovery_or_refresh() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let original = {
+        let mut guard = c.lock().unwrap();
+        crate::collections::update(
+            &mut guard,
+            "c1",
+            serde_json::from_value(json!({"name":"First local", "expectedRev":1})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        super::local_authority::load_staged_descriptors(&guard)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.entity_id == "c1")
+            .unwrap()
+    };
+    assert!(matches!(
+        original.causal_anchor,
+        super::local_authority::StagingAnchorStateV1::Live { .. }
+    ));
+    put_collection(&cloud, 1, 1, "Remote conflict");
+    remote(&cloud).discover(&c).unwrap();
+    let root = root_id();
+    SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .refresh_from_read_authority_v1()
+        .unwrap();
+    let mut guard = c.lock().unwrap();
+    crate::collections::update(
+        &mut guard,
+        "c1",
+        serde_json::from_value(json!({"name":"Repeated local", "expectedRev":2})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let repeated = super::local_authority::load_staged_descriptors(&guard)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.entity_id == "c1")
+        .unwrap();
+    assert_eq!(repeated.local_mutation_id, original.local_mutation_id);
+    assert_eq!(repeated.first_generation, original.first_generation);
+    assert_eq!(repeated.causal_anchor, original.causal_anchor);
+    assert_eq!(repeated.verified_basis, original.verified_basis);
+}
+
+#[test]
+fn direct_migration_publish_admission_observes_read_fork_without_refresh() {
+    let (c, id) = database(None);
+    seed(&c);
+    let planned = admit(&c, &id);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    put_collection(&cloud, 1, 1, "First writer sequence");
+    put_collection(&cloud, 1, 2, "Forked writer sequence");
+    remote(&cloud).discover(&c).unwrap();
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let called = std::cell::Cell::new(false);
+    let rejected = store
+        .run_publish_exclusive(
+            &root,
+            &planned.migration_id,
+            planned.generation,
+            None,
+            || {
+                called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(rejected, super::migration_orchestration::PublishExclusiveResultV1::Rejected(state) if state.status == MigrationStatusV1::RootFrozen)
+    );
+    assert!(!called.get());
+    assert!(!store
+        .load_root_safety(&root)
+        .unwrap()
+        .root_fatal_signals
         .is_empty());
 }

@@ -132,9 +132,48 @@ back business, S1 staging, S2 descriptor and generation together.
   cannot modify a captured snapshot or hit its protection triggers.
 - The obsolete I6.2 source assertion forbidding commands from referring to the
   adapter is replaced with a runtime test that unconditional PUT is refused
-  before any network operation. DAV parser and production adapter code are unchanged.
+  before any network operation. DAV parser and the approved high-level immutable
+  adapter behavior are unchanged; the repair below adds internal frozen transport hooks.
 - The frozen shared persistence includes dormant ordinary outbound storage helpers,
   but no ordinary writer executor/coordinator, lifecycle scheduler or UI is imported.
+
+## Astra P1 authority repair (after rejected 230dabc)
+
+All three exact Astra counterexamples were added first and reproduced as failing
+production-boundary tests (0/3 passing). They now pass (3/3).
+
+- Final S1 admission owns `BEGIN IMMEDIATE` and reconciles current, strictly decoded
+  I6.3 durable read authority before its safety decision or network callback. The
+  direct ticket validator also consults that authoritative source. Legal activation,
+  unresolved activation observations, read fatals, unsupported protocol and retained
+  cutoff are never admitted through a stale migration-discovery copy. The same
+  reconciliation is used by migration publication, activation adoption/finalization,
+  and other existing transactional safety consumers; root/migration fatal facts
+  remain monotonic. The separate refresh is no longer required for final safety.
+- The rebuildable projection envelope adds optional `sourceReadDiscoveryGeneration`.
+  Refresh records the exact I6.3 generation. Admission inside the local business
+  transaction requires that generation, cached discovery state and full projection
+  match the current validated durable read authority, plus the existing safety and
+  business-applied generation checks. Stale cache means Unavailable. Projection
+  application/resolution also rejects stale authority before invoking the callback.
+  Earlier cache envelopes decode with a missing proof but cannot supply ready bases
+  until refreshed/reapplied. No SQLite table or schema version changes are required.
+  Existing first-edit bases and identities are never rewritten.
+- The blocking bridge now follows frozen desktop layering: provision canonical
+  parents, frozen publisher preflight, raw conditional PUT, frozen publisher exact
+  verification. Internal adapter hooks perform provisioning/raw transport only;
+  the approved `put_immutable` API keeps its existing verification behavior.
+  There is one authoritative verification path, so an observed mismatch reaches
+  the frozen migration executor's durable root-fatal handling immediately and
+  cannot become generic Indeterminate or be healed by a second verification GET.
+
+Ten additional I6.4 tests cover the original three reproductions, activation
+between early/final admission and restart before refresh, stale Live/Absent after
+restart, identical replay with a newer read generation, preservation of an earlier
+Live basis, direct migration admission against a newly durable fork, bootstrap and
+activation verification mismatch followed by exact GET/restart, and corrupt retry
+identity followed by provider byte restoration. Existing lost-response, stale epoch,
+fresh Live/Absent and rollback tests remain passing. Fake WebDAV only.
 
 ## Verification
 
@@ -154,7 +193,7 @@ collections and DB schema. All ten frozen fixture bytes are unchanged.
 
 | Focused group | Passing tests |
 | --- | ---: |
-| I6.4 production boundaries | 30 |
+| I6.4 production boundaries | 40 |
 | Frozen migration orchestration | 23 |
 | Activation/cutover | 7 |
 | Immutable publication | 10 |
@@ -172,7 +211,7 @@ collections and DB schema. All ten frozen fixture bytes are unchanged.
 | Collections | 12 |
 | DB/schema | 8 |
 
-Totals: 30 I6.4 tests, 143 relevant S2 regressions, 94 S1/storage regressions.
+Totals: 40 I6.4 tests, 143 relevant S2 regressions, 94 S1/storage regressions.
 All pass. The zero-test `sync_staging::tests` filter is excluded from these totals;
 staging behavior is exercised by the sync state, atomic CRUD and local capture groups.
 

@@ -293,6 +293,8 @@ pub struct DurableMaterializedProjectionV1 {
     pub physical_root_id: String,
     pub projection_generation: u64,
     pub source_discovery_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_read_discovery_generation: Option<u64>,
     pub source_root_safety_generation: u64,
     pub replay_input_fingerprint: String,
     pub business_projection_applied_generation: Option<u64>,
@@ -1273,9 +1275,25 @@ pub(crate) fn load_materialized_projection_for_staging_v1(
 }
 
 /// Loads the sole projection generation that can be used as causal authority
-/// for a newly staged local entity.  This deliberately runs on the caller's
-/// mutation transaction: the business-row edit, its staging record, and the
-/// proof that those rows already reflect the projection are one SQLite view.
+/// for a newly staged local entity. Compare the cache to authoritative replay
+/// inside the business transaction.
+fn projection_matches_read_authority_v1(
+    conn: &Connection,
+    root_id: &str,
+    projection: &DurableMaterializedProjectionV1,
+) -> Result<bool> {
+    let Some(read) = super::discovery_persistence::load_read_state_v1(conn, root_id)? else {
+        return Ok(false);
+    };
+    let discovery = load_discovery_state_from(conn, root_id)?;
+    Ok(read.fatal_codes.is_empty()
+        && projection.source_read_discovery_generation == Some(read.discovery.storage_generation)
+        && discovery
+            .as_ref()
+            .is_some_and(|cached| cached.state == read.discovery.state)
+        && projection.state == read.projection.state)
+}
+
 pub(crate) fn admit_applied_projection_for_staging_anchor_v1(
     conn: &Connection,
     root_id: &str,
@@ -1285,6 +1303,11 @@ pub(crate) fn admit_applied_projection_for_staging_anchor_v1(
             "materialized_projection_missing",
         ));
     };
+    if !projection_matches_read_authority_v1(conn, root_id, &projection)? {
+        return Ok(StagingAnchorProjectionAdmissionV1::Unavailable(
+            "projection_read_authority_stale",
+        ));
+    }
     if !matches!(
         projection.state.status,
         super::materialized_projection::MaterializedProjectionStatusV1::Complete
@@ -1369,6 +1392,61 @@ fn ensure_root_authority(conn: &Connection, root_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Merge current authoritative I6.3 safety under the caller's write transaction.
+/// Final admission never relies on a separately refreshed discovery copy.
+fn reconcile_read_root_safety_v1(conn: &Connection, root_id: &str) -> Result<()> {
+    let Some(read) = super::discovery_persistence::load_read_state_v1(conn, root_id)? else {
+        return Ok(());
+    };
+    merge_discovery_fatals_into_root_authority(conn, root_id, &read.discovery.state)?;
+    let mut safety = load_root_safety_from(conn, root_id)?.ok_or(STORE_CORRUPTION)?;
+    let next_cutover =
+        recover_activation_cutover_v1(&read.discovery.state, Some(&safety.cutover_state))
+            .diagnostic_state()
+            .ok_or(STORE_CORRUPTION)?;
+    let mut codes = safety
+        .root_fatal_signals
+        .iter()
+        .map(|fatal| fatal.code.clone())
+        .chain(read.fatal_codes.iter().cloned())
+        .chain(
+            next_cutover
+                .root_fatal_signals
+                .iter()
+                .map(|fatal| fatal.code.clone()),
+        )
+        .collect::<Vec<_>>();
+    if let Some(binding) = load_migration_execution_binding_from(conn, root_id)? {
+        if next_cutover.remote_s2_activated
+            && !matches!(&next_cutover.fingerprint_consistency,ActivationFingerprintConsistencyV1::Consistent{legacy_fingerprint} if *legacy_fingerprint==binding.legacy_fingerprint)
+        {
+            codes.push("SYNC_ROOT_FROZEN_LEGACY_CHANGE".into());
+        }
+    }
+    codes.sort();
+    codes.dedup();
+    let fatals = codes
+        .into_iter()
+        .map(|code| MigrationRootFatalV1 { code })
+        .collect::<Vec<_>>();
+    if safety.cutover_state != next_cutover || safety.root_fatal_signals != fatals {
+        safety.generation = safety.generation.checked_add(1).ok_or(STORE_CORRUPTION)?;
+        safety.cutover_state = next_cutover;
+        safety.root_fatal_signals = fatals;
+        save_root_safety(conn, &safety)?;
+    }
+    if let Some(mut migration) = load_migration_from(conn, root_id)? {
+        let mut changed = false;
+        for fatal in &safety.root_fatal_signals {
+            changed |= add_fatal(&mut migration, &fatal.code)?;
+        }
+        if changed {
+            save_migration(conn, &migration)?;
+        }
+    }
+    Ok(())
+}
+
 fn load_root_safety_from(
     conn: &Connection,
     root_id: &str,
@@ -1442,6 +1520,32 @@ pub fn validate_legacy_route_ticket_v1(
     let safety = load_root_safety_from(conn, &ticket.physical_root_id)?.ok_or(STORE_CORRUPTION)?;
     if !safety.root_fatal_signals.is_empty() {
         return Ok(LegacyRouteTicketValidationV1::ReadOnlyFrozen);
+    }
+    if let Some(read) =
+        super::discovery_persistence::load_read_state_v1(conn, &ticket.physical_root_id)?
+    {
+        let cutover =
+            recover_activation_cutover_v1(&read.discovery.state, Some(&safety.cutover_state));
+        if !read.fatal_codes.is_empty() {
+            return Ok(LegacyRouteTicketValidationV1::ReadOnlyFrozen);
+        }
+        if decide_legacy_put_v1(&cutover) != LegacyPutDecisionV1::AllowedS2NotActivated
+            || read
+                .discovery
+                .state
+                .observed_activations
+                .iter()
+                .any(|path| {
+                    !read
+                        .discovery
+                        .state
+                        .verified_objects
+                        .iter()
+                        .any(|object| object.path == *path)
+                })
+        {
+            return Ok(LegacyRouteTicketValidationV1::NoLongerLegacy);
+        }
     }
     if safety.generation != ticket.root_safety_generation {
         return Ok(LegacyRouteTicketValidationV1::NoLongerLegacy);
@@ -1993,6 +2097,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let Some(read) =
             super::discovery_persistence::load_read_state_v1(&transaction, self.root_id)?
         else {
@@ -2013,57 +2118,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         if changed {
             database(transaction.execute("INSERT INTO s2_lite_migration_discovery_v1(root_id,storage_generation,state_json) VALUES(?1,?2,?3) ON CONFLICT(root_id) DO UPDATE SET storage_generation=excluded.storage_generation,state_json=excluded.state_json",params![self.root_id,gen.to_string(),encode(&read.discovery.state)?]))?;
         }
-        merge_discovery_fatals_into_root_authority(
-            &transaction,
-            self.root_id,
-            &read.discovery.state,
-        )?;
-        let mut safety =
-            load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
-        let next_cutover =
-            recover_activation_cutover_v1(&read.discovery.state, Some(&safety.cutover_state))
-                .diagnostic_state()
-                .ok_or(STORE_CORRUPTION)?;
-        let mut codes = safety
-            .root_fatal_signals
-            .iter()
-            .map(|fatal| fatal.code.clone())
-            .chain(read.fatal_codes)
-            .chain(
-                next_cutover
-                    .root_fatal_signals
-                    .iter()
-                    .map(|fatal| fatal.code.clone()),
-            )
-            .collect::<Vec<_>>();
-        if let Some(binding) = load_migration_execution_binding_from(&transaction, self.root_id)? {
-            if next_cutover.remote_s2_activated
-                && !matches!(&next_cutover.fingerprint_consistency,ActivationFingerprintConsistencyV1::Consistent{legacy_fingerprint} if *legacy_fingerprint==binding.legacy_fingerprint)
-            {
-                codes.push("SYNC_ROOT_FROZEN_LEGACY_CHANGE".into());
-            }
-        }
-        codes.sort();
-        codes.dedup();
-        let fatals = codes
-            .into_iter()
-            .map(|code| MigrationRootFatalV1 { code })
-            .collect::<Vec<_>>();
-        if safety.cutover_state != next_cutover || safety.root_fatal_signals != fatals {
-            safety.generation = safety.generation.checked_add(1).ok_or(STORE_CORRUPTION)?;
-            safety.cutover_state = next_cutover;
-            safety.root_fatal_signals = fatals;
-            save_root_safety(&transaction, &safety)?;
-        }
-        if let Some(mut migration) = load_migration_from(&transaction, self.root_id)? {
-            let mut changed = false;
-            for fatal in &safety.root_fatal_signals {
-                changed |= add_fatal(&mut migration, &fatal.code)?;
-            }
-            if changed {
-                save_migration(&transaction, &migration)?;
-            }
-        }
+        let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         let row=database(transaction.query_row("SELECT projection_generation,state_json FROM s2_lite_materialized_projection_v1 WHERE root_id=?1",[self.root_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Vec<u8>>(1)?))).optional())?;
         let previous = row
             .as_ref()
@@ -2078,6 +2133,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             .transpose()?;
         let same = previous.as_ref().is_some_and(|p| {
             p.source_discovery_generation == gen
+                && p.source_read_discovery_generation == Some(read.discovery.storage_generation)
                 && p.source_root_safety_generation == safety.generation
                 && p.state == read.projection.state
         });
@@ -2091,6 +2147,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
                         .ok_or(STORE_CORRUPTION)
                 })?,
                 source_discovery_generation: gen,
+                source_read_discovery_generation: Some(read.discovery.storage_generation),
                 source_root_safety_generation: safety.generation,
                 replay_input_fingerprint: read.projection.state.replay_input_fingerprint.clone(),
                 business_projection_applied_generation: None,
@@ -2233,6 +2290,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let existing = database(
             transaction
                 .query_row(
@@ -2338,6 +2396,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         validate_migration_execution_target_authority(&transaction, candidate, self.root_id)?;
         let existing = database(
             transaction
@@ -2676,6 +2735,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
 
         let mut safety =
             load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
@@ -2822,6 +2882,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty()
             || !safety.cutover_state.root_fatal_signals.is_empty()
@@ -2894,6 +2955,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty()
             || !safety.cutover_state.root_fatal_signals.is_empty()
@@ -3004,6 +3066,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
         let safety = load_root_safety_from(&transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty()
             || !safety.cutover_state.root_fatal_signals.is_empty()
@@ -3105,6 +3168,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if safety.generation != projection.source_root_safety_generation {
             return Ok(false);
@@ -3152,6 +3216,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         database(transaction.execute(
             "INSERT INTO s2_lite_desktop_root_state_v1(root_id, state_json) VALUES(?1, ?2)
              ON CONFLICT(root_id) DO UPDATE SET state_json=excluded.state_json",
@@ -3173,6 +3238,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
 
         let projection_row = database(transaction.query_row(
             "SELECT projection_generation, state_json
@@ -3222,6 +3288,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty() {
             return Err(ROOT_MISMATCH);
@@ -3244,6 +3311,9 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
                 != canonical_generation(&discovery_generation)?
             || projection.source_root_safety_generation != safety.generation
         {
+            return Err(STORE_CORRUPTION);
+        }
+        if !projection_matches_read_authority_v1(&transaction, self.root_id, &projection)? {
             return Err(STORE_CORRUPTION);
         }
         validate_materialized_projection(&projection, self.root_id)?;
@@ -3296,6 +3366,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty() {
             return Err(ROOT_MISMATCH);
@@ -3319,6 +3390,9 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             || projection.business_projection_applied_generation
                 != Some(expected_projection_generation)
         {
+            return Err(STORE_CORRUPTION);
+        }
+        if !projection_matches_read_authority_v1(&transaction, self.root_id, &projection)? {
             return Err(STORE_CORRUPTION);
         }
         validate_materialized_projection(&projection, self.root_id)?;
@@ -3394,6 +3468,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty() {
             return Err(ProtocolError("ROOT_FROZEN"));
@@ -3534,6 +3609,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
             return Ok(OutboundFreezeTransactionResultV1::Blocked);
         }
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let safety = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty() {
             return Ok(OutboundFreezeTransactionResultV1::Blocked);
@@ -3768,6 +3844,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let batch_bytes = database(
             transaction
                 .query_row(
@@ -3995,6 +4072,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let current = database(
             transaction
                 .query_row(
@@ -4053,6 +4131,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
 
         // The caller may have observed an obsolete discovery generation before
         // waiting for this writer lock.  Requiring byte-for-byte state equality
@@ -4150,6 +4229,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         let current = load_root_safety_from(&transaction, self.root_id)?.ok_or(STORE_CORRUPTION)?;
         if current.generation != expected_generation {
             return Ok(false);
@@ -4407,6 +4487,7 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
         let safety = load_root_safety_from(&transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety.root_fatal_signals.is_empty() {
             let rejected = on_frozen(&transaction, &safety)?;
@@ -4738,6 +4819,7 @@ impl MigrationStateStoreV1 for SqliteS2LiteStoreV1<'_> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, self.root_id)?;
+        reconcile_read_root_safety_v1(&transaction, self.root_id)?;
         if let Some(existing) = load_migration_from(&transaction, self.root_id)? {
             database(transaction.commit())?;
             return Ok(existing);
@@ -4832,6 +4914,7 @@ impl MigrationStateStoreV1 for SqliteS2LiteStoreV1<'_> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
         let state = load_root_safety_from(&transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
         database(transaction.commit())?;
         Ok(state)
@@ -4853,6 +4936,7 @@ impl MigrationStateStoreV1 for SqliteS2LiteStoreV1<'_> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
         let mut safety = load_root_safety_from(&transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
         let merged = merge_migration_root_cutover_state_v1(&safety.cutover_state, incoming)?;
         let mut fatal_codes = safety
@@ -4903,6 +4987,7 @@ impl MigrationStateStoreV1 for SqliteS2LiteStoreV1<'_> {
         let mut conn = self.connection()?;
         let transaction = database(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
         ensure_root_authority(&transaction, root_id)?;
+        reconcile_read_root_safety_v1(&transaction, root_id)?;
         let mut safety = load_root_safety_from(&transaction, root_id)?.ok_or(STORE_CORRUPTION)?;
         if !safety
             .root_fatal_signals

@@ -354,6 +354,55 @@ impl<T: WebDavTransportV1> WebDavS2AdapterV1<T> {
         Ok(())
     }
 
+    /// Provision before the frozen publisher's decisive preflight GET.
+    /// Exact-byte verification belongs solely to the frozen publisher.
+    pub(crate) async fn prepare_frozen_immutable_parents_v1(
+        &mut self,
+        path: &str,
+    ) -> super::immutable_publish::RemotePutResultV1 {
+        use super::immutable_publish::RemotePutResultV1;
+        if !valid_immutable_object_path(path) {
+            return RemotePutResultV1::Indeterminate;
+        }
+        match self.ensure_parents(path).await {
+            Ok(()) => RemotePutResultV1::Success,
+            Err(ImmutablePutResultV1::AuthOrCapabilityFailure) => {
+                RemotePutResultV1::AuthOrCapabilityFailure
+            }
+            Err(_) => RemotePutResultV1::Indeterminate,
+        }
+    }
+
+    /// Raw conditional transport for the frozen publisher's single verification
+    /// path. This result cannot establish an immutable receipt.
+    pub(crate) async fn put_frozen_if_absent_v1(
+        &mut self,
+        path: &str,
+        bytes: &[u8],
+    ) -> super::immutable_publish::RemotePutResultV1 {
+        use super::immutable_publish::RemotePutResultV1;
+        if !valid_immutable_object_path(path)
+            || immutable_path_content_hash(path).as_deref() != Some(sha256_hex(bytes).as_str())
+        {
+            return RemotePutResultV1::Indeterminate;
+        }
+        match self
+            .request(
+                Method::PUT,
+                path,
+                vec![("If-None-Match".into(), "*".into())],
+                Some(bytes.to_vec()),
+            )
+            .await
+        {
+            Ok(response) if (200..300).contains(&response.status) => RemotePutResultV1::Success,
+            Ok(WebDavResponseV1 {
+                status: 401 | 403, ..
+            }) => RemotePutResultV1::AuthOrCapabilityFailure,
+            _ => RemotePutResultV1::Indeterminate,
+        }
+    }
+
     /// Defends immutable identity before and after PUT.  Provider conditional
     /// support is not trusted for correctness: every ambiguous outcome is
     /// settled with an exact GET of the already prepared bytes.
