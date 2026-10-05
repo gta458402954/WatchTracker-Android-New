@@ -19,7 +19,8 @@ use super::activation_cutover::{
     ActivationFingerprintConsistencyV1, LegacyPutDecisionV1,
 };
 use super::canonical::{
-    jcs_bytes, sha256_hex, validate_canonical_uuid_v4, validate_commit_ref, ProtocolError, Result,
+    jcs_bytes, sha256_hex, validate_canonical_uuid_v4, validate_commit_ref, validate_entity_key,
+    validate_safe_integer, ProtocolError, Result,
 };
 use super::causal::decode_frozen_wire_commit_v1;
 use super::immutable_publish::{
@@ -689,6 +690,44 @@ fn valid_outbound_entity_kind(value: &str) -> bool {
     )
 }
 
+/// `entity_id` is retained as a local staging lookup key, but it is not
+/// independent authority.  Bind it to the frozen canonical key before any
+/// post-freeze cancellation or acknowledgement can use the redundant fields.
+///
+/// Composite entity ids are the frozen deterministic ids, not an arbitrary
+/// component or a convenient local surrogate.
+fn validate_outbound_batch_mutation_identity(mutation: &OutboundBatchMutationV1) -> Result<()> {
+    validate_entity_key(&mutation.entity_key).map_err(|_| STORE_CORRUPTION)?;
+    let key = mutation.entity_key.as_array().ok_or(STORE_CORRUPTION)?;
+    if key.first().and_then(Value::as_str) != Some(mutation.entity_kind.as_str()) {
+        return Err(STORE_CORRUPTION);
+    }
+    let expected_id = match mutation.entity_kind.as_str() {
+        "record" | "collection" => key
+            .get(1)
+            .and_then(Value::as_str)
+            .ok_or(STORE_CORRUPTION)?
+            .to_owned(),
+        "collection-member" => {
+            let collection_id = key.get(1).and_then(Value::as_str).ok_or(STORE_CORRUPTION)?;
+            let record_id = key.get(2).and_then(Value::as_str).ok_or(STORE_CORRUPTION)?;
+            sha256_hex(format!("collection-member:v1\0{collection_id}\0{record_id}").as_bytes())
+        }
+        "episode-completion" => {
+            let record_id = key.get(1).and_then(Value::as_str).ok_or(STORE_CORRUPTION)?;
+            let episode_number =
+                validate_safe_integer(key.get(2).ok_or(STORE_CORRUPTION)?, 1, i32::MAX as i64)
+                    .map_err(|_| STORE_CORRUPTION)?;
+            sha256_hex(format!("episode-completion:v1\0{record_id}\0{episode_number}").as_bytes())
+        }
+        _ => return Err(STORE_CORRUPTION),
+    };
+    if mutation.entity_id != expected_id {
+        return Err(STORE_CORRUPTION);
+    }
+    Ok(())
+}
+
 fn validate_desktop_root_state(state: &DesktopRootStateV1, root_id: &str) -> Result<()> {
     if state.state_version != 1
         || state.physical_root_id != root_id
@@ -1115,6 +1154,7 @@ fn validate_outbound_batch(batch: &OutboundBatchV1, root_id: &str) -> Result<()>
                 || mutation.entity_key.is_null()
                 || mutation.captured_last_generation < 0
                 || validate_canonical_uuid_v4(&mutation.local_mutation_id).is_err()
+                || validate_outbound_batch_mutation_identity(mutation).is_err()
         })
     {
         return Err(STORE_CORRUPTION);

@@ -5,7 +5,7 @@ use super::webdav_adapter::*;
 use async_trait::async_trait;
 use reqwest::{Method, Url};
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 const NOW: &str = "2026-01-01T00:00:00.000Z";
@@ -236,6 +236,79 @@ fn reopen(path: &std::path::Path) -> Mutex<Connection> {
 }
 fn temp_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("wt-i64-{}.sqlite", uuid::Uuid::new_v4()))
+}
+
+fn corrupt_frozen_batch_entity_id(
+    conn: &Connection,
+    entity_kind: &str,
+    entity_id: &str,
+    replacement: &str,
+) {
+    let bytes: Vec<u8> = conn
+        .query_row(
+            "SELECT state_json FROM s2_lite_outbound_batch_v1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut persisted: Value = serde_json::from_slice(&bytes).unwrap();
+    let mutation = persisted["payload"]["mutations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|mutation| mutation["entityKind"] == entity_kind && mutation["entityId"] == entity_id)
+        .unwrap();
+    mutation["entityId"] = json!(replacement);
+    let corrupted = serde_json::to_vec(&persisted).unwrap();
+    conn.execute(
+        "UPDATE s2_lite_outbound_batch_v1 SET state_json=?1",
+        [&corrupted],
+    )
+    .unwrap();
+}
+
+fn create_and_freeze_all_ordinary_entity_kinds(
+    c: &Mutex<Connection>,
+    id: &str,
+) -> Vec<(String, String)> {
+    let record_id = uuid::Uuid::new_v4().to_string();
+    let mut guard = c.lock().unwrap();
+    crate::db_atomic_crud::insert_record_atomic(
+        &mut guard,
+        serde_json::from_value(json!({
+            "id":record_id, "originalName":"Frozen identities", "chineseName":"Frozen identities",
+            "progress":"", "totalEpisodes":3, "status":"未看", "platform":"", "notes":"",
+            "createdAt":NOW, "mediaType":"剧集", "episodeTrackingEnabled":true, "nextEpisode":1
+        }))
+        .unwrap(),
+        "device",
+    )
+    .unwrap();
+    crate::episode_history::set_next(&mut guard, &record_id, Some(2), 1, "device").unwrap();
+    let collection = crate::collections::create(
+        &mut guard,
+        serde_json::from_value(json!({"name":"Frozen identity parent"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    crate::collections::add_members(
+        &mut guard,
+        &collection.id,
+        vec![record_id],
+        "manual",
+        collection.rev,
+        "device",
+    )
+    .unwrap();
+    drop(guard);
+    match super::outbound_freeze::freeze_active_outbound_v1(c, id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { batch, .. } => batch
+            .mutations
+            .into_iter()
+            .map(|mutation| (mutation.entity_kind, mutation.entity_id))
+            .collect(),
+        other => panic!("{other:?}"),
+    }
 }
 #[test]
 fn restart_after_planning_and_each_executor_boundary_reuses_all_identities() {
@@ -2580,6 +2653,118 @@ fn i65_astra_frozen_create_delete_does_not_resurrect_collection() {
         cloud.lock().unwrap().objects.get(&intent.remote_path),
         Some(&intent.exact_bytes)
     );
+}
+
+#[test]
+fn i65_astra_corrupt_frozen_collection_identity_fails_closed_across_restart() {
+    let path = temp_path();
+    let (mut c, id) = database(Some(&path));
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let created = crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Astra corrupt frozen identity"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap();
+    let mut guard = c.lock().unwrap();
+    let descriptors = super::local_authority::load_staged_descriptors(&guard).unwrap();
+    let staging = crate::sync_staging::get_staging(&guard).unwrap();
+    let generation = crate::db_atomic_helpers::get_records_generation(&guard).unwrap();
+    corrupt_frozen_batch_entity_id(&guard, "collection", &created.id, "unrelated-entity");
+    let frozen: Vec<u8> = guard
+        .query_row(
+            "SELECT state_json FROM s2_lite_outbound_batch_v1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(crate::collections::delete(&mut guard, &created.id, created.rev, "device").is_err());
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&guard).unwrap(),
+        descriptors
+    );
+    assert_eq!(crate::sync_staging::get_staging(&guard).unwrap(), staging);
+    assert_eq!(
+        crate::db_atomic_helpers::get_records_generation(&guard).unwrap(),
+        generation
+    );
+    assert_eq!(
+        guard
+            .query_row(
+                "SELECT state_json FROM s2_lite_outbound_batch_v1",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap(),
+        frozen
+    );
+    assert!(crate::collections::all(&guard)
+        .unwrap()
+        .iter()
+        .any(|row| row.id == created.id));
+    drop(guard);
+    drop(c);
+    c = reopen(&path);
+    let mut guard = c.lock().unwrap();
+    assert!(crate::collections::delete(&mut guard, &created.id, created.rev, "device").is_err());
+    assert!(crate::collections::all(&guard)
+        .unwrap()
+        .iter()
+        .any(|row| row.id == created.id));
+    drop(guard);
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn i65_frozen_batch_rejects_record_and_composite_identity_mismatches() {
+    for kind in ["record", "collection-member", "episode-completion"] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let mutations = create_and_freeze_all_ordinary_entity_kinds(&c, &id);
+        let (_, entity_id) = mutations
+            .iter()
+            .find(|(entity_kind, _)| entity_kind == kind)
+            .unwrap();
+        let collection_id = mutations
+            .iter()
+            .find(|(entity_kind, _)| entity_kind == "collection")
+            .unwrap()
+            .1
+            .clone();
+        let mut guard = c.lock().unwrap();
+        let descriptors = super::local_authority::load_staged_descriptors(&guard).unwrap();
+        let staging = crate::sync_staging::get_staging(&guard).unwrap();
+        corrupt_frozen_batch_entity_id(&guard, kind, entity_id, "unrelated-entity");
+        let collection = crate::collections::all(&guard)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == collection_id)
+            .unwrap();
+        assert!(
+            crate::collections::delete(&mut guard, &collection.id, collection.rev, "device")
+                .is_err()
+        );
+        assert_eq!(
+            super::local_authority::load_staged_descriptors(&guard).unwrap(),
+            descriptors,
+            "{kind} corruption must not alter local capture"
+        );
+        assert_eq!(
+            crate::sync_staging::get_staging(&guard).unwrap(),
+            staging,
+            "{kind} corruption must not alter S1 staging"
+        );
+        assert!(crate::collections::all(&guard)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == collection_id));
+    }
 }
 #[test]
 fn i65_post_freeze_delete_crash_interleaving_matrix() {
