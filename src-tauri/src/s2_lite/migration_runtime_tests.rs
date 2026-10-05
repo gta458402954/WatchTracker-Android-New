@@ -2542,3 +2542,375 @@ fn i65_historical_own_sequence_alternative_freezes_without_prior_remote_observat
     drop(c);
     std::fs::remove_file(path).unwrap();
 }
+#[test]
+fn i65_astra_frozen_create_delete_does_not_resurrect_collection() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let created = crate::collections::create(
+        &mut c.lock().unwrap(),
+        serde_json::from_value(json!({"name":"Astra frozen create"})).unwrap(),
+        "device",
+    )
+    .unwrap();
+    let intent = match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+        other => panic!("{other:?}"),
+    };
+    crate::collections::delete(&mut c.lock().unwrap(), &created.id, created.rev, "device").unwrap();
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    let guard = c.lock().unwrap();
+    let rows = super::local_authority::load_staged_descriptors(&guard).unwrap();
+    assert!(rows
+        .iter()
+        .any(|row| row.entity_id == created.id && row.operation == "delete"));
+    let count: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM collections WHERE id=?1",
+            [&created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(
+        cloud.lock().unwrap().objects.get(&intent.remote_path),
+        Some(&intent.exact_bytes)
+    );
+}
+#[test]
+fn i65_post_freeze_delete_crash_interleaving_matrix() {
+    for boundary in ["mutable", "prepared", "ambiguous", "receipt"] {
+        for restart in [false, true] {
+            let path = temp_path();
+            let (c, id) = database(Some(&path));
+            seed(&c);
+            let cloud = Arc::new(Mutex::new(Cloud::default()));
+            finish(&c, &id, &cloud);
+            let created = crate::collections::create(
+                &mut c.lock().unwrap(),
+                serde_json::from_value(json!({"name":"Boundary collection"})).unwrap(),
+                "device",
+            )
+            .unwrap();
+            let captured = super::local_authority::load_staged_descriptors(&c.lock().unwrap())
+                .unwrap()
+                .into_iter()
+                .find(|row| row.entity_id == created.id)
+                .unwrap();
+            let intent = if boundary == "mutable" {
+                None
+            } else {
+                match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+                    super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => {
+                        Some(*intent)
+                    }
+                    other => panic!("{other:?}"),
+                }
+            };
+            if boundary == "ambiguous" {
+                let mut fake = cloud.lock().unwrap();
+                fake.lost = true;
+                fake.unavailable_after_next_put = true;
+                drop(fake);
+                assert_eq!(
+                    ordinary(&c, &id, &cloud),
+                    super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+                );
+            }
+            if boundary == "receipt" {
+                c.lock().unwrap().execute_batch("CREATE TRIGGER fail_retirement BEFORE DELETE ON s2_lite_local_staging_descriptor_v1 BEGIN SELECT RAISE(ABORT,'crash'); END").unwrap();
+                assert!(super::ordinary_runtime::run_ordinary_cycle_v1(
+                    &c,
+                    &mut remote(&cloud),
+                    &id,
+                    1,
+                    NOW
+                )
+                .is_err());
+                c.lock()
+                    .unwrap()
+                    .execute_batch("DROP TRIGGER fail_retirement")
+                    .unwrap();
+                assert!(SqliteS2LiteStoreV1::open(&c, &root_id())
+                    .unwrap()
+                    .load_published_receipt(&intent.as_ref().unwrap().remote_path)
+                    .unwrap()
+                    .is_some());
+            }
+            crate::collections::delete(&mut c.lock().unwrap(), &created.id, created.rev, "device")
+                .unwrap();
+            let deletes =
+                super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+            if boundary == "mutable" {
+                assert!(deletes.is_empty());
+            } else {
+                let delete = &deletes[0];
+                assert_eq!(delete.operation, "delete");
+                assert_ne!(delete.local_mutation_id, captured.local_mutation_id);
+                assert!(delete.first_generation > captured.last_generation);
+                assert_eq!(delete.first_generation, delete.last_generation);
+                assert_eq!(delete.causal_anchor, captured.causal_anchor);
+                assert_eq!(delete.verified_basis, captured.verified_basis);
+                assert!(delete.frozen_delete_evidence().is_ok());
+                assert_eq!(
+                    SqliteS2LiteStoreV1::open(&c, &root_id())
+                        .unwrap()
+                        .load_prepared_intent(&intent.as_ref().unwrap().remote_path)
+                        .unwrap()
+                        .as_ref(),
+                    intent.as_ref()
+                );
+            }
+            let c = if restart {
+                drop(c);
+                reopen(&path)
+            } else {
+                c
+            };
+            assert_eq!(
+                super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+                deletes
+            );
+            let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+            let expected = if boundary == "mutable" {
+                super::ordinary_runtime::OrdinaryCycleResultV1::Success
+            } else {
+                super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+            };
+            assert_eq!(
+                mobile(&c, &id, &cloud, &coordinator, false, None),
+                expected,
+                "{boundary}, restart={restart}"
+            );
+            assert_eq!(
+                super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+                deletes
+            );
+            let count: i64 = c
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM collections WHERE id=?1",
+                    [&created.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+            if let Some(intent) = intent {
+                assert_eq!(
+                    cloud.lock().unwrap().objects.get(&intent.remote_path),
+                    Some(&intent.exact_bytes)
+                );
+                assert_eq!(
+                    cloud
+                        .lock()
+                        .unwrap()
+                        .puts
+                        .iter()
+                        .filter(|(path, _)| path == &intent.remote_path)
+                        .count(),
+                    1
+                );
+                let scheduler = crate::sync_state::runtime_state(&c.lock().unwrap())
+                    .unwrap()
+                    .scheduler;
+                assert!(scheduler.last_success_at.is_none());
+                assert_eq!(scheduler.last_error_code.as_deref(), Some("s2_pending"));
+                assert_eq!(
+                    mobile(&c, &id, &cloud, &coordinator, false, None),
+                    super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+                );
+                assert_eq!(
+                    super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+                    deletes
+                );
+            }
+            drop(c);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn i65_post_freeze_delete_all_four_production_entity_classes() {
+    let (c, id) = database(None);
+    seed(&c);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&c, &id, &cloud);
+    let record_id = uuid::Uuid::new_v4().to_string();
+    let collection = {
+        let mut guard = c.lock().unwrap();
+        crate::db_atomic_crud::insert_record_atomic(&mut guard, serde_json::from_value(json!({"id":record_id,"originalName":"New series","chineseName":"New series","progress":"","totalEpisodes":6,"status":"未看","platform":"","notes":"","createdAt":NOW,"mediaType":"剧集","episodeTrackingEnabled":true,"nextEpisode":1})).unwrap(), "device").unwrap();
+        crate::episode_history::set_next(&mut guard, &record_id, Some(2), 1, "device").unwrap();
+        let collection = crate::collections::create(
+            &mut guard,
+            serde_json::from_value(json!({"name":"New parent"})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        crate::collections::add_members(
+            &mut guard,
+            &collection.id,
+            vec![record_id.clone()],
+            "manual",
+            collection.rev,
+            "device",
+        )
+        .unwrap();
+        collection
+    };
+    let before = super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+    assert_eq!(before.len(), 4);
+    let intent = match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+        super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+        other => panic!("{other:?}"),
+    };
+    {
+        let mut guard = c.lock().unwrap();
+        crate::db_atomic_crud::delete_record_atomic(&mut guard, &record_id, "device").unwrap();
+        let rev = crate::collections::all(&guard)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == collection.id)
+            .unwrap()
+            .rev;
+        crate::collections::delete(&mut guard, &collection.id, rev, "device").unwrap();
+    }
+    let deletes = super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap();
+    assert_eq!(deletes.len(), 4);
+    for old in before {
+        let delete = deletes
+            .iter()
+            .find(|row| row.entity_kind == old.entity_kind && row.entity_id == old.entity_id)
+            .unwrap();
+        assert_eq!(delete.operation, "delete");
+        assert_ne!(delete.local_mutation_id, old.local_mutation_id);
+        assert!(delete.first_generation > old.last_generation);
+        assert_eq!(delete.causal_anchor, old.causal_anchor);
+        assert_eq!(delete.verified_basis, old.verified_basis);
+        assert!(delete.frozen_delete_evidence().is_ok());
+    }
+    assert_eq!(
+        ordinary(&c, &id, &cloud),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+        deletes
+    );
+    assert_eq!(
+        cloud.lock().unwrap().objects.get(&intent.remote_path),
+        Some(&intent.exact_bytes)
+    );
+    assert!(!crate::db::get_all_records(&c.lock().unwrap())
+        .unwrap()
+        .iter()
+        .any(|row| row.id == record_id));
+    assert!(!crate::collections::all(&c.lock().unwrap())
+        .unwrap()
+        .iter()
+        .any(|row| row.id == collection.id));
+}
+#[test]
+fn i65_post_freeze_delete_recreate_delete_keeps_successor_identity() {
+    for recovered in [false, true] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let record_id = uuid::Uuid::new_v4().to_string();
+        let created = crate::db_atomic_crud::insert_record_atomic(&mut c.lock().unwrap(), serde_json::from_value(json!({"id":record_id,"originalName":"Recreated record","chineseName":"Recreated record","progress":"","status":"未看","platform":"","notes":"","createdAt":NOW,"mediaType":"电影"})).unwrap(), "device").unwrap();
+        super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap();
+        crate::db_atomic_crud::delete_record_atomic(&mut c.lock().unwrap(), &record_id, "device")
+            .unwrap();
+        let successor =
+            super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0].clone();
+        if recovered {
+            assert_eq!(
+                ordinary(&c, &id, &cloud),
+                super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+            );
+        }
+        crate::db_atomic_crud::insert_record_atomic(&mut c.lock().unwrap(), created, "device")
+            .unwrap();
+        crate::db_atomic_crud::delete_record_atomic(&mut c.lock().unwrap(), &record_id, "device")
+            .unwrap();
+        let delete =
+            super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0].clone();
+        assert_eq!(delete.operation, "delete");
+        assert_eq!(delete.local_mutation_id, successor.local_mutation_id);
+        assert_eq!(delete.first_generation, successor.first_generation);
+        assert_eq!(delete.verified_basis, successor.verified_basis);
+        assert_eq!(
+            ordinary(&c, &id, &cloud),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+        );
+        assert_eq!(
+            super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap(),
+            vec![delete]
+        );
+        assert!(crate::db::get_record(&c.lock().unwrap(), &record_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[test]
+fn i65_post_freeze_delete_invalid_publication_authority_rolls_back_business_capture() {
+    for invalid_intent in [false, true] {
+        let (c, id) = database(None);
+        seed(&c);
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        finish(&c, &id, &cloud);
+        let created = crate::collections::create(
+            &mut c.lock().unwrap(),
+            serde_json::from_value(json!({"name":"Atomic delete"})).unwrap(),
+            "device",
+        )
+        .unwrap();
+        let intent =
+            match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+                super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+                other => panic!("{other:?}"),
+            };
+        let mut guard = c.lock().unwrap();
+        let before = super::local_authority::load_staged_descriptors(&guard).unwrap();
+        let staging = crate::sync_staging::get_staging(&guard).unwrap();
+        let generation = crate::db_atomic_helpers::get_records_generation(&guard).unwrap();
+        if invalid_intent {
+            guard
+                .execute(
+                    "UPDATE s2_lite_prepared_intent_v1 SET exact_bytes=?1 WHERE remote_path=?2",
+                    rusqlite::params![b"bad".as_slice(), intent.remote_path],
+                )
+                .unwrap();
+        } else {
+            guard
+                .execute(
+                    "UPDATE s2_lite_outbound_batch_v1 SET state_json=?1",
+                    [b"{}".as_slice()],
+                )
+                .unwrap();
+        }
+        assert!(
+            crate::collections::delete(&mut guard, &created.id, created.rev, "device").is_err()
+        );
+        assert_eq!(
+            super::local_authority::load_staged_descriptors(&guard).unwrap(),
+            before
+        );
+        assert_eq!(crate::sync_staging::get_staging(&guard).unwrap(), staging);
+        assert_eq!(
+            crate::db_atomic_helpers::get_records_generation(&guard).unwrap(),
+            generation
+        );
+        assert!(crate::collections::all(&guard)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == created.id));
+    }
+}

@@ -1527,6 +1527,74 @@ fn load_outbound_batch_from_for_admission_v1(
     .transpose()
 }
 
+/// Borrow the business transaction: publication authority exists as soon as
+/// sequence, batch and exact intent commit together, before any network attempt.
+pub(crate) fn descriptor_has_frozen_publication_v1(
+    conn: &Connection,
+    descriptor: &super::local_authority::CapturedStagingDescriptorV1,
+) -> Result<Option<String>> {
+    let key = super::local_authority::descriptor_entity_key(descriptor)?;
+    let mut statement =
+        database(conn.prepare("SELECT root_id FROM s2_lite_outbound_batch_v1 ORDER BY root_id"))?;
+    let rows = database(statement.query_map([], |row| row.get::<_, String>(0)))?;
+    let mut captured = None;
+    for root in rows {
+        let root = database(root)?;
+        let batch =
+            load_outbound_batch_from_for_admission_v1(conn, &root)?.ok_or(STORE_CORRUPTION)?;
+        let intent = load_commit_intent_from(conn, &root, &batch.prepared_intent_path)?
+            .ok_or(STORE_CORRUPTION)?;
+        if intent.intent_fingerprint != batch.prepared_intent_fingerprint
+            || intent.commit_ref != batch.commit_ref
+        {
+            return Err(STORE_CORRUPTION);
+        }
+        let frozen = decode_frozen_wire_commit_v1(&intent.exact_bytes)?;
+        if frozen.previous_writer_commit != batch.previous_writer_ref
+            || frozen.basis_clock != batch.basis_clock
+            || frozen.mutations.len() != batch.mutations.len()
+            || batch.mutations.iter().any(|item| {
+                !frozen.mutations.iter().any(|wire| {
+                    wire.local_mutation_id == item.local_mutation_id
+                        && wire.entity_type == item.entity_kind
+                        && wire.entity_key == item.entity_key
+                })
+            })
+        {
+            return Err(STORE_CORRUPTION);
+        }
+        for mutation in &batch.mutations {
+            if mutation.entity_kind == descriptor.entity_kind
+                && mutation.entity_id == descriptor.entity_id
+            {
+                if mutation.entity_key != key
+                    || (mutation.local_mutation_id == descriptor.local_mutation_id
+                        && mutation.captured_last_generation > descriptor.last_generation)
+                {
+                    return Err(STORE_CORRUPTION);
+                }
+                // A fresh basis already incorporating a completed batch is
+                // ordinary mutable work again. An old successor basis cannot
+                // forget the earlier publication merely by changing its UUID.
+                let incorporated = descriptor.verified_basis.as_ref().is_some_and(|basis| {
+                    basis.physical_root_id == root
+                        && basis.basis_clock.iter().any(|item| {
+                            item.writer_id == batch.writer_id
+                                && item
+                                    .writer_seq
+                                    .parse::<u64>()
+                                    .is_ok_and(|seq| seq >= batch.writer_sequence)
+                        })
+                });
+                if !batch.bookkeeping_completed || !incorporated {
+                    captured = Some(mutation.local_mutation_id.clone());
+                }
+            }
+        }
+    }
+    Ok(captured)
+}
+
 fn load_root_safety_from(
     conn: &Connection,
     root_id: &str,

@@ -473,6 +473,11 @@ pub(crate) fn capture_delete(
     let previous = load_staged_descriptors(conn)?
         .into_iter()
         .find(|row| row.entity_kind == kind && row.entity_id == id);
+    let frozen = previous
+        .as_ref()
+        .map(|row| super::durable_persistence::descriptor_has_frozen_publication_v1(conn, row))
+        .transpose()?
+        .flatten();
     if staged.is_some_and(|entry| entry.base.is_none() && entry.local.is_some())
         && previous.as_ref().is_some_and(|row| {
             row.base.is_none()
@@ -482,18 +487,34 @@ pub(crate) fn capture_delete(
                     StagingAnchorStateV1::Unavailable | StagingAnchorStateV1::Absent
                 )
         })
+        && frozen.is_none()
     {
         return remove_staged_descriptor(conn, kind, &id);
     }
     let base = staged.and_then(|entry| entry.base.clone()).or(Some(before));
     initialize_writer(conn)?;
     let descriptor = if let Some(previous) = previous {
+        let separates_frozen_identity =
+            frozen.as_deref() == Some(previous.local_mutation_id.as_str());
+        // The prior UUID now belongs to immutable publication. This delete is
+        // new local work, not a revision of those bytes. Keep the captured basis
+        // intact: a later observation may block it, never retrospectively rebase it.
         CapturedStagingDescriptorV1 {
             state_version: 2,
             operation: "delete".into(),
             local: None,
             delete_descriptor: Some(delete),
             last_generation: generation,
+            local_mutation_id: if separates_frozen_identity {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                previous.local_mutation_id.clone()
+            },
+            first_generation: if separates_frozen_identity {
+                generation
+            } else {
+                previous.first_generation
+            },
             ..previous
         }
     } else {
