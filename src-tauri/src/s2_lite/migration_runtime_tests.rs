@@ -548,6 +548,7 @@ fn nullable_fingerprint_mismatch_is_durable_and_blocks_all_writes() {
     let cloud = Arc::new(Mutex::new(Cloud::default()));
     finish(&c, &id, &cloud);
     let (other, other_id) = database(None);
+    install_captured_local_basis(&other, &other_id);
     let mut remote = remote(&cloud);
     assert!(
         execute_migration_step_with_adapter_v1(&other, &mut remote, &other_id, 1, NOW).is_err()
@@ -906,13 +907,14 @@ fn all_four_entity_classes_survive_stage_b_and_apply_to_empty_business_tables() 
     let cloud = Arc::new(Mutex::new(Cloud::default()));
     let state = finish(&c, &id, &cloud);
     assert!(!state.stage_b.is_empty());
-    let (other, _) = database(None);
+    let (other, other_id) = database(None);
+    super::target_root_binding::resolve_active_target_root_binding_v1(&other, &other_id, 1)
+        .unwrap();
     let root = root_id();
     let mut read_remote = remote(&cloud);
     read_remote.discover(&other).unwrap();
     let mut store = SqliteS2LiteStoreV1::open(&other, &root).unwrap();
     store.refresh_from_read_authority_v1().unwrap();
-    store.initialize_desktop_writer_v1().unwrap();
     let projection = store.load_materialized_projection().unwrap().unwrap();
     store
         .update_materialized_projection_generation(projection.projection_generation)
@@ -922,6 +924,7 @@ fn all_four_entity_classes_survive_stage_b_and_apply_to_empty_business_tables() 
         projection.projection_generation,
     )
     .unwrap();
+    assert!(store.load_desktop_root_state().unwrap().is_none());
     let guard = other.lock().unwrap();
     assert_eq!(crate::db::get_all_records(&guard).unwrap().len(), 1);
     assert_eq!(crate::collections::all(&guard).unwrap().len(), 1);
@@ -946,13 +949,14 @@ fn projection_business_failure_rolls_back_all_rows_and_applied_marker() {
     seed_all(&c);
     let cloud = Arc::new(Mutex::new(Cloud::default()));
     finish(&c, &id, &cloud);
-    let (other, _) = database(None);
+    let (other, other_id) = database(None);
+    super::target_root_binding::resolve_active_target_root_binding_v1(&other, &other_id, 1)
+        .unwrap();
     let root = root_id();
     let mut read_remote = remote(&cloud);
     read_remote.discover(&other).unwrap();
     let mut store = SqliteS2LiteStoreV1::open(&other, &root).unwrap();
     store.refresh_from_read_authority_v1().unwrap();
-    store.initialize_desktop_writer_v1().unwrap();
     let projection = store.load_materialized_projection().unwrap().unwrap();
     store
         .update_materialized_projection_generation(projection.projection_generation)
@@ -969,6 +973,7 @@ fn projection_business_failure_rolls_back_all_rows_and_applied_marker() {
         .unwrap()
         .business_projection_applied_generation
         .is_none());
+    assert!(store.load_desktop_root_state().unwrap().is_none());
     let guard = other.lock().unwrap();
     assert!(crate::db::get_all_records(&guard).unwrap().is_empty());
     assert!(crate::collections::all(&guard).unwrap().is_empty());
@@ -1121,6 +1126,81 @@ fn adopted_remote_activation_compatibility_is_not_rebuilt_after_local_edits() {
     assert!(cloud.lock().unwrap().puts.is_empty());
     drop(c);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn fresh_remote_activation_adoption_continues_to_business_without_writer() {
+    let (publisher, publisher_id) = database(None);
+    seed_all(&publisher);
+    {
+        let g = publisher.lock().unwrap();
+        let mut record = crate::db::get_all_records(&g).unwrap()[0].clone();
+        record.id = "r2".into();
+        crate::db::insert_record(&g, record).unwrap();
+        g.execute("INSERT INTO collections SELECT 'c2','Two','two',description,sourceKind,sourceKey,collectionKind,orderMode,createdAt,updatedAt,rev,revActor FROM collections WHERE id='c1'", []).unwrap();
+        let member = crate::collections::member_id("c2", "r2");
+        g.execute("INSERT INTO collection_members SELECT ?1,'c2','r2',position,sourceKind,createdAt,updatedAt,rev,revActor FROM collection_members", [member]).unwrap();
+        let episode = super::canonical::sha256_hex(b"episode-completion:v1\0r2\x001");
+        g.execute("INSERT INTO episode_completions SELECT ?1,'r2',episodeNumber,completedAt,createdAt,updatedAt,rev,revActor FROM episode_completions", [episode]).unwrap();
+    }
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&publisher, &publisher_id, &cloud);
+    let (receiver, receiver_id) = database(None);
+    let result = super::ordinary_runtime::run_ordinary_cycle_v1(
+        &receiver,
+        &mut remote(&cloud),
+        &receiver_id,
+        1,
+        NOW,
+    );
+    assert_eq!(
+        result.unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&receiver, &root).unwrap();
+    let projection = store.load_materialized_projection().unwrap().unwrap();
+    assert_eq!(projection.state.entities.len(), 8);
+    assert_eq!(
+        projection.business_projection_applied_generation,
+        Some(projection.projection_generation)
+    );
+    let guard = receiver.lock().unwrap();
+    for table in [
+        "records",
+        "collections",
+        "collection_members",
+        "episode_completions",
+    ] {
+        assert_eq!(
+            guard
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+    assert_eq!(
+        guard
+            .query_row("SELECT name FROM collections WHERE id='c1'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+        "One"
+    );
+    for table in [
+        "s2_lite_desktop_root_state_v1",
+        "s2_lite_prepared_intent_v1",
+        "s2_lite_local_writer_v1",
+    ] {
+        assert_eq!(
+            guard
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 }
 
 #[test]
@@ -3357,4 +3437,344 @@ fn i65_post_freeze_delete_invalid_publication_authority_rolls_back_business_capt
             .iter()
             .any(|row| row.id == created.id));
     }
+}
+
+// Installs the pre-repair, already-established local representation. In
+// particular its null is authority, not a fresh client. This also exercises
+// backward-compatible decoding without the new remote provenance field.
+fn install_captured_local_basis(c: &Mutex<Connection>, id: &str) -> Option<String> {
+    super::target_root_binding::resolve_active_target_root_binding_v1(c, id, 1).unwrap();
+    let root = root_id();
+    SqliteS2LiteStoreV1::open(c, &root)
+        .unwrap()
+        .load_root_safety(&root)
+        .unwrap();
+    let guard = c.lock().unwrap();
+    let (generation, snapshot) =
+        super::migration_admission::capture_production_legacy_snapshot_v1(&guard).unwrap();
+    let fingerprint =
+        (!snapshot.canonical_entities.is_empty()).then(|| snapshot.legacy_fingerprint.clone());
+    let bytes = serde_json::to_vec(&json!({"persistenceVersion":1,"payload":{
+        "stateVersion":1,"physicalRootId":root,"capturedRecordsGeneration":generation,
+        "legacyFingerprint":fingerprint,"hasLegacyBaseline":false,"snapshot":snapshot
+    }}))
+    .unwrap();
+    guard
+        .execute(
+            "INSERT INTO s2_lite_remote_activation_adoption_v1(root_id,state_json) VALUES(?1,?2)",
+            rusqlite::params![root, bytes],
+        )
+        .unwrap();
+    fingerprint
+}
+fn retained_adoption(c: &Mutex<Connection>) -> Value {
+    let bytes: Vec<u8> = c
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT state_json FROM s2_lite_remote_activation_adoption_v1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_slice::<Value>(&bytes).unwrap()["payload"].clone()
+}
+#[test]
+fn activation_adoption_established_nullable_matrix() {
+    for (live_local, remote_kind, compatible) in [
+        (false, "null", true),
+        (false, "different", false),
+        (true, "same", true),
+        (true, "different", false),
+        (true, "null", false),
+    ] {
+        let path = temp_path();
+        let (c, id) = database(Some(&path));
+        if live_local {
+            seed(&c);
+        }
+        let local = install_captured_local_basis(&c, &id);
+        let before = retained_adoption(&c);
+        let remote_fp = match remote_kind {
+            "null" => Value::Null,
+            "same" => json!(local),
+            _ => json!("f".repeat(64)),
+        };
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        put_activation(&cloud, remote_fp, 1, json!([]));
+        let result =
+            super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW);
+        if compatible {
+            assert_eq!(
+                result.unwrap(),
+                super::ordinary_runtime::OrdinaryCycleResultV1::Success
+            );
+        } else {
+            assert_eq!(
+                result.unwrap(),
+                super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+            );
+        }
+        assert_eq!(before, retained_adoption(&c));
+        drop(c);
+        let c = reopen(&path);
+        let safety = SqliteS2LiteStoreV1::open(&c, &root_id())
+            .unwrap()
+            .load_root_safety(&root_id())
+            .unwrap();
+        assert_eq!(
+            safety
+                .root_fatal_signals
+                .iter()
+                .any(|f| f.code == "SYNC_ROOT_FROZEN_LEGACY_CHANGE"),
+            !compatible
+        );
+        assert_eq!(before, retained_adoption(&c));
+        assert!(cloud.lock().unwrap().puts.is_empty());
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+#[test]
+fn activation_adoption_first_nullable_basis_restart_before_business() {
+    for fp in [Value::Null, json!("a".repeat(64))] {
+        let path = temp_path();
+        let (c, id) = database(Some(&path));
+        super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1).unwrap();
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        put_activation(&cloud, fp.clone(), 1, json!([]));
+        put_activation(&cloud, fp.clone(), 2, json!([]));
+        let mut r = remote(&cloud);
+        r.discover(&c).unwrap();
+        let root = root_id();
+        let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+        store.refresh_from_read_authority_v1().unwrap();
+        assert!(store
+            .load_materialized_projection()
+            .unwrap()
+            .unwrap()
+            .business_projection_applied_generation
+            .is_none());
+        assert!(store.load_desktop_root_state().unwrap().is_none());
+        let basis = retained_adoption(&c);
+        assert_eq!(basis["legacyFingerprint"], fp);
+        assert_eq!(basis["adoptedRemoteBasis"], true);
+        drop(c);
+        let c = reopen(&path);
+        assert_eq!(retained_adoption(&c), basis);
+        assert_eq!(
+            super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut r, &id, 1, NOW).unwrap(),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        );
+        let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+        let p = store.load_materialized_projection().unwrap().unwrap();
+        assert_eq!(
+            p.business_projection_applied_generation,
+            Some(p.projection_generation)
+        );
+        assert!(store.load_desktop_root_state().unwrap().is_none());
+        let called = std::cell::Cell::new(false);
+        assert!(run_legacy_put_with_adapter_v1(&c, &mut r, &id, 1, || {
+            called.set(true);
+            Ok(())
+        })
+        .is_err());
+        assert!(!called.get());
+        assert!(
+            execute_migration_step_with_adapter_v1(&c, &mut r, &id, 1, NOW)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(retained_adoption(&c), basis);
+        assert!(cloud.lock().unwrap().puts.is_empty());
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+#[test]
+fn activation_adoption_transaction_failure_has_no_half_authority() {
+    for (table, event) in [
+        ("s2_lite_remote_activation_adoption_v1", "INSERT"),
+        ("s2_lite_root_authority_v1", "UPDATE"),
+        ("s2_lite_materialized_projection_v1", "INSERT"),
+    ] {
+        let path = temp_path();
+        let (c, id) = database(Some(&path));
+        let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+            .unwrap()
+            .binding;
+        let cloud = Arc::new(Mutex::new(Cloud::default()));
+        put_activation(&cloud, json!("b".repeat(64)), 1, json!([]));
+        let mut r = remote(&cloud);
+        r.discover(&c).unwrap();
+        c.lock().unwrap().execute_batch(&format!("CREATE TRIGGER adoption_fault BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'adoption fault'); END;")).unwrap();
+        assert!(SqliteS2LiteStoreV1::open(&c, &binding.physical_root_id)
+            .unwrap()
+            .refresh_from_read_authority_v1()
+            .is_err());
+        drop(c);
+        let c = reopen(&path);
+        {
+            let g = c.lock().unwrap();
+            let bytes: Vec<u8> = g
+                .query_row(
+                    "SELECT state_json FROM s2_lite_root_authority_v1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let state: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(state["payload"]["cutoverState"]["remoteS2Activated"], false);
+            assert_eq!(
+                g.query_row(
+                    "SELECT COUNT(*) FROM s2_lite_remote_activation_adoption_v1",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            g.execute_batch("DROP TRIGGER adoption_fault").unwrap();
+        }
+        assert_eq!(
+            super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut r, &id, 1, NOW).unwrap(),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        );
+        assert_eq!(retained_adoption(&c)["legacyFingerprint"], "b".repeat(64));
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+#[test]
+fn activation_adoption_disagreeing_remote_evidence_never_captures_basis() {
+    let (c, id) = database(None);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    put_activation(&cloud, Value::Null, 1, json!([]));
+    put_activation(&cloud, json!("a".repeat(64)), 2, json!([]));
+    assert_eq!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    let g = c.lock().unwrap();
+    assert_eq!(
+        g.query_row(
+            "SELECT COUNT(*) FROM s2_lite_remote_activation_adoption_v1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(cloud.lock().unwrap().puts.is_empty());
+}
+
+#[test]
+fn activation_adoption_later_local_work_captures_live_and_allocates_writer_once() {
+    let (publisher, id) = database(None);
+    seed(&publisher);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&publisher, &id, &cloud);
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    assert_eq!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let basis = retained_adoption(&c);
+    drop(c);
+    let c = reopen(&path);
+    {
+        let mut g = c.lock().unwrap();
+        crate::collections::update(
+            &mut g,
+            "c1",
+            serde_json::from_value(json!({"name":"Local edit","expectedRev":1})).unwrap(),
+            "android",
+        )
+        .unwrap();
+        let captured = super::local_authority::load_staged_descriptors(&g).unwrap();
+        assert!(
+            matches!(&captured[0].causal_anchor,super::local_authority::StagingAnchorStateV1::Live{value} if value["name"]=="One")
+        );
+    }
+    assert_eq!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(retained_adoption(&c), basis);
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    let writer = store.load_desktop_root_state().unwrap().unwrap();
+    assert_eq!(writer.next_writer_sequence, 2);
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        SqliteS2LiteStoreV1::open(&c, &root)
+            .unwrap()
+            .load_desktop_root_state()
+            .unwrap()
+            .unwrap(),
+        writer
+    );
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn activation_adoption_corrupt_basis_is_not_reinterpreted_after_restart() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    put_activation(&cloud, Value::Null, 1, json!([]));
+    super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW).unwrap();
+    c.lock()
+        .unwrap()
+        .execute(
+            "UPDATE s2_lite_remote_activation_adoption_v1 SET state_json=?1",
+            [b"{}".as_slice()],
+        )
+        .unwrap();
+    drop(c);
+    let c = reopen(&path);
+    assert!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .is_err()
+    );
+    assert!(run_legacy_put_with_adapter_v1(&c, &mut remote(&cloud), &id, 1, || Ok(())).is_err());
+    assert!(cloud.lock().unwrap().puts.is_empty());
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn activation_adoption_late_disagreeing_evidence_freezes_without_replacing_basis() {
+    let path = temp_path();
+    let (c, id) = database(Some(&path));
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    put_activation(&cloud, json!("a".repeat(64)), 1, json!([]));
+    super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW).unwrap();
+    let basis = retained_adoption(&c);
+    drop(c);
+    let c = reopen(&path);
+    put_activation(&cloud, json!("b".repeat(64)), 2, json!([]));
+    assert_eq!(
+        super::ordinary_runtime::run_ordinary_cycle_v1(&c, &mut remote(&cloud), &id, 1, NOW)
+            .unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+    );
+    assert_eq!(retained_adoption(&c), basis);
+    drop(c);
+    let c = reopen(&path);
+    let root = root_id();
+    let safety = SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_root_safety(&root)
+        .unwrap();
+    assert!(!safety.root_fatal_signals.is_empty());
+    assert_eq!(retained_adoption(&c), basis);
+    assert!(cloud.lock().unwrap().puts.is_empty());
+    drop(c);
+    std::fs::remove_file(path).unwrap();
 }

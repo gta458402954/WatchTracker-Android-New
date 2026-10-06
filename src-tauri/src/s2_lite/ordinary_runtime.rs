@@ -125,14 +125,24 @@ pub fn run_ordinary_cycle_v1<T: WebDavTransportV1>(
     if migration.is_none() {
         store.admit_remote_activation_projection_v1(&binding)?;
     }
-    if store.load_desktop_root_state()?.is_none() {
-        store.initialize_desktop_writer_v1()?;
-    }
-    if !store.verify_ordinary_writer_ownership_v1()? {
+    if store.load_desktop_root_state()?.is_some() && !store.verify_ordinary_writer_ownership_v1()? {
         return Ok(OrdinaryCycleResultV1::ReadOnlyFrozen);
     }
     if let Some(blocked) = refresh_projection(&mut store)? {
         return Ok(blocked);
+    }
+    if store.load_desktop_root_state()?.is_none() {
+        let guard = conn
+            .lock()
+            .map_err(|_| ProtocolError("S2_RUNTIME_FAILURE"))?;
+        if super::local_authority::load_staged_descriptors(&guard)?.is_empty() {
+            return Ok(OrdinaryCycleResultV1::Success);
+        }
+        drop(guard);
+        store.initialize_desktop_writer_v1()?;
+        if !store.verify_ordinary_writer_ownership_v1()? {
+            return Ok(OrdinaryCycleResultV1::ReadOnlyFrozen);
+        }
     }
     let batch = match store.load_unfinished_outbound_batch()? {
         Some(batch) => batch,

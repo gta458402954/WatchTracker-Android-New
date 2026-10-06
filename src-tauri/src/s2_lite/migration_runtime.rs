@@ -115,7 +115,6 @@ pub fn execute_migration_step_with_adapter_v1<T: WebDavTransportV1>(
         // A root already activated elsewhere has no local bootstrap to publish.
         // Freeze compatibility evidence before applying any mutable business row.
         store.admit_remote_activation_projection_v1(&binding)?;
-        store.initialize_desktop_writer_v1()?;
         apply_projection(&mut store)?;
         return Ok(None); // Already activated elsewhere; no local migration identity.
     }

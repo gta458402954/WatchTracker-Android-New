@@ -397,6 +397,13 @@ struct RemoteActivationAdoptionV1 {
     legacy_fingerprint: Option<String>,
     has_legacy_baseline: bool,
     snapshot: CapturedLegacySnapshotV1,
+    /// Old rows are local captures. Row absence, never a null fingerprint,
+    /// denotes an unestablished basis.
+    #[serde(default, skip_serializing_if = "is_false")]
+    adopted_remote_basis: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 fn validate_remote_activation_adoption_v1(
     state: &RemoteActivationAdoptionV1,
@@ -423,10 +430,80 @@ fn validate_remote_activation_adoption_v1(
     } else {
         None
     };
-    if fingerprint != state.snapshot.legacy_fingerprint || state.legacy_fingerprint != expected {
+    if fingerprint != state.snapshot.legacy_fingerprint
+        || if state.adopted_remote_basis {
+            state.has_legacy_baseline
+                || !state.snapshot.canonical_entities.is_empty()
+                || state.legacy_fingerprint.as_ref().is_some_and(|fp| {
+                    fp.len() != 64
+                        || !fp
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+        } else {
+            state.legacy_fingerprint != expected
+        }
+    {
         return Err(STORE_CORRUPTION);
     }
     Ok(())
+}
+
+/// Called only with validated cutover evidence, under the same write
+/// transaction as the root latch. A retained row is immutable nullable authority.
+fn establish_remote_activation_basis_v1(
+    conn: &Connection,
+    root: &str,
+    remote_fingerprint: &Option<String>,
+) -> Result<bool> {
+    let bytes = database(
+        conn.query_row(
+            "SELECT state_json FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1",
+            [root],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional(),
+    )?;
+    let adoption = if let Some(bytes) = bytes {
+        let state: RemoteActivationAdoptionV1 = decode(&bytes)?;
+        validate_remote_activation_adoption_v1(&state, root)?;
+        state
+    } else {
+        let (target, epoch) = crate::sync_targets::active_target(conn)
+            .map_err(|_| STORE_FAILURE)?
+            .ok_or(ROOT_MISMATCH)?;
+        let binding = load_target_root_binding_from(conn, &target, epoch)?.ok_or(ROOT_MISMATCH)?;
+        validate_active_migration_binding(conn, &binding, root)?;
+        let (generation, snapshot) =
+            super::migration_admission::capture_production_legacy_snapshot_v1(conn)?;
+        let has_legacy_baseline = crate::db_atomic_helpers::get_setting_tx(
+            conn,
+            &crate::sync_targets::scoped_key(&target, "baseline_v3"),
+        )
+        .map_err(|_| STORE_FAILURE)?
+        .is_some();
+        let adopted_remote_basis = !has_legacy_baseline && snapshot.canonical_entities.is_empty();
+        let state = RemoteActivationAdoptionV1 {
+            state_version: 1,
+            physical_root_id: root.into(),
+            captured_records_generation: generation,
+            legacy_fingerprint: if adopted_remote_basis {
+                remote_fingerprint.clone()
+            } else {
+                Some(snapshot.legacy_fingerprint.clone())
+            },
+            has_legacy_baseline,
+            snapshot,
+            adopted_remote_basis,
+        };
+        validate_remote_activation_adoption_v1(&state, root)?;
+        database(conn.execute(
+            "INSERT INTO s2_lite_remote_activation_adoption_v1(root_id,state_json) VALUES(?1,?2)",
+            params![root, encode(&state)?],
+        ))?;
+        state
+    };
+    Ok(adoption.legacy_fingerprint == *remote_fingerprint)
 }
 
 #[derive(Serialize)]
@@ -1447,9 +1524,31 @@ pub(crate) fn admit_applied_projection_for_staging_anchor_v1(
         .optional(),
     )?;
     let Some(root_bytes) = root_bytes else {
-        return Ok(StagingAnchorProjectionAdmissionV1::Unavailable(
-            "desktop_root_state_missing",
-        ));
+        let adoption_bytes = database(
+            conn.query_row(
+                "SELECT state_json FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1",
+                [root_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional(),
+        )?;
+        let Some(bytes) = adoption_bytes else {
+            return Ok(StagingAnchorProjectionAdmissionV1::Unavailable(
+                "desktop_root_state_missing",
+            ));
+        };
+        let adoption: RemoteActivationAdoptionV1 = decode(&bytes)?;
+        validate_remote_activation_adoption_v1(&adoption, root_id)?;
+        if !safety.cutover_state.remote_s2_activated
+            || !matches!(&safety.cutover_state.fingerprint_consistency,
+                ActivationFingerprintConsistencyV1::Consistent { legacy_fingerprint }
+                    if *legacy_fingerprint == adoption.legacy_fingerprint)
+        {
+            return Err(STORE_CORRUPTION);
+        }
+        return Ok(StagingAnchorProjectionAdmissionV1::Ready(Box::new(
+            projection,
+        )));
     };
     let root_state: DesktopRootStateV1 = decode(&root_bytes)?;
     validate_desktop_root_state(&root_state, root_id)?;
@@ -1510,6 +1609,14 @@ fn reconcile_read_root_safety_v1(conn: &Connection, root_id: &str) -> Result<()>
             && !matches!(&next_cutover.fingerprint_consistency,ActivationFingerprintConsistencyV1::Consistent{legacy_fingerprint} if *legacy_fingerprint==binding.legacy_fingerprint)
         {
             codes.push("SYNC_ROOT_FROZEN_LEGACY_CHANGE".into());
+        }
+    } else if next_cutover.remote_s2_activated && codes.is_empty() {
+        if let ActivationFingerprintConsistencyV1::Consistent { legacy_fingerprint } =
+            &next_cutover.fingerprint_consistency
+        {
+            if !establish_remote_activation_basis_v1(conn, root_id, legacy_fingerprint)? {
+                codes.push("SYNC_ROOT_FROZEN_LEGACY_CHANGE".into());
+            }
         }
     }
     codes.sort();
@@ -2071,6 +2178,20 @@ fn initialize_desktop_writer_from(conn: &Connection, root_id: &str) -> Result<De
                     1,
                 ),
             };
+            let projection = database(
+                conn.query_row(
+                    "SELECT state_json FROM s2_lite_materialized_projection_v1 WHERE root_id=?1",
+                    [root_id],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional(),
+            )?
+            .map(|bytes| {
+                let p: DurableMaterializedProjectionV1 = decode(&bytes)?;
+                validate_materialized_projection(&p, root_id)?;
+                Ok(p)
+            })
+            .transpose()?;
             let state = DesktopRootStateV1 {
                 state_version: 1,
                 physical_root_id: root_id.to_string(),
@@ -2078,8 +2199,12 @@ fn initialize_desktop_writer_from(conn: &Connection, root_id: &str) -> Result<De
                 next_writer_sequence,
                 writer_head,
                 lifecycle_generation: 0,
-                materialized_projection_generation: None,
-                business_applied_projection_generation: None,
+                materialized_projection_generation: projection
+                    .as_ref()
+                    .map(|p| p.projection_generation),
+                business_applied_projection_generation: projection
+                    .as_ref()
+                    .and_then(|p| p.business_projection_applied_generation),
             };
             validate_desktop_root_state(&state, root_id)?;
             database(conn.execute(
@@ -2402,57 +2527,33 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         if !safety.root_fatal_signals.is_empty() || !safety.cutover_state.remote_s2_activated {
             return Err(ROOT_MISMATCH);
         }
-        let retained = database(
+        let bytes = database(
             tx.query_row(
                 "SELECT state_json FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1",
                 [self.root_id],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional(),
-        )?;
-        let adoption = if let Some(bytes) = retained {
-            let adoption: RemoteActivationAdoptionV1 = decode(&bytes)?;
-            validate_remote_activation_adoption_v1(&adoption, self.root_id)?;
-            adoption
-        } else {
-            let (generation, snapshot) =
-                super::migration_admission::capture_production_legacy_snapshot_v1(&tx)?;
-            let has_legacy_baseline = crate::db_atomic_helpers::get_setting_tx(
-                &tx,
-                &crate::sync_targets::scoped_key(&binding.target_id, "baseline_v3"),
-            )
-            .map_err(|_| STORE_FAILURE)?
-            .is_some();
-            RemoteActivationAdoptionV1 {
-                state_version: 1,
-                physical_root_id: self.root_id.into(),
-                captured_records_generation: generation,
-                legacy_fingerprint: if has_legacy_baseline
-                    || !snapshot.canonical_entities.is_empty()
-                {
-                    Some(snapshot.legacy_fingerprint.clone())
-                } else {
-                    None
-                },
-                has_legacy_baseline,
-                snapshot,
-            }
-        };
+        )?
+        .ok_or(STORE_CORRUPTION)?;
+        let adoption: RemoteActivationAdoptionV1 = decode(&bytes)?;
         validate_remote_activation_adoption_v1(&adoption, self.root_id)?;
-        if !matches!(&safety.cutover_state.fingerprint_consistency,ActivationFingerprintConsistencyV1::Consistent{legacy_fingerprint} if *legacy_fingerprint==adoption.legacy_fingerprint)
-        {
+        if !matches!(
+            &safety.cutover_state.fingerprint_consistency,
+            ActivationFingerprintConsistencyV1::Consistent { legacy_fingerprint }
+                if *legacy_fingerprint == adoption.legacy_fingerprint
+        ) {
             safety.generation = safety.generation.checked_add(1).ok_or(STORE_CORRUPTION)?;
             safety.root_fatal_signals.push(MigrationRootFatalV1 {
                 code: "SYNC_ROOT_FROZEN_LEGACY_CHANGE".into(),
             });
             safety
                 .root_fatal_signals
-                .sort_by(|left, right| left.code.cmp(&right.code));
+                .sort_by(|a, b| a.code.cmp(&b.code));
             save_root_safety(&tx, &safety)?;
             database(tx.commit())?;
             return Err(ProtocolError("SYNC_ROOT_FROZEN_LEGACY_CHANGE"));
         }
-        database(tx.execute("INSERT INTO s2_lite_remote_activation_adoption_v1(root_id,state_json) VALUES(?1,?2) ON CONFLICT(root_id) DO NOTHING",params![self.root_id,encode(&adoption)?]))?;
         database(tx.commit())?;
         Ok(())
     }
@@ -3485,11 +3586,19 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         }
         validate_materialized_projection(&projection, self.root_id)?;
 
-        let root_bytes = database(transaction.query_row(
-            "SELECT state_json FROM s2_lite_desktop_root_state_v1 WHERE root_id=?1",
-            [self.root_id],
-            |row| row.get::<_, Vec<u8>>(0),
-        ))?;
+        let root_bytes = database(
+            transaction
+                .query_row(
+                    "SELECT state_json FROM s2_lite_desktop_root_state_v1 WHERE root_id=?1",
+                    [self.root_id],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional(),
+        )?;
+        let Some(root_bytes) = root_bytes else {
+            database(transaction.commit())?;
+            return Ok(());
+        };
         let mut root_state: DesktopRootStateV1 = decode(&root_bytes)?;
         validate_desktop_root_state(&root_state, self.root_id)?;
         root_state.materialized_projection_generation = Some(projection_generation);
@@ -3553,30 +3662,54 @@ impl<'a> SqliteS2LiteStoreV1<'a> {
         ) {
             return Err(STORE_CORRUPTION);
         }
-        let root_bytes = database(transaction.query_row(
-            "SELECT state_json FROM s2_lite_desktop_root_state_v1 WHERE root_id=?1",
-            [self.root_id],
-            |row| row.get::<_, Vec<u8>>(0),
-        ))?;
-        let mut root_state: DesktopRootStateV1 = decode(&root_bytes)?;
-        validate_desktop_root_state(&root_state, self.root_id)?;
-        if root_state.materialized_projection_generation != Some(expected_projection_generation) {
-            return Err(STORE_CORRUPTION);
+        let root_bytes = database(
+            transaction
+                .query_row(
+                    "SELECT state_json FROM s2_lite_desktop_root_state_v1 WHERE root_id=?1",
+                    [self.root_id],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional(),
+        )?;
+        let mut root_state = root_bytes
+            .as_ref()
+            .map(|bytes| {
+                let state: DesktopRootStateV1 = decode(bytes)?;
+                validate_desktop_root_state(&state, self.root_id)?;
+                if state.materialized_projection_generation != Some(expected_projection_generation)
+                {
+                    return Err(STORE_CORRUPTION);
+                }
+                Ok(state)
+            })
+            .transpose()?;
+        if root_state.is_none() {
+            let bytes = database(transaction.query_row(
+                "SELECT state_json FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1",
+                [self.root_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            ))?;
+            validate_remote_activation_adoption_v1(&decode(&bytes)?, self.root_id)?;
+            if !safety.cutover_state.remote_s2_activated {
+                return Err(ROOT_MISMATCH);
+            }
         }
-        if root_state.business_applied_projection_generation == Some(expected_projection_generation)
+        if projection.business_projection_applied_generation == Some(expected_projection_generation)
         {
             database(transaction.commit())?;
             return Ok((BusinessProjectionTransactionResultV1::AlreadyApplied, None));
         }
         let output = apply(&transaction, &projection)?;
-        root_state.business_applied_projection_generation = Some(expected_projection_generation);
-        validate_desktop_root_state(&root_state, self.root_id)?;
+        if let Some(state) = &mut root_state {
+            state.business_applied_projection_generation = Some(expected_projection_generation);
+            validate_desktop_root_state(state, self.root_id)?;
+            database(transaction.execute(
+                "UPDATE s2_lite_desktop_root_state_v1 SET state_json=?2 WHERE root_id=?1",
+                params![self.root_id, encode(state)?],
+            ))?;
+        }
         projection.business_projection_applied_generation = Some(expected_projection_generation);
         validate_materialized_projection(&projection, self.root_id)?;
-        database(transaction.execute(
-            "UPDATE s2_lite_desktop_root_state_v1 SET state_json=?2 WHERE root_id=?1",
-            params![self.root_id, encode(&root_state)?],
-        ))?;
         database(transaction.execute(
             "UPDATE s2_lite_materialized_projection_v1 SET state_json=?2 WHERE root_id=?1 AND projection_generation=?3",
             params![self.root_id, encode(&projection)?, expected_projection_generation.to_string()],
