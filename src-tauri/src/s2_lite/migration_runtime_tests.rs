@@ -3778,3 +3778,512 @@ fn activation_adoption_late_disagreeing_evidence_freezes_without_replacing_basis
     drop(c);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn read_only_mobile_completion_records_success_without_writer() {
+    let (publisher, publisher_id) = database(None);
+    seed(&publisher);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&publisher, &publisher_id, &cloud);
+    let (c, id) = database(None);
+    crate::sync_state::runtime_state(&c.lock().unwrap()).unwrap();
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let g = c.lock().unwrap();
+    let runtime = crate::sync_state::runtime_state(&g).unwrap();
+    assert!(runtime.scheduler.last_success_at.is_some());
+    for table in [
+        "s2_lite_local_writer_v1",
+        "s2_lite_desktop_root_state_v1",
+        "s2_lite_prepared_intent_v1",
+        "s2_lite_migration_v1",
+    ] {
+        assert_eq!(
+            g.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+fn read_only_mobile_fixture(
+    path: Option<&std::path::Path>,
+) -> (Mutex<Connection>, String, Arc<Mutex<Cloud>>) {
+    let (publisher, id) = database(None);
+    seed(&publisher);
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    finish(&publisher, &id, &cloud);
+    let (c, id) = database(path);
+    crate::sync_state::runtime_state(&c.lock().unwrap()).unwrap();
+    assert_eq!(
+        mobile(
+            &c,
+            &id,
+            &cloud,
+            &super::root_coordinator::RootExecutionCoordinatorV1::default(),
+            false,
+            None
+        ),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    (c, id, cloud)
+}
+fn read_only_complete(
+    c: &Mutex<Connection>,
+    id: &str,
+) -> Result<super::ordinary_runtime::OrdinaryCycleResultV1, crate::error::AppError> {
+    let binding = SqliteS2LiteStoreV1::load_target_root_binding_v1(c, id, 1)
+        .map_err(|error| crate::error::AppError::General(error.0.into()))?
+        .ok_or_else(|| crate::error::AppError::General("missing binding".into()))?;
+    crate::sync_state::record_mobile_s2_result_v1(
+        &mut c.lock().unwrap(),
+        &binding,
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success,
+    )
+}
+#[test]
+fn read_only_mobile_completion_restart_retry_and_first_local_write() {
+    let path = temp_path();
+    let (c, id, cloud) = read_only_mobile_fixture(Some(&path));
+    let basis = retained_adoption(&c);
+    let before = crate::sync_state::runtime_state(&c.lock().unwrap())
+        .unwrap()
+        .scheduler;
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(retained_adoption(&c), basis);
+    // Failure/backoff is cleared by a subsequent successful read-only manual run.
+    let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .binding;
+    crate::sync_state::record_mobile_s2_result_v1(
+        &mut c.lock().unwrap(),
+        &binding,
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending,
+    )
+    .unwrap();
+    let failed = crate::sync_state::runtime_state(&c.lock().unwrap())
+        .unwrap()
+        .scheduler;
+    assert_eq!(failed.consecutive_failures, 1);
+    assert!(failed.next_attempt_at.is_some());
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let after = crate::sync_state::runtime_state(&c.lock().unwrap())
+        .unwrap()
+        .scheduler;
+    assert!(after.last_success_at > before.last_success_at);
+    assert_eq!(after.last_success_at, after.last_attempt_at);
+    assert_eq!(after.last_success_at, after.last_remote_check_at);
+    assert_eq!(after.consecutive_failures, 0);
+    assert_eq!(after.next_attempt_at, None);
+    assert_eq!(after.last_error_code, None);
+    let root = root_id();
+    let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+    assert!(store.load_desktop_root_state().unwrap().is_none());
+    assert!(cloud
+        .lock()
+        .unwrap()
+        .puts
+        .iter()
+        .all(|(p, _)| p.starts_with("writers/") || p.starts_with("activations/")));
+    let puts = cloud.lock().unwrap().puts.len();
+    update_ordinary_collection(&c, "First local write", 1);
+    let captured =
+        super::local_authority::load_staged_descriptors(&c.lock().unwrap()).unwrap()[0].clone();
+    let allocated = super::local_authority::load_writer(&c.lock().unwrap())
+        .unwrap()
+        .unwrap()
+        .writer_id;
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    let state = store.load_desktop_root_state().unwrap().unwrap();
+    assert_eq!(state.local_writer_id, allocated);
+    assert_eq!(state.next_writer_sequence, 2);
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts + 1);
+    let bytes = cloud.lock().unwrap().puts.last().unwrap().1.clone();
+    let commit = super::causal::decode_frozen_wire_commit_v1(&bytes).unwrap();
+    assert_eq!(
+        commit.mutations[0].local_mutation_id,
+        captured.local_mutation_id
+    );
+    assert_eq!(retained_adoption(&c), basis);
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(
+        mobile(&c, &id, &cloud, &coordinator, false, None),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert_eq!(
+        SqliteS2LiteStoreV1::open(&c, &root)
+            .unwrap()
+            .load_desktop_root_state()
+            .unwrap()
+            .unwrap()
+            .local_writer_id,
+        allocated
+    );
+    assert_eq!(cloud.lock().unwrap().puts.len(), puts + 1);
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn read_only_mobile_completion_rejects_late_local_capture_and_outbox_only() {
+    for outbox_only in [false, true] {
+        let (c, id, _) = read_only_mobile_fixture(None);
+        let before = crate::sync_state::runtime_state(&c.lock().unwrap())
+            .unwrap()
+            .scheduler
+            .last_success_at;
+        if outbox_only {
+            let mut outbox = crate::db_atomic_helpers::SyncOutbox::clean(0);
+            outbox.pending = true;
+            crate::db_atomic_helpers::set_sync_outbox(&c.lock().unwrap(), &outbox).unwrap();
+        } else {
+            update_ordinary_collection(&c, "Arrived after cycle", 1);
+        }
+        assert_eq!(
+            read_only_complete(&c, &id).unwrap(),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+        );
+        let g = c.lock().unwrap();
+        let runtime = crate::sync_state::runtime_state(&g).unwrap();
+        assert_eq!(runtime.scheduler.last_success_at, before);
+        assert_eq!(
+            runtime.scheduler.last_error_code.as_deref(),
+            Some("s2_pending")
+        );
+        assert!(runtime.outbox.pending);
+        assert_eq!(
+            g.query_row(
+                "SELECT COUNT(*) FROM s2_lite_desktop_root_state_v1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+}
+#[test]
+fn read_only_mobile_completion_rejects_orphaned_publication_work() {
+    for kind in ["intent", "batch", "receipt"] {
+        let (c, id, cloud) = read_only_mobile_fixture(None);
+        update_ordinary_collection(&c, "Prepared work", 1);
+        let root = root_id();
+        let mut store = SqliteS2LiteStoreV1::open(&c, &root).unwrap();
+        store.initialize_desktop_writer_v1().unwrap();
+        let intent =
+            match super::outbound_freeze::freeze_active_outbound_v1(&c, &id, 1, NOW).unwrap() {
+                super::outbound_freeze::OutboundFreezeResultV1::Frozen { intent, .. } => intent,
+                other => panic!("{other:?}"),
+            };
+        if kind == "receipt" {
+            cloud
+                .lock()
+                .unwrap()
+                .objects
+                .insert(intent.remote_path.clone(), intent.exact_bytes.clone());
+            store
+                .verify_and_persist_commit_receipt(&intent, &mut remote(&cloud), NOW)
+                .unwrap();
+        }
+        // Simulate incomplete/corrupt durable writer authority. Remove local
+        // overlays only to isolate the prepared/receipt/batch guard itself.
+        {
+            let g = c.lock().unwrap();
+            g.execute("DELETE FROM s2_lite_local_staging_descriptor_v1", [])
+                .unwrap();
+            g.execute(
+                "DELETE FROM settings WHERE key=?1",
+                [crate::sync_targets::scoped_key(&id, "staging_v1")],
+            )
+            .unwrap();
+            crate::db_atomic_helpers::set_sync_outbox(
+                &g,
+                &crate::db_atomic_helpers::SyncOutbox::clean(
+                    crate::db_atomic_helpers::get_records_generation(&g).unwrap(),
+                ),
+            )
+            .unwrap();
+            if kind != "batch" {
+                g.execute("DELETE FROM s2_lite_outbound_batch_v1", [])
+                    .unwrap();
+            }
+            if kind == "batch" {
+                g.execute("DELETE FROM s2_lite_prepared_intent_v1", [])
+                    .unwrap();
+            }
+            g.execute("DELETE FROM s2_lite_desktop_root_state_v1", [])
+                .unwrap();
+        }
+        assert_eq!(
+            read_only_complete(&c, &id).unwrap(),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+        );
+        assert_eq!(
+            mobile(
+                &c,
+                &id,
+                &cloud,
+                &super::root_coordinator::RootExecutionCoordinatorV1::default(),
+                false,
+                None
+            ),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+        );
+        assert!(store.load_desktop_root_state().unwrap().is_none());
+        let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+            .unwrap()
+            .binding;
+        assert!(
+            super::durable_persistence::validate_normal_s2_completion_authority_in_transaction_v1(
+                &c.lock().unwrap(),
+                &binding
+            )
+            .is_err(),
+            "publication still requires writer"
+        );
+    }
+}
+#[test]
+fn read_only_mobile_completion_requires_applied_projection_and_valid_authority() {
+    for defect in [
+        "unapplied",
+        "stale_projection",
+        "fatal",
+        "bad_writer",
+        "bad_global_writer",
+        "missing_basis",
+        "deleted_basis",
+    ] {
+        let (c, id, _) = read_only_mobile_fixture(None);
+        let root = root_id();
+        match defect {
+            "unapplied" | "stale_projection" => {
+                let g = c.lock().unwrap();
+                let bytes: Vec<u8> = g
+                    .query_row(
+                        "SELECT state_json FROM s2_lite_materialized_projection_v1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut p: Value = serde_json::from_slice(&bytes).unwrap();
+                if defect == "unapplied" {
+                    p["payload"]["businessProjectionAppliedGeneration"] = Value::Null;
+                } else {
+                    p["payload"]["sourceRootSafetyGeneration"] = json!(0);
+                }
+                g.execute(
+                    "UPDATE s2_lite_materialized_projection_v1 SET state_json=?1",
+                    [serde_json::to_vec(&p).unwrap()],
+                )
+                .unwrap();
+            }
+            "fatal" => {
+                SqliteS2LiteStoreV1::open(&c, &root)
+                    .unwrap()
+                    .persist_root_fatal(&root, "late_fatal")
+                    .unwrap();
+            }
+            "bad_writer" => {
+                c.lock().unwrap().execute("INSERT INTO s2_lite_desktop_root_state_v1(root_id,state_json) VALUES(?1,?2)",rusqlite::params![root,b"{}".as_slice()]).unwrap();
+            }
+            "bad_global_writer" => {
+                c.lock()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO s2_lite_local_writer_v1(singleton,writer_id) VALUES(1,'bad')",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "deleted_basis" => {
+                c.lock()
+                    .unwrap()
+                    .execute("DELETE FROM s2_lite_remote_activation_adoption_v1", [])
+                    .unwrap();
+            }
+            "missing_basis" => {
+                c.lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE s2_lite_remote_activation_adoption_v1 SET state_json=?1",
+                        [b"{}".as_slice()],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let result = read_only_complete(&c, &id);
+        if [
+            "bad_writer",
+            "bad_global_writer",
+            "missing_basis",
+            "deleted_basis",
+        ]
+        .contains(&defect)
+        {
+            assert!(result.is_err());
+        } else if defect == "fatal" {
+            assert_eq!(
+                result.unwrap(),
+                super::ordinary_runtime::OrdinaryCycleResultV1::ReadOnlyFrozen
+            );
+        } else {
+            assert_eq!(
+                result.unwrap(),
+                super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+            );
+        }
+    }
+}
+#[test]
+fn read_only_mobile_completion_keeps_s1_cutoff_for_all_admissions() {
+    let path = temp_path();
+    let (c, id, cloud) = read_only_mobile_fixture(Some(&path));
+    let root = root_id();
+    let mut r = remote(&cloud);
+    let binding = super::target_root_binding::resolve_active_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .binding;
+    let ticket = super::durable_persistence::capture_legacy_route_ticket_v1(&c, &binding);
+    assert!(ticket.is_err());
+    drop(c);
+    let c = reopen(&path);
+    let coordinator = super::root_coordinator::RootExecutionCoordinatorV1::default();
+    for automatic in [false, true, true, false] {
+        let token = crate::sync_state::runtime_state(&c.lock().unwrap())
+            .unwrap()
+            .scheduler
+            .last_attempt_at;
+        assert_eq!(
+            mobile(&c, &id, &cloud, &coordinator, automatic, token.as_deref()),
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        );
+        let called = std::cell::Cell::new(false);
+        assert!(run_legacy_put_with_adapter_v1(&c, &mut r, &id, 1, || {
+            called.set(true);
+            Ok(())
+        })
+        .is_err());
+        assert!(!called.get());
+    }
+    assert!(SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_desktop_root_state()
+        .unwrap()
+        .is_none());
+    assert!(cloud
+        .lock()
+        .unwrap()
+        .puts
+        .iter()
+        .all(|(p, _)| p.starts_with("writers/") || p.starts_with("activations/")));
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn read_only_mobile_completion_serializes_with_production_local_capture() {
+    let (c, id, _) = read_only_mobile_fixture(None);
+    let c = Arc::new(c);
+    let binding = SqliteS2LiteStoreV1::load_target_root_binding_v1(&c, &id, 1)
+        .unwrap()
+        .unwrap();
+    let mut g = c.lock().unwrap();
+    let (started_send, started_recv) = std::sync::mpsc::channel();
+    let other = c.clone();
+    let writer = std::thread::spawn(move || {
+        started_send.send(()).unwrap();
+        let mut g = other.lock().unwrap();
+        crate::collections::update(
+            &mut g,
+            "c1",
+            serde_json::from_value(json!({"name":"Racing write","expectedRev":1})).unwrap(),
+            "device",
+        )
+        .unwrap();
+    });
+    started_recv.recv().unwrap();
+    // This is the same connection mutex held by run_mobile_sync's final
+    // classification. Production CRUD cannot capture between validation and ack.
+    assert_eq!(
+        crate::sync_state::record_mobile_s2_result_v1(
+            &mut g,
+            &binding,
+            super::ordinary_runtime::OrdinaryCycleResultV1::Success
+        )
+        .unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert!(!crate::sync_state::runtime_state(&g).unwrap().outbox.pending);
+    drop(g);
+    writer.join().unwrap();
+    let g = c.lock().unwrap();
+    assert!(crate::sync_state::runtime_state(&g).unwrap().outbox.pending);
+    assert_eq!(
+        super::local_authority::load_staged_descriptors(&g)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(g);
+    assert_eq!(
+        read_only_complete(&c, &id).unwrap(),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Pending
+    );
+}
+#[test]
+fn read_only_mobile_completion_scheduler_failure_rolls_back_without_writer() {
+    let path = temp_path();
+    let (c, id, cloud) = read_only_mobile_fixture(Some(&path));
+    let basis = retained_adoption(&c);
+    let before = crate::sync_state::runtime_state(&c.lock().unwrap()).unwrap();
+    c.lock().unwrap().execute_batch("CREATE TRIGGER fail_read_only_scheduler BEFORE UPDATE ON settings WHEN NEW.key LIKE '%::scheduler_v1' BEGIN SELECT RAISE(ABORT,'scheduler injected fault'); END").unwrap();
+    assert!(read_only_complete(&c, &id).is_err());
+    drop(c);
+    let c = reopen(&path);
+    assert_eq!(retained_adoption(&c), basis);
+    let after = crate::sync_state::runtime_state(&c.lock().unwrap()).unwrap();
+    assert_eq!(after.scheduler, before.scheduler);
+    assert_eq!(after.outbox, before.outbox);
+    let root = root_id();
+    assert!(SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_desktop_root_state()
+        .unwrap()
+        .is_none());
+    c.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_read_only_scheduler")
+        .unwrap();
+    assert_eq!(
+        mobile(
+            &c,
+            &id,
+            &cloud,
+            &super::root_coordinator::RootExecutionCoordinatorV1::default(),
+            false,
+            None
+        ),
+        super::ordinary_runtime::OrdinaryCycleResultV1::Success
+    );
+    assert!(SqliteS2LiteStoreV1::open(&c, &root)
+        .unwrap()
+        .load_desktop_root_state()
+        .unwrap()
+        .is_none());
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+}

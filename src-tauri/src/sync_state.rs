@@ -527,10 +527,10 @@ pub(crate) fn record_mobile_s2_result_v1(
     }
     if result == Status::Success {
         use crate::s2_lite::durable_persistence::{
-            validate_normal_s2_completion_authority_in_transaction_v1,
+            validate_mobile_s2_completion_authority_in_transaction_v1,
             NormalS2CompletionAuthorityV1,
         };
-        let authority = validate_normal_s2_completion_authority_in_transaction_v1(&tx, binding)
+        let authority = validate_mobile_s2_completion_authority_in_transaction_v1(&tx, binding)
             .map_err(|error| AppError::General(error.0.into()))?;
         result = match authority {
             NormalS2CompletionAuthorityV1::Valid => Status::Success,

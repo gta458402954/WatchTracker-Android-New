@@ -1111,6 +1111,23 @@ pub fn validate_normal_s2_completion_authority_in_transaction_v1(
     conn: &Connection,
     binding: &TargetRootBindingV1,
 ) -> Result<NormalS2CompletionAuthorityV1> {
+    validate_s2_completion_authority_inner_v1(conn, binding, false)
+}
+
+/// Scheduler-only admission. Publication callers retain the writer-required
+/// validator above. The caller holds BEGIN IMMEDIATE through bookkeeping.
+pub(crate) fn validate_mobile_s2_completion_authority_in_transaction_v1(
+    conn: &Connection,
+    binding: &TargetRootBindingV1,
+) -> Result<NormalS2CompletionAuthorityV1> {
+    validate_s2_completion_authority_inner_v1(conn, binding, true)
+}
+
+fn validate_s2_completion_authority_inner_v1(
+    conn: &Connection,
+    binding: &TargetRootBindingV1,
+    allow_read_only: bool,
+) -> Result<NormalS2CompletionAuthorityV1> {
     validate_target_root_binding(binding)?;
     if !matches!(
         crate::sync_targets::active_target(conn).map_err(|_| STORE_FAILURE)?,
@@ -1130,6 +1147,23 @@ pub fn validate_normal_s2_completion_authority_in_transaction_v1(
         return Ok(NormalS2CompletionAuthorityV1::TargetChanged);
     }
 
+    if allow_read_only {
+        // Completion never creates a replacement compatibility basis for a
+        // previously adopted reader. Its cycle already committed that basis.
+        if let Some(previous) = load_root_safety_from(conn, &binding.physical_root_id)? {
+            if previous.cutover_state.remote_s2_activated
+                && previous.root_fatal_signals.is_empty()
+                && load_migration_from(conn, &binding.physical_root_id)?.is_none()
+                && load_desktop_root_state_from(conn, &binding.physical_root_id)?.is_none()
+                && !database(conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1)",
+                    [&binding.physical_root_id], |row| row.get::<_, bool>(0),
+                ))?
+            {
+                return Err(STORE_CORRUPTION);
+            }
+        }
+    }
     reconcile_read_root_safety_v1(conn, &binding.physical_root_id)?;
     let safety = load_root_safety_from(conn, &binding.physical_root_id)?.ok_or(STORE_CORRUPTION)?;
     if !safety.root_fatal_signals.is_empty() || !safety.cutover_state.root_fatal_signals.is_empty()
@@ -1165,11 +1199,88 @@ pub fn validate_normal_s2_completion_authority_in_transaction_v1(
             if owner.is_some() {
                 return Ok(NormalS2CompletionAuthorityV1::NoLongerNormalS2);
             }
-            load_desktop_root_state_from(conn, &binding.physical_root_id)?
-                .ok_or(STORE_CORRUPTION)?;
+            if load_desktop_root_state_from(conn, &binding.physical_root_id)?.is_none() {
+                if !allow_read_only {
+                    return Err(STORE_CORRUPTION);
+                }
+                return validate_read_only_completion_from(conn, binding, &safety);
+            }
         }
     }
     Ok(NormalS2CompletionAuthorityV1::Valid)
+}
+
+fn validate_read_only_completion_from(
+    conn: &Connection,
+    binding: &TargetRootBindingV1,
+    safety: &MigrationRootSafetyStateV1,
+) -> Result<NormalS2CompletionAuthorityV1> {
+    let root = binding.physical_root_id.as_str();
+    let bytes = database(
+        conn.query_row(
+            "SELECT state_json FROM s2_lite_remote_activation_adoption_v1 WHERE root_id=?1",
+            [root],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional(),
+    )?
+    .ok_or(STORE_CORRUPTION)?;
+    let adoption: RemoteActivationAdoptionV1 = decode(&bytes)?;
+    validate_remote_activation_adoption_v1(&adoption, root)?;
+    if !matches!(&safety.cutover_state.fingerprint_consistency,
+        ActivationFingerprintConsistencyV1::Consistent { legacy_fingerprint }
+            if *legacy_fingerprint == adoption.legacy_fingerprint)
+    {
+        return Err(STORE_CORRUPTION);
+    }
+    // A malformed global writer cannot be hidden by a missing root writer.
+    super::local_authority::load_writer(conn)?;
+    let outbound = database(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM s2_lite_prepared_intent_v1 WHERE root_id=?1)
+             OR EXISTS(SELECT 1 FROM s2_lite_published_receipt_v1 WHERE root_id=?1)
+             OR EXISTS(SELECT 1 FROM s2_lite_outbound_batch_v1 WHERE root_id=?1)
+             OR EXISTS(SELECT 1 FROM s2_lite_migration_execution_binding_v1 WHERE root_id=?1)
+             OR EXISTS(SELECT 1 FROM s2_lite_migration_source_guard_v1 WHERE root_id=?1)
+             OR EXISTS(SELECT 1 FROM s2_lite_entity_projection_overlay_blocker_v1
+                       WHERE root_id=?1 AND target_id=?2)",
+        params![root, binding.target_id],
+        |row| row.get::<_, bool>(0),
+    ))?;
+    if outbound
+        || !super::local_authority::load_staged_descriptors(conn)?.is_empty()
+        || !super::local_authority::load_captured_mutations(conn)?.is_empty()
+        || !crate::sync_staging::get_staging(conn)
+            .map_err(|_| STORE_CORRUPTION)?
+            .entries
+            .is_empty()
+        || crate::sync_staging::get_publish_intent(conn)
+            .map_err(|_| STORE_CORRUPTION)?
+            .is_some()
+        || crate::db_atomic_helpers::get_sync_outbox(conn)
+            .map_err(|_| STORE_CORRUPTION)?
+            .is_some_and(|outbox| outbox.pending)
+    {
+        return Ok(NormalS2CompletionAuthorityV1::NoLongerNormalS2);
+    }
+    let read = super::discovery_persistence::load_read_state_v1(conn, root)?;
+    if read.as_ref().map_or(true, |read| {
+        !super::discovery_persistence::publication_discovery_ready_v1(&read.discovery.state)
+    }) {
+        return Ok(NormalS2CompletionAuthorityV1::NoLongerNormalS2);
+    }
+    match admit_applied_projection_for_staging_anchor_v1(conn, root)? {
+        StagingAnchorProjectionAdmissionV1::Ready(projection)
+            if !projection
+                .state
+                .entities
+                .iter()
+                .any(|entity| entity.conflict)
+                && projection.state.relation_blocked_entity_keys.is_empty() =>
+        {
+            Ok(NormalS2CompletionAuthorityV1::Valid)
+        }
+        _ => Ok(NormalS2CompletionAuthorityV1::NoLongerNormalS2),
+    }
 }
 
 pub(crate) fn completed_migration_writer_seed(
