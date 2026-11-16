@@ -23,7 +23,7 @@ import { collectionStateEquivalent, emptyCollectionState, mergeCollectionStates,
 import { entityTag, normalizedEntityTag, strongEtag } from '../domain/entityTags.ts';
 import { buildSyncPayload, collectionSideOfPayload, legacyPayload, sideOfLegacy, sideOfPayload } from '../domain/syncPayload.ts';
 import { syncError } from '../domain/syncErrors.ts';
-import { assertEntityTag, contentFingerprint, probeDavEntityTagForResource, readResourceWithBoundValidator, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
+import { assertEntityTag, conditionalValidatorForResource, contentFingerprint, probeDavEntityTagForResource, type ConditionalValidator } from '../infrastructure/conditionalWebdav.ts';
 import type { WebDAVCreds, WebDavTransport } from '../infrastructure/webdavTransport.ts';
 import { webdavTransport } from '../infrastructure/webdavTransport.ts';
 import type { SyncResult } from './syncContracts.ts';
@@ -93,7 +93,7 @@ async function checkLegacyRemote(
     return currentFingerprint;
   }
   if (legacyResponse.status === 404) return 'missing';
-  throw new Error(`HTTP Error: ${legacyResponse.status}`);
+  return previousFingerprint;
 }
 
 async function finishRemoteUnchanged(
@@ -149,10 +149,9 @@ async function syncWithDependencies(
     for (let attempt = 0; attempt < MAX_PRECONDITION_RETRIES; attempt++) {
       let useConditionalGetFallback = false;
       if (storedConditionalEtag) {
-        const davProbe = await probeDavEntityTagForResource(
+        const davEtag = await probeDavEntityTagForResource(
           creds, proxy, V3_RESOURCE, deps.transport,
         );
-        const davEtag = davProbe.kind === 'etag' ? davProbe.etag : null;
         if (davEtag === storedConditionalEtag) {
           console.info('[sync] clean preflight: PROPFIND same validator');
           return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
@@ -160,7 +159,7 @@ async function syncWithDependencies(
         if (davEtag) {
           console.info('[sync] clean preflight: PROPFIND changed');
         } else {
-          console.info(`[sync] clean preflight: PROPFIND ${davProbe.kind}`);
+          console.info('[sync] clean preflight: PROPFIND unavailable');
           const rangeResponse = await deps.transport.request(
             'GET', creds, proxy, V3_RESOURCE, null, null, null, null, RANGE_PROBE,
           );
@@ -182,7 +181,7 @@ async function syncWithDependencies(
       } else {
         console.info('[sync] clean preflight: normal full merge');
       }
-      let v3Response = await deps.transport.request(
+      const v3Response = await deps.transport.request(
         'GET', creds, proxy, V3_RESOURCE, null, null,
         useConditionalGetFallback ? storedConditionalEtag : null, null,
       );
@@ -196,21 +195,17 @@ async function syncWithDependencies(
       let legacyImported = false;
       let legacyFingerprint = snapshot.v2SourceFingerprint;
 
-      if (v3Response.status === 200) {
-        const boundRead = await readResourceWithBoundValidator(
-          creds, proxy, V3_RESOURCE, deps.transport, v3Response,
-        );
-        v3Response = boundRead.response;
-        validator = boundRead.validator;
-      }
-
       if (v3Response.status === 304) {
         if (!storedConditionalEtag || !useConditionalGetFallback) throw new Error('HTTP Error: 304');
         console.info('[sync] clean preflight: HTTP conditional fallback 304');
         return await finishRemoteUnchanged(snapshot, deps, creds, proxy, storedConditionalEtag);
       } else if (v3Response.status === 200) {
-        if (!validator) {
+        try {
+          validator = await conditionalValidatorForResource(v3Response, creds, proxy, V3_RESOURCE, deps.transport);
+        } catch (error) {
+          if (!String(error).includes('conditional_write_unsupported')) throw error;
           console.info('[sync] clean preflight: validator unavailable; full merge without upload permission');
+          validator = null;
         }
         if (storedConditionalEtag && validator?.etag === storedConditionalEtag) {
           console.info('[sync] clean preflight: HTTP 200 same validator');
@@ -343,16 +338,12 @@ async function syncWithDependencies(
         confirmedPayload = nextPayload;
         confirmedEtag = put.etag;
         if (!strongEtag(confirmedEtag)) {
-          const verificationRead = await readResourceWithBoundValidator(
-            creds, proxy, V3_RESOURCE, deps.transport,
-          );
-          if (verificationRead.response.status !== 200 || !verificationRead.validator) {
-            throw new Error('conditional_write_unsupported');
-          }
-          const verified = parseSyncPayloadV3(verificationRead.response.body);
+          const verification = await deps.transport.request('GET', creds, proxy, V3_RESOURCE);
+          if (verification.status !== 200) throw new Error('conditional_write_unsupported');
+          const verified = parseSyncPayloadV3(verification.body);
           if (verified.commitId !== nextPayload.commitId) continue;
           confirmedPayload = verified;
-          confirmedEtag = verificationRead.validator.etag;
+          confirmedEtag = (await conditionalValidatorForResource(verification, creds, proxy, V3_RESOURCE, deps.transport)).etag;
         }
         assertEntityTag(confirmedEtag);
       }
