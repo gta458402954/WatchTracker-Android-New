@@ -79,14 +79,30 @@ pub async fn search_tmdb(
     language: String,
     proxy: Option<String>,
 ) -> Result<Value, String> {
-    let is_imdb_id = query.starts_with("tt")
-        && query.len() > 2
-        && query[2..].chars().all(|c| c.is_ascii_digit());
-    if is_imdb_id {
-        log::info!("[TMDB] IMDb ID Searching for: {}", query);
+    let trimmed = query.trim();
+    // Support raw IMDb ID (tt1234567), with trailing slash/query (tt1234567/), or full IMDb URL (https://www.imdb.com/title/tt1234567/)
+    let extracted_imdb = if let Some(pos) = trimmed.find("tt") {
+        let remainder = &trimmed[pos + 2..];
+        let digits: String = remainder.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 2 && (trimmed.starts_with("tt") || trimmed.contains("imdb.com")) {
+            Some(format!("tt{}", digits))
+        } else {
+            None
+        }
     } else {
-        log::info!("[TMDB] Multi Searching for: {}", query);
-    }
+        None
+    };
+
+    let (is_imdb_id, search_query) = match extracted_imdb {
+        Some(imdb_id) => {
+            log::info!("[TMDB] IMDb ID extracted and searching for: {}", imdb_id);
+            (true, imdb_id)
+        }
+        None => {
+            log::info!("[TMDB] Multi Searching for: {}", trimmed);
+            (false, trimmed.to_string())
+        }
+    };
 
     let builder = client_builder(proxy, Duration::from_secs(30))?;
     let client = builder.build().map_err(|e| e.to_string())?;
@@ -97,21 +113,21 @@ pub async fn search_tmdb(
         if is_jwt {
             format!(
                 "https://api.themoviedb.org/3/find/{}?external_source=imdb_id&language={}",
-                query, language
+                search_query, language
             )
         } else {
-            format!("https://api.themoviedb.org/3/find/{}?api_key={}&external_source=imdb_id&language={}", query, api_key, language)
+            format!("https://api.themoviedb.org/3/find/{}?api_key={}&external_source=imdb_id&language={}", search_query, api_key, language)
         }
     } else {
         if is_jwt {
             format!(
                 "https://api.themoviedb.org/3/search/multi?query={}&language={}&include_adult=false",
-                urlencoding::encode(&query), language
+                urlencoding::encode(&search_query), language
             )
         } else {
             format!(
                 "https://api.themoviedb.org/3/search/multi?api_key={}&query={}&language={}&include_adult=false",
-                api_key, urlencoding::encode(&query), language
+                api_key, urlencoding::encode(&search_query), language
             )
         }
     };
@@ -199,20 +215,20 @@ pub async fn search_tmdb(
             log::info!("[TMDB] No zh-CN results, trying en-US...");
             let en_url = if is_imdb_id {
                 if is_jwt {
-                    format!("https://api.themoviedb.org/3/find/{}?external_source=imdb_id&language=en-US", query)
+                    format!("https://api.themoviedb.org/3/find/{}?external_source=imdb_id&language=en-US", search_query)
                 } else {
-                    format!("https://api.themoviedb.org/3/find/{}?api_key={}&external_source=imdb_id&language=en-US", query, api_key)
+                    format!("https://api.themoviedb.org/3/find/{}?api_key={}&external_source=imdb_id&language=en-US", search_query, api_key)
                 }
             } else {
                 if is_jwt {
                     format!(
                          "https://api.themoviedb.org/3/search/multi?query={}&language=en-US&include_adult=false",
-                         urlencoding::encode(&query)
+                         urlencoding::encode(&search_query)
                      )
                 } else {
                     format!(
                          "https://api.themoviedb.org/3/search/multi?api_key={}&query={}&language=en-US&include_adult=false",
-                         api_key, urlencoding::encode(&query)
+                         api_key, urlencoding::encode(&search_query)
                      )
                 }
             };

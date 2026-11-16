@@ -8,6 +8,11 @@ import {
   previewLocalImport,
   commitLocalImport,
   resolveSyncConflict,
+  getTmdbCredentialStatus,
+  saveTmdbCredential,
+  clearTmdbCredential,
+  getSettingAsync,
+  setSettingAsync,
   type ActiveSyncConnection,
   type SyncRuntimeState,
   type SyncTargetRegistry,
@@ -101,6 +106,11 @@ export default function MobileSyncSettingsPage({
   const [importStatus, setImportStatus] = useState('');
   const [importError, setImportError] = useState('');
   const [importPreview, setImportPreview] = useState<LocalImportPreview | null>(null);
+  const [tmdbConfigured, setTmdbConfigured] = useState(false);
+  const [tmdbInput, setTmdbInput] = useState('');
+  const [tmdbSaving, setTmdbSaving] = useState(false);
+  const [proxyInput, setProxyInput] = useState('');
+  const [proxySaving, setProxySaving] = useState(false);
   const pendingImportToken = useRef<string | null>(null);
   const importCommitInFlight = useRef(false);
 
@@ -110,18 +120,65 @@ export default function MobileSyncSettingsPage({
   }, []);
 
   const refresh = useCallback(async () => {
-    const [nextConnection, nextRegistry, nextRuntime, snapshot] = await Promise.all([
-      getActiveSyncConnection(), getSyncTargets(), getSyncRuntimeState(), getSyncSnapshot(),
+    const [nextConnection, nextRegistry, nextRuntime, snapshot, tmdbStatus, savedProxy] = await Promise.all([
+      getActiveSyncConnection(),
+      getSyncTargets(),
+      getSyncRuntimeState(),
+      getSyncSnapshot(),
+      getTmdbCredentialStatus().catch(() => ({ available: false, state: 'missing' as const })),
+      getSettingAsync('network_proxy').catch(() => null),
     ]);
     setConnection(nextConnection);
     setRegistry(nextRegistry);
     setLoadedRuntime(nextRuntime);
     setConflicts(snapshot.conflicts);
+    setTmdbConfigured(tmdbStatus.available);
+    if (savedProxy !== null) {
+      setProxyInput(savedProxy);
+    }
     if (nextConnection) {
       setUrl(nextConnection.url);
       setUsername(nextConnection.username);
     }
   }, []);
+
+  const saveTmdbKey = async () => {
+    if (!tmdbInput.trim()) return;
+    setTmdbSaving(true);
+    try {
+      const res = await saveTmdbCredential(tmdbInput.trim());
+      setTmdbConfigured(res.available);
+      setTmdbInput('');
+      notify('success', 'TMDB API 密钥已保存并受 Android Keystore 保护。');
+    } catch {
+      notify('error', '保存 TMDB 密钥失败。');
+    } finally {
+      setTmdbSaving(false);
+    }
+  };
+
+  const clearTmdbKey = async () => {
+    if (!window.confirm('确定清除已保存的 TMDB 密钥吗？清除后将无法在线检索影片信息。')) return;
+    try {
+      await clearTmdbCredential();
+      setTmdbConfigured(false);
+      notify('info', '已清除 TMDB 密钥。');
+    } catch {
+      notify('error', '清除 TMDB 密钥失败。');
+    }
+  };
+
+  const saveProxy = async () => {
+    setProxySaving(true);
+    try {
+      await setSettingAsync('network_proxy', proxyInput.trim());
+      notify('success', proxyInput.trim() ? '代理配置已保存。' : '已清除代理设置。');
+    } catch {
+      notify('error', '保存代理设置失败。');
+    } finally {
+      setProxySaving(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -400,6 +457,29 @@ export default function MobileSyncSettingsPage({
           <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>{importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}</button>
         </div>
       </section>}
+    </div>
+
+    <div className="mobile-sync-card" data-testid="mobile-tmdb-settings">
+      <h2>TMDB 元数据与网络代理</h2>
+      <p className="mobile-sync-note">用于影视海报拉取、年份及详情自动填充。API 密钥由 Android Keystore 硬件级加密保护。</p>
+      <dl className="mobile-sync-facts">
+        <div><dt>TMDB 密钥</dt><dd>{tmdbConfigured ? '✓ 已受 Keystore 保护' : '未配置'}</dd></div>
+        <div><dt>网络代理</dt><dd>{proxyInput.trim() || '直连 (无代理)'}</dd></div>
+      </dl>
+      {!tmdbConfigured ? (
+        <form onSubmit={e => { e.preventDefault(); void saveTmdbKey(); }} style={{ marginTop: '12px' }}>
+          <label>TMDB API KEY (V3)<input type="password" placeholder="输入 TMDB API KEY" value={tmdbInput} onChange={e => setTmdbInput(e.target.value)} required /></label>
+          <button type="submit" className="mobile-primary-button" disabled={!tmdbInput.trim() || tmdbSaving} style={{ marginTop: '8px' }}>{tmdbSaving ? '保存中…' : '保存密钥'}</button>
+        </form>
+      ) : (
+        <div className="mobile-sync-actions" style={{ marginTop: '10px' }}>
+          <button type="button" className="mobile-quiet-button mobile-danger" onClick={() => void clearTmdbKey()}>清除密钥并重新输入</button>
+        </div>
+      )}
+      <form onSubmit={e => { e.preventDefault(); void saveProxy(); }} style={{ marginTop: '16px' }}>
+        <label>网络代理 (可选)<input type="text" placeholder="如 http://127.0.0.1:7890，无代理留空" value={proxyInput} onChange={e => setProxyInput(e.target.value)} /></label>
+        <button type="submit" className="mobile-quiet-button" disabled={proxySaving} style={{ marginTop: '8px' }}>{proxySaving ? '保存中…' : '保存代理设置'}</button>
+      </form>
     </div>
 
     <div className="mobile-sync-card" data-testid="mobile-sync-runtime">
