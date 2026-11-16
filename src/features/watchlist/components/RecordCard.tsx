@@ -1,3 +1,4 @@
+import { viewingDateText } from '../../../shared/lib/viewingDate';
 import React, { useCallback, useEffect, useState } from 'react';
 import { type EpisodeCompletion, WatchRecord, Status } from '../../../shared/types';
 import { STATUS_CONFIG, formatMovieProgress } from '../../../shared/lib/constants';
@@ -379,8 +380,8 @@ export default function RecordCard({ record, onEdit, onDelete, onStatusChange, o
           )}
         </div>
         <div className="text-xs text-gray-400 flex items-center gap-1">
-          {record.startDate && <span>▶ {record.startDate}</span>}
-          {record.endDate && <span>⏹ {record.endDate}</span>}
+          {record.startDate && <span>▶ {viewingDateText(record.startDate, 'start')}</span>}
+          {record.endDate && <span>⏹ {viewingDateText(record.endDate, 'end')}</span>}
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { validViewingDateDraft } from '../../../shared/lib/viewingDate';
 import React, { useState, useRef } from 'react';
 import { WatchRecord, Status, MediaType, type CollectionDraft, type CollectionMember, type WatchCollection } from '../../../shared/types';
 import { STATUSES } from '../../../shared/lib/constants';
@@ -88,6 +89,10 @@ export default function RecordForm({ record, onSave, onDelete, onClose, onNotify
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.chineseName.trim() && !form.originalName.trim()) return;
+    if (!validViewingDateDraft(form.startDate) || !validViewingDateDraft(form.endDate)) {
+      onNotify?.('warning', '请输入合法的四位年份或完整公历日期。');
+      return;
+    }
     const result = await onSave(form, selectedCollectionIds, collectionDrafts);
     if (result !== false) {
       onClose();

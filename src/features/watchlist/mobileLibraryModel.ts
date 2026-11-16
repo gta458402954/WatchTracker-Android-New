@@ -1,3 +1,4 @@
+import { compareViewingDatesDesc } from '../../shared/lib/viewingDate.ts';
 import { MEDIA_TYPE_VALUES, STATUS_VALUES, type MediaType, type Status, type WatchRecord } from '../../shared/types/watchRecord.generated.ts';
 import { displayTitlesOf } from '../../shared/lib/displayTitle.ts';
 import { mediaTypeOf } from '../../shared/lib/classification.ts';
@@ -43,7 +44,7 @@ function compareNullableDesc(left: number | string | null | undefined, right: nu
 export function sortMobileRecords(records: readonly WatchRecord[], sortBy: MobileSortBy): WatchRecord[] {
   return records.map((record, index) => ({ record, index })).sort((a, b) => {
     let result: number;
-    if (sortBy === 'endDate') result = compareNullableDesc(a.record.endDate, b.record.endDate);
+    if (sortBy === 'endDate') result = compareViewingDatesDesc(a.record.endDate, b.record.endDate);
     else if (sortBy === 'releaseYear') result = compareNullableDesc(a.record.releaseYear, b.record.releaseYear);
     else if (sortBy === 'rating') result = compareNullableDesc(a.record.rating, b.record.rating);
     else result = compareNullableDesc(a.record.createdAt, b.record.createdAt);

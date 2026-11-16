@@ -1,3 +1,4 @@
+import { exactViewingDay, viewingDatePrecision, viewingDateText, compareViewingDatesDesc } from '../../../shared/lib/viewingDate';
 import { useMemo, useRef, useState } from 'react';
 import { WatchRecord } from '../../../shared/types';
 import { getGenreDistribution } from '../../../shared/lib/analytics';
@@ -20,12 +21,7 @@ interface DashboardProps { onClose: () => void; records: WatchRecord[]; }
 type DateRange = 'week' | 'month' | 'year' | 'all';
 const RANGE_LABELS: Record<DateRange, string> = { week: '近 7 天', month: '近 30 天', year: '近一年', all: '全部' };
 
-function completionDate(record: WatchRecord) {
-  if (!record.endDate) return null;
-  const value = /^\d{4}-\d{2}-\d{2}$/.test(record.endDate) ? record.endDate + 'T00:00:00' : record.endDate;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
+function completionDate(record: WatchRecord) { return exactViewingDay(record.endDate); }
 function completedMinutes(record: WatchRecord) {
   const episodic = Boolean(record.totalEpisodes) || ['剧集', '综艺'].includes(mediaTypeOf(record));
   return episodic
@@ -67,13 +63,15 @@ export default function Dashboard({ onClose, records }: DashboardProps) {
   }, [range]);
 
   const summary = useMemo(() => {
-    const completed = records.filter(record => record.status === '已看' && completionDate(record) && completionDate(record)! >= rangeStart);
+    const completed = records.filter(record => record.status === '已看' && (range === 'all'
+      ? viewingDatePrecision(record.endDate) !== null
+      : completionDate(record) !== null && completionDate(record)! >= rangeStart));
     const added = records.filter(record => new Date(record.createdAt) >= rangeStart);
     const watching = records.filter(record => record.status === '在看');
     const pending = records.filter(record => record.status === '未看');
     const minutes = completed.reduce((total, record) => total + completedMinutes(record), 0);
     return { completed, added, watching, pending, minutes };
-  }, [records, rangeStart]);
+  }, [records, rangeStart, range]);
 
   const discoveryOptions = useMemo(() => discoveryFilterOptions(records), [records]);
   const discoveryQueue = useMemo(
@@ -127,7 +125,7 @@ export default function Dashboard({ onClose, records }: DashboardProps) {
     return buckets.map(({ name, value }) => ({ name, value }));
   }, [range, summary.completed]);
 
-  const recentCompleted = useMemo(() => [...summary.completed].sort((a, b) => completionDate(b)!.getTime() - completionDate(a)!.getTime()).slice(0, 3), [summary.completed]);
+  const recentCompleted = useMemo(() => [...summary.completed].sort((a, b) => compareViewingDatesDesc(a.endDate, b.endDate)).slice(0, 3), [summary.completed]);
   const genres = useMemo(() => getGenreDistribution(records.filter(record => record.status === '已看')).slice(0, 5), [records]);
 
   return <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="dashboard-dialog-title" tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-[#0b1020] p-5 text-slate-200 sm:p-7 overflow-hidden">
@@ -239,7 +237,7 @@ export default function Dashboard({ onClose, records }: DashboardProps) {
       </section>
       <section className="mt-5 grid gap-4 md:grid-cols-3"><article className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><p className="text-xs font-bold text-slate-500">本期完成</p><p className="mt-2 text-3xl font-black text-white">{summary.completed.length}<span className="ml-1 text-sm font-medium text-slate-400">部</span></p><p className="mt-2 text-sm text-slate-400">估算观看时长 {formatDuration(summary.minutes)}</p></article><article className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><p className="text-xs font-bold text-slate-500">待看清单</p><p className="mt-2 text-3xl font-black text-white">{summary.pending.length}<span className="ml-1 text-sm font-medium text-slate-400">部</span></p><p className="mt-2 text-sm text-slate-400">全量待看 · 在看 {summary.watching.length} 部</p></article><article className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><p className="text-xs font-bold text-slate-500">本期新增</p><p className="mt-2 text-3xl font-black text-emerald-400">{summary.added.length}<span className="ml-1 text-sm font-medium text-slate-400">部</span></p><p className="mt-2 text-sm text-slate-400">加入清单的影视条目</p></article></section>
       <section className="mt-5 grid gap-5 lg:grid-cols-[1.35fr_0.65fr]"><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><div className="flex items-center justify-between"><h3 className="font-bold text-white">完成趋势</h3><span className="text-xs text-slate-500">{range === 'week' ? '按日' : range === 'month' ? '按周' : range === 'all' ? '近 12 个月 · 按月' : '按月'}</span></div><div className="mt-4 h-52"><ResponsiveContainer width="100%" height="100%"><BarChart data={trend}><XAxis dataKey="name" tickLine={false} axisLine={false} stroke="#64748b" fontSize={11}/><YAxis allowDecimals={false} tickLine={false} axisLine={false} stroke="#64748b" fontSize={11}/><Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '10px' }}/><Bar dataKey="value" fill="#818cf8" radius={[5,5,0,0]}/></BarChart></ResponsiveContainer></div></article><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><h3 className="font-bold text-white">正在观看</h3><div className="mt-3 space-y-3">{summary.watching.length ? summary.watching.slice(0,3).map(record => <div key={record.id} className="rounded-xl bg-slate-800/70 p-3"><p className="truncate text-sm font-bold text-white">{displayTitlesOf(record).primary}</p><p className="mt-1 text-xs text-slate-400">{dashboardWatchingProgress(record)}</p></div>) : <p className="py-8 text-center text-sm text-slate-500">暂无正在观看的项目</p>}</div></article></section>
-      <section className="mt-5 grid gap-5 pb-5 lg:grid-cols-2"><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><h3 className="font-bold text-white">最近完成</h3><div className="mt-3 divide-y divide-slate-800">{recentCompleted.length ? recentCompleted.map(record => <div key={record.id} className="flex items-center justify-between py-3"><div><p className="text-sm font-semibold text-white">{displayTitlesOf(record).primary}</p><p className="mt-1 text-xs text-slate-500">{mediaTypeOf(record)} · {record.endDate || "完成日期未知"}</p></div><span className="text-sm font-bold text-amber-400">{record.rating ? `★ ${record.rating}` : '未评分'}</span></div>) : <p className="py-8 text-center text-sm text-slate-500">当前范围内暂无完成记录</p>}</div></article><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><h3 className="font-bold text-white">常看题材</h3><div className="mt-4 space-y-3">{genres.map(genre => <div key={genre.name}><div className="mb-1 flex justify-between text-xs"><span className="text-slate-300">{genre.name}</span><span className="text-slate-500">{genre.value} 部</span></div><div className="h-2 rounded-full bg-slate-800"><div className="h-full rounded-full bg-violet-400" style={{ width: `${genres[0] ? genre.value / genres[0].value * 100 : 0}%` }}/></div></div>)}</div></article></section>
+      <p className="mt-3 text-xs text-slate-500">仅年份的完成记录：{records.filter(record => record.status === '已看' && viewingDatePrecision(record.endDate) === 'year').length} 部。计入全部统计；因月日未知，不计入近期窗口或日期趋势图。</p><section className="mt-5 grid gap-5 pb-5 lg:grid-cols-2"><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><h3 className="font-bold text-white">最近完成</h3><div className="mt-3 divide-y divide-slate-800">{recentCompleted.length ? recentCompleted.map(record => <div key={record.id} className="flex items-center justify-between py-3"><div><p className="text-sm font-semibold text-white">{displayTitlesOf(record).primary}</p><p className="mt-1 text-xs text-slate-500">{mediaTypeOf(record)} · {viewingDateText(record.endDate, 'end')}</p></div><span className="text-sm font-bold text-amber-400">{record.rating ? `★ ${record.rating}` : '未评分'}</span></div>) : <p className="py-8 text-center text-sm text-slate-500">当前范围内暂无完成记录</p>}</div></article><article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"><h3 className="font-bold text-white">常看题材</h3><div className="mt-4 space-y-3">{genres.map(genre => <div key={genre.name}><div className="mb-1 flex justify-between text-xs"><span className="text-slate-300">{genre.name}</span><span className="text-slate-500">{genre.value} 部</span></div><div className="h-2 rounded-full bg-slate-800"><div className="h-full rounded-full bg-violet-400" style={{ width: `${genres[0] ? genre.value / genres[0].value * 100 : 0}%` }}/></div></div>)}</div></article></section>
     </main>
   </div>;
 }
