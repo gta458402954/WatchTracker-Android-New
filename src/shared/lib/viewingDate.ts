@@ -15,11 +15,17 @@ export function validViewingDateDraft(value: string | null | undefined): boolean
   return value == null || value === '' || viewingDatePrecision(value) !== null;
 }
 
+export function formatViewingDate(value: string | null | undefined): string {
+  const precision = viewingDatePrecision(value);
+  if (!precision) return '';
+  const year = value!.slice(0, 4);
+  return precision === 'year' ? `${year} 年` : `${year} 年 ${Number(value!.slice(5, 7))} 月 ${Number(value!.slice(8, 10))} 日`;
+}
+
 export function viewingDateText(value: string | null | undefined, event: 'start' | 'end'): string {
   const precision = viewingDatePrecision(value);
   if (!precision) return '没有记录日期';
-  const year = value!.slice(0, 4);
-  const known = precision === 'year' ? `${year} 年` : `${year} 年 ${Number(value!.slice(5, 7))} 月 ${Number(value!.slice(8, 10))} 日`;
+  const known = formatViewingDate(value);
   return `${known}${event === 'start' ? '开始观看' : '看完'}`;
 }
 

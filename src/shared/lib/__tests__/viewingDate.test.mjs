@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compareViewingDatesDesc, exactViewingDay, viewingDatePrecision, viewingDateText, validViewingDateDraft } from '../viewingDate.ts';
+import { compareViewingDatesDesc, exactViewingDay, formatViewingDate, viewingDatePrecision, viewingDateText, validViewingDateDraft } from '../viewingDate.ts';
 import { seasonRecordMetadata } from '../../../features/collections/lib/tmdbRecordMapping.ts';
 import { initialRecordFormValues } from '../../../features/watchlist/record-form/recordFormModel.ts';
 
@@ -12,6 +12,9 @@ test('strict viewing dates distinguish year, actual day and absent date', () => 
   }
   assert.equal(validViewingDateDraft(null), true); assert.equal(validViewingDateDraft(''), true);
   assert.equal(exactViewingDay('2020'), null); assert.equal(exactViewingDay(null), null);
+  assert.equal(formatViewingDate('2020'), '2020 年');
+  assert.equal(formatViewingDate('2020-05-16'), '2020 年 5 月 16 日');
+  assert.equal(formatViewingDate(null), '');
   assert.equal(viewingDateText('2020', 'end'), '2020 年看完');
   assert.equal(viewingDateText('2020-05-16', 'start'), '2020 年 5 月 16 日开始观看');
 });

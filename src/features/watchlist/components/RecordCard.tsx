@@ -1,4 +1,4 @@
-import { viewingDateText } from '../../../shared/lib/viewingDate';
+import { formatViewingDate, viewingDateText } from '../../../shared/lib/viewingDate';
 import React, { useCallback, useEffect, useState } from 'react';
 import { type EpisodeCompletion, WatchRecord, Status } from '../../../shared/types';
 import { STATUS_CONFIG, formatMovieProgress } from '../../../shared/lib/constants';
@@ -379,9 +379,17 @@ export default function RecordCard({ record, onEdit, onDelete, onStatusChange, o
             <span className="text-gray-300 text-xs">暂未评分</span>
           )}
         </div>
-        <div className="text-xs text-gray-400 flex items-center gap-1">
-          {record.startDate && <span>▶ {viewingDateText(record.startDate, 'start')}</span>}
-          {record.endDate && <span>⏹ {viewingDateText(record.endDate, 'end')}</span>}
+        <div className="text-xs text-gray-400 flex items-center gap-2 whitespace-nowrap">
+          {record.startDate && (
+            <span title={`开始观看：${viewingDateText(record.startDate, 'start')}`}>
+              ▶ {formatViewingDate(record.startDate)}
+            </span>
+          )}
+          {record.endDate && (
+            <span title={`看完：${viewingDateText(record.endDate, 'end')}`}>
+              ⏹ {formatViewingDate(record.endDate)}
+            </span>
+          )}
         </div>
       </div>
     </div>
