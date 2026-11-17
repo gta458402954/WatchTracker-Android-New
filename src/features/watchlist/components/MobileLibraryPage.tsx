@@ -101,7 +101,7 @@ function LibraryToolbar({ search, setSearch, prefs, setPrefs, onFilter, filterTr
           ▦
         </button>
       </div>
-      <label className="mobile-sort-control"><span className="sr-only">排序</span><select aria-label="排序" value={prefs.sortBy} onChange={event => setPrefs({ ...prefs, sortBy: event.target.value as MobileSortBy })}><option value="createdAt">最新添加</option><option value="endDate">完成时间</option><option value="releaseYear">上映年份</option><option value="rating">评分</option></select></label>
+      <label className="mobile-sort-control"><span className="sr-only">排序</span><select aria-label="排序" value={prefs.sortBy} onChange={event => setPrefs({ ...prefs, sortBy: event.target.value as MobileSortBy })}><option value="createdAt">最新添加</option><option value="startDate">开播/开始</option><option value="endDate">完成时间</option><option value="releaseYear">上映年份</option><option value="rating">最高评分</option><option value="watchValue">追剧推荐</option></select></label>
       <button ref={filterTriggerRef} type="button" className="mobile-filter-button" aria-label="打开筛选" onClick={onFilter}>筛选</button>
     </div>
   </>;

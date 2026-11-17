@@ -1,5 +1,5 @@
-import { WatchRecord } from '../types';
-import { mediaTypeOf } from './classification';
+import type { WatchRecord } from '../types/watchRecord.generated.ts';
+import { mediaTypeOf } from './classification.ts';
 
 export function calculateAffinityScore(targetRecord: WatchRecord, allRecords: WatchRecord[]): number {
   if (targetRecord.status !== '未看') return 1.0;
