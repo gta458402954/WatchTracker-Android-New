@@ -17,6 +17,7 @@ import { getSettingAsync, setSettingAsync } from '../../../shared/lib/database';
 import type { NoticeTone } from '../../../shared/lib/feedback';
 import MobileEpisodeTracking, { MobileEpisodeCardStatus, MobileEpisodeQuickAction, type MobileEpisodeActionHandler } from './MobileEpisodeTracking.tsx';
 import MobileRecordActionsSheet from './MobileRecordActionsSheet.tsx';
+import MobilePosterWall from './MobilePosterWall.tsx';
 import { isMobileEpisodeTrackable } from '../mobileEpisodeTracking.ts';
 
 interface MobileLibraryPageProps {
@@ -66,7 +67,7 @@ function FilterSheet({ prefs, setPrefs, records, onClose, returnFocusRef }: { pr
   </div>;
 }
 
-function LibraryToolbar({ search, setSearch, prefs, setPrefs, onFilter, filterTriggerRef, filteredCount, totalCount }: { search: string; setSearch: (value: string) => void; prefs: MobileLibraryPreferences; setPrefs: (next: MobileLibraryPreferences) => void; onFilter: () => void; filterTriggerRef: RefObject<HTMLButtonElement | null>; filteredCount: number; totalCount: number }) {
+function LibraryToolbar({ search, setSearch, prefs, setPrefs, onFilter, filterTriggerRef, filteredCount, totalCount, viewMode, onToggleViewMode }: { search: string; setSearch: (value: string) => void; prefs: MobileLibraryPreferences; setPrefs: (next: MobileLibraryPreferences) => void; onFilter: () => void; filterTriggerRef: RefObject<HTMLButtonElement | null>; filteredCount: number; totalCount: number; viewMode: 'list' | 'poster'; onToggleViewMode: (mode: 'list' | 'poster') => void }) {
   const chips = [
     ...prefs.statuses.map(value => ({ key: `status-${value}`, label: value, ariaLabel: `移除状态：${value}`, clear: () => setPrefs({ ...prefs, statuses: prefs.statuses.filter(item => item !== value) }) })),
     ...prefs.mediaTypes.map(value => ({ key: `media-${value}`, label: value, ariaLabel: `移除类型：${value}`, clear: () => setPrefs({ ...prefs, mediaTypes: prefs.mediaTypes.filter(item => item !== value) }) })),
@@ -78,6 +79,28 @@ function LibraryToolbar({ search, setSearch, prefs, setPrefs, onFilter, filterTr
     <div className="mobile-search-row"><label className="mobile-search-label"><span className="mobile-search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg></span><span className="sr-only">搜索片库</span><input aria-label="搜索片库" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索标题、平台、备注" />{search && <button type="button" className="mobile-search-clear" aria-label="清空搜索" onClick={() => setSearch('')}>×</button>}</label></div>
     <div className="mobile-toolbar-row">
       {chips.length ? <div className="mobile-active-chips" aria-label="当前筛选条件"><span className="sr-only">已启用筛选</span>{chips.map(chip => <button key={chip.key} type="button" aria-label={chip.ariaLabel} onClick={chip.clear}>{chip.label} ×</button>)}</div> : <span className="mobile-toolbar-spacer" aria-hidden="true" />}
+      <div className="mobile-view-toggle" role="group" aria-label="视图切换">
+        <button
+          type="button"
+          className={`mobile-view-toggle-btn ${viewMode === 'list' ? 'selected' : ''}`}
+          aria-pressed={viewMode === 'list'}
+          aria-label="切换到列表视图"
+          title="列表视图"
+          onClick={() => onToggleViewMode('list')}
+        >
+          ☰
+        </button>
+        <button
+          type="button"
+          className={`mobile-view-toggle-btn ${viewMode === 'poster' ? 'selected' : ''}`}
+          aria-pressed={viewMode === 'poster'}
+          aria-label="切换到海报墙视图"
+          title="海报墙视图"
+          onClick={() => onToggleViewMode('poster')}
+        >
+          ▦
+        </button>
+      </div>
       <label className="mobile-sort-control"><span className="sr-only">排序</span><select aria-label="排序" value={prefs.sortBy} onChange={event => setPrefs({ ...prefs, sortBy: event.target.value as MobileSortBy })}><option value="createdAt">最新添加</option><option value="endDate">完成时间</option><option value="releaseYear">上映年份</option><option value="rating">评分</option></select></label>
       <button ref={filterTriggerRef} type="button" className="mobile-filter-button" aria-label="打开筛选" onClick={onFilter}>筛选</button>
     </div>
@@ -458,6 +481,7 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [prefs, setPrefsState] = useState(DEFAULT_MOBILE_LIBRARY_PREFERENCES);
+  const [viewMode, setViewMode] = useState<'list' | 'poster'>('list');
   const [filterOpen, setFilterOpen] = useState(false);
   const [actionsRecord, setActionsRecord] = useState<WatchRecord | null>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -465,6 +489,19 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
   const scrollTopRef = useRef(0);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { const timer = window.setTimeout(() => setSearch(searchInput), 250); return () => window.clearTimeout(timer); }, [searchInput]);
+  useEffect(() => {
+    let active = true;
+    void getSettingAsync('mobile_library_view_mode').then(val => {
+      if (active && (val === 'poster' || val === 'list')) {
+        setViewMode(val);
+      }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  const handleToggleViewMode = useCallback((mode: 'list' | 'poster') => {
+    setViewMode(mode);
+    void setSettingAsync('mobile_library_view_mode', mode).catch(() => undefined);
+  }, []);
   useEffect(() => { let active = true; void getSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY).then(raw => { if (!active || !raw) return; try { const parsed = JSON.parse(raw); const normalized = normalizeMobilePreferences(parsed); if (parsed?.version !== 1) onNotify('warning', '片库偏好版本不兼容，已使用默认设置。'); setPrefsState(normalized); } catch { onNotify('warning', '片库偏好读取失败，已使用默认设置。'); } }).catch(() => { if (active) onNotify('warning', '片库偏好读取失败，已使用默认设置。'); }); return () => { active = false; }; }, [onNotify]);
   const setPrefs = useCallback((next: MobileLibraryPreferences) => { const normalized = normalizeMobilePreferences(next); setPrefsState(normalized); void setSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY, JSON.stringify(normalized)).catch(() => onNotify('warning', '片库偏好保存失败，本次操作仍已生效。')); }, [onNotify]);
   useEffect(() => { if (props.route !== 'library') return; const timer = window.requestAnimationFrame(() => { const container = document.querySelector<HTMLElement>('.mobile-content'); if (container) container.scrollTop = scrollTopRef.current; }); return () => window.cancelAnimationFrame(timer); }, [props.route]);
@@ -485,5 +522,5 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
   if (props.route === 'form' && formMode === 'edit' && !formRecord) return <section className="mobile-error" role="alert"><h1>记录不存在</h1><p>这条记录可能已被删除。</p><button type="button" className="mobile-primary-button" onClick={onBack}>返回片库</button></section>;
   if (props.route === 'form') return <MobileRecordForm record={formRecord} onSave={value => formRecord ? onUpdate(formRecord, value) : onAdd(value)} onDelete={() => { if (formRecord) void onDelete(formRecord); }} onClose={onBack} onNotify={onNotify} />;
   if (props.route === 'detail' && detailId && detail) return <DetailPage record={detail} onBack={onBack} onEdit={() => { if (!detail.isLocked) onForm('edit', detail); else onNotify('warning', '已锁定记录不能编辑。'); }} onDelete={() => void onDelete(detail)} onLock={() => void onLock(detail, !detail.isLocked)} onStatus={status => void onStatus(detail, status)} onEpisode={onEpisode} />;
-  return <section className="mobile-library" aria-labelledby="mobile-library-title" ref={contentRef}><LibraryToolbar search={searchInput} setSearch={value => { setSearchInput(value); if (!value) setSearch(''); }} prefs={prefs} setPrefs={setPrefs} onFilter={() => setFilterOpen(true)} filterTriggerRef={filterTriggerRef} filteredCount={filtered.length} totalCount={records.length} />{emptyKind ? <EmptyState kind={emptyKind} onAdd={() => onForm('new')} /> : <div className="mobile-record-list">{filtered.map(record => <RecordCard key={record.id} record={record} onOpen={() => { captureScroll(); onDetail(record); }} onMore={trigger => openActions(record, trigger)} onStatus={status => void onStatus(record, status)} onEpisode={onEpisode} />)}</div>}{filterOpen && <FilterSheet prefs={prefs} setPrefs={setPrefs} records={records} onClose={() => setFilterOpen(false)} returnFocusRef={filterTriggerRef} />}{actionsRecord && <MobileRecordActionsSheet record={actionsRecord} onEdit={() => openEdit(actionsRecord)} onLock={locked => toggleLock(actionsRecord, locked)} onDelete={() => deleteRecord(actionsRecord)} onClose={closeActions} returnFocusRef={actionsTriggerRef} />}</section>;
+  return <section className="mobile-library" aria-labelledby="mobile-library-title" ref={contentRef}><LibraryToolbar search={searchInput} setSearch={value => { setSearchInput(value); if (!value) setSearch(''); }} prefs={prefs} setPrefs={setPrefs} onFilter={() => setFilterOpen(true)} filterTriggerRef={filterTriggerRef} filteredCount={filtered.length} totalCount={records.length} viewMode={viewMode} onToggleViewMode={handleToggleViewMode} />{emptyKind ? <EmptyState kind={emptyKind} onAdd={() => onForm('new')} /> : viewMode === 'poster' ? <MobilePosterWall records={filtered} onOpen={record => { captureScroll(); onDetail(record); }} onMore={(record, trigger) => openActions(record, trigger)} onStatus={(record, nextStatus) => void onStatus(record, nextStatus)} /> : <div className="mobile-record-list">{filtered.map(record => <RecordCard key={record.id} record={record} onOpen={() => { captureScroll(); onDetail(record); }} onMore={trigger => openActions(record, trigger)} onStatus={status => void onStatus(record, status)} onEpisode={onEpisode} />)}</div>}{filterOpen && <FilterSheet prefs={prefs} setPrefs={setPrefs} records={records} onClose={() => setFilterOpen(false)} returnFocusRef={filterTriggerRef} />}{actionsRecord && <MobileRecordActionsSheet record={actionsRecord} onEdit={() => openEdit(actionsRecord)} onLock={locked => toggleLock(actionsRecord, locked)} onDelete={() => deleteRecord(actionsRecord)} onClose={closeActions} returnFocusRef={actionsTriggerRef} />}</section>;
 }
