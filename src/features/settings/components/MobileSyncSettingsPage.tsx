@@ -8,6 +8,13 @@ import {
   previewLocalImport,
   commitLocalImport,
   resolveSyncConflict,
+  getTmdbCredentialStatus,
+  saveTmdbCredential,
+  clearTmdbCredential,
+  getSettingAsync,
+  setSettingAsync,
+  vacuumDbAsync,
+  cleanPosterCache,
   type ActiveSyncConnection,
   type SyncRuntimeState,
   type SyncTargetRegistry,
@@ -37,8 +44,13 @@ import {
   localImportErrorMessage,
   type LocalImportPreview,
 } from '../../backup/localImport.ts';
+import { useBatchMetadata } from '../hooks/useBatchMetadata.ts';
+import { BATCH_METADATA_FIELD_LABELS, type BatchMetadataNoDataState } from '../../../shared/lib/batchMetadata.ts';
+import type { UpdateWatchRecord, WatchRecord } from '../../../shared/types';
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/%E5%BD%B1%E8%A7%86%E8%BF%BD%E8%B8%AA/';
+const DEFAULT_BATCH_NO_DATA: BatchMetadataNoDataState = { version: 1, records: {} };
+const EMPTY_RECORDS: WatchRecord[] = [];
 
 interface Props {
   runtime: SyncRuntimeState | null;
@@ -49,6 +61,8 @@ interface Props {
   onSyncWorkQueued: () => Promise<void>;
   onReloadRecords: () => Promise<unknown>;
   notify: (tone: NoticeTone, message: string) => void;
+  records?: WatchRecord[];
+  onUpdateRecord?: (id: string, updates: UpdateWatchRecord) => Promise<void>;
 }
 
 function credentialLabel(connection: ActiveSyncConnection | null): string {
@@ -83,7 +97,7 @@ function conflictTitle(conflict: SyncConflict): string {
 
 export default function MobileSyncSettingsPage({
   runtime, isSyncing, onSyncNow, onTogglePause, onConfigurationChanged,
-  onSyncWorkQueued, onReloadRecords, notify,
+  onSyncWorkQueued, onReloadRecords, notify, records, onUpdateRecord,
 }: Props) {
   const [connection, setConnection] = useState<ActiveSyncConnection | null>(null);
   const [registry, setRegistry] = useState<SyncTargetRegistry | null>(null);
@@ -101,8 +115,35 @@ export default function MobileSyncSettingsPage({
   const [importStatus, setImportStatus] = useState('');
   const [importError, setImportError] = useState('');
   const [importPreview, setImportPreview] = useState<LocalImportPreview | null>(null);
+  const [tmdbConfigured, setTmdbConfigured] = useState(false);
+  const [tmdbInput, setTmdbInput] = useState('');
+  const [tmdbSaving, setTmdbSaving] = useState(false);
+  const [proxyInput, setProxyInput] = useState('');
+  const [proxySaving, setProxySaving] = useState(false);
+  const [vacuumBusy, setVacuumBusy] = useState(false);
+  const [vacuumStatus, setVacuumStatus] = useState('');
+  const [cleanCacheBusy, setCleanCacheBusy] = useState(false);
+  const [cleanCacheStatus, setCleanCacheStatus] = useState('');
   const pendingImportToken = useRef<string | null>(null);
   const importCommitInFlight = useRef(false);
+
+  const batch = useBatchMetadata({
+    records: records ?? EMPTY_RECORDS,
+    tmdbSaved: tmdbConfigured,
+    initialBatchNoDataState: DEFAULT_BATCH_NO_DATA,
+    onUpdateRecord: onUpdateRecord ?? (async () => undefined),
+    onDatabaseRestored: async () => {
+      await onReloadRecords();
+      return records ?? EMPTY_RECORDS;
+    },
+    onNotify: notify,
+    showFailure: (_scope, action, error, setStatus) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      notify('error', `${action}失败: ${msg}`);
+      if (setStatus) setStatus(`${action}失败`);
+    },
+    showSuccess: msg => notify('success', msg),
+  });
 
   useEffect(() => () => {
     const token = pendingImportToken.current;
@@ -110,18 +151,103 @@ export default function MobileSyncSettingsPage({
   }, []);
 
   const refresh = useCallback(async () => {
-    const [nextConnection, nextRegistry, nextRuntime, snapshot] = await Promise.all([
-      getActiveSyncConnection(), getSyncTargets(), getSyncRuntimeState(), getSyncSnapshot(),
+    const [nextConnection, nextRegistry, nextRuntime, snapshot, tmdbStatus, savedProxy] = await Promise.all([
+      getActiveSyncConnection(),
+      getSyncTargets(),
+      getSyncRuntimeState(),
+      getSyncSnapshot(),
+      getTmdbCredentialStatus().catch(() => ({ available: false, state: 'missing' as const })),
+      getSettingAsync('network_proxy').catch(() => null),
     ]);
     setConnection(nextConnection);
     setRegistry(nextRegistry);
     setLoadedRuntime(nextRuntime);
     setConflicts(snapshot.conflicts);
+    setTmdbConfigured(tmdbStatus.available);
+    if (savedProxy !== null) {
+      setProxyInput(savedProxy);
+    }
     if (nextConnection) {
       setUrl(nextConnection.url);
       setUsername(nextConnection.username);
     }
   }, []);
+
+  const saveTmdbKey = async () => {
+    if (!tmdbInput.trim()) return;
+    setTmdbSaving(true);
+    try {
+      const res = await saveTmdbCredential(tmdbInput.trim());
+      setTmdbConfigured(res.available);
+      setTmdbInput('');
+      notify('success', 'TMDB API 密钥已保存并受 Android Keystore 保护。');
+    } catch {
+      notify('error', '保存 TMDB 密钥失败。');
+    } finally {
+      setTmdbSaving(false);
+    }
+  };
+
+  const clearTmdbKey = async () => {
+    if (!window.confirm('确定清除已保存的 TMDB 密钥吗？清除后将无法在线检索影片信息。')) return;
+    try {
+      await clearTmdbCredential();
+      setTmdbConfigured(false);
+      notify('info', '已清除 TMDB 密钥。');
+    } catch {
+      notify('error', '清除 TMDB 密钥失败。');
+    }
+  };
+
+  const saveProxy = async () => {
+    setProxySaving(true);
+    try {
+      await setSettingAsync('network_proxy', proxyInput.trim());
+      notify('success', proxyInput.trim() ? '代理配置已保存。' : '已清除代理设置。');
+    } catch {
+      notify('error', '保存代理设置失败。');
+    } finally {
+      setProxySaving(false);
+    }
+  };
+
+  const handleVacuum = async () => {
+    if (vacuumBusy) return;
+    setVacuumBusy(true);
+    setVacuumStatus('正在压缩数据库…');
+    try {
+      await vacuumDbAsync();
+      setVacuumStatus('✓ 数据库已完成压缩与碎片整理');
+      notify('success', '数据库压缩完成');
+    } catch (error) {
+      console.error('[Vacuum]', error);
+      setVacuumStatus('数据库压缩失败');
+      notify('error', '数据库压缩失败');
+    } finally {
+      setVacuumBusy(false);
+      setTimeout(() => setVacuumStatus(''), 4000);
+    }
+  };
+
+  const handleCleanCache = async () => {
+    if (cleanCacheBusy) return;
+    if (!window.confirm('清理无引用的多余海报缓存？正常影视海报不受影响。')) return;
+    setCleanCacheBusy(true);
+    setCleanCacheStatus('正在清理海报缓存…');
+    try {
+      const res = await cleanPosterCache('unreferenced');
+      const mb = (res.totalBytes / 1024 / 1024).toFixed(1);
+      setCleanCacheStatus(`✓ 缓存清理完成，保留 ${res.referencedCount} 个有效封面 (${mb} MB)`);
+      notify('success', `缓存清理完成，保留 ${res.referencedCount} 个有效封面`);
+    } catch (error) {
+      console.error('[CleanCache]', error);
+      setCleanCacheStatus('清理海报缓存失败');
+      notify('error', '清理海报缓存失败');
+    } finally {
+      setCleanCacheBusy(false);
+      setTimeout(() => setCleanCacheStatus(''), 4000);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -130,6 +256,7 @@ export default function MobileSyncSettingsPage({
     }), 0);
     return () => { active = false; window.clearTimeout(timer); };
   }, [refresh]);
+
   useEffect(() => {
     if (runtime?.conflictCount === undefined) return;
     const timer = window.setTimeout(() => void refresh(), 0);
@@ -167,8 +294,6 @@ export default function MobileSyncSettingsPage({
       return;
     }
 
-    // Activation changes the target ID/epoch. Refresh the coordinator before
-    // any sync so failure persistence is verified against the new context.
     setPassword(''); setProbe(null);
     setStatus('目标已激活，正在执行首次拉取与合并…');
     try {
@@ -205,26 +330,31 @@ export default function MobileSyncSettingsPage({
     } finally { setBusy(null); }
   };
 
-  const clear = async () => {
-    if (!window.confirm('清除当前 WebDAV 凭据并停止自动同步？本地片库和各目标的待处理状态不会删除。')) return;
-    setBusy('clear');
+  const togglePause = async () => {
+    setBusy('pause');
     try {
-      await clearCreds();
-      setConnection(null); setPassword(''); setProbe(null);
-      await refresh(); await onConfigurationChanged();
-      setStatus('凭据已清除；本地数据未删除。');
-      notify('success', 'WebDAV 凭据已清除。');
+      await onTogglePause();
+      await refresh();
+      notify('info', liveRuntime?.scheduler.paused ? '自动同步已恢复。' : '自动同步已暂停。');
     } catch {
-      setStatus('凭据清除失败；未假定安全存储已经删除。');
-      notify('error', 'WebDAV 凭据清除失败。');
+      notify('error', '切换自动同步状态失败。');
     } finally { setBusy(null); }
   };
 
-  const togglePause = async () => {
-    setBusy('pause');
-    try { await onTogglePause(); await refresh(); setStatus(liveRuntime?.scheduler.paused ? '自动同步已恢复。' : '自动同步已暂停。'); }
-    catch { setStatus('无法更新自动同步状态。'); }
-    finally { setBusy(null); }
+  const clear = async () => {
+    if (!window.confirm('确定清除已保存的凭据吗？清除后会自动断开云端同步，本地片库完整保留。')) return;
+    setBusy('clear'); setStatus('正在清除凭据…');
+    try {
+      await clearCreds();
+      await onConfigurationChanged();
+      await refresh();
+      setPassword(''); setProbe(null);
+      setStatus('凭据已清除；本地数据未删除。');
+      notify('info', 'WebDAV 凭据已清除，本地数据完好保留。');
+    } catch {
+      setStatus('清除凭据失败；当前凭据可能仍有效。');
+      notify('error', '清除 WebDAV 凭据失败。');
+    } finally { setBusy(null); }
   };
 
   const resolve = async (conflict: SyncConflict, resolution: 'local' | 'remote' | 'keep' | 'delete') => {
@@ -233,10 +363,15 @@ export default function MobileSyncSettingsPage({
     try {
       const snapshot = await getSyncSnapshot();
       await resolveSyncConflict(conflict.id, resolution, snapshot.targetId, snapshot.targetEpoch);
-      await onReloadRecords(); await onSyncWorkQueued(); await refresh();
+      await onReloadRecords();
+      await onSyncWorkQueued();
+      await refresh();
       setStatus('冲突已解决，选择结果等待同步。');
-    } catch { setStatus('冲突解决失败，原冲突仍保留。'); }
-    finally { setBusy(null); }
+    } catch {
+      setStatus('冲突解决失败，原冲突仍保留。');
+    } finally {
+      setBusy(null);
+    }
   };
 
   const exportLocalData = async () => {
@@ -275,7 +410,9 @@ export default function MobileSyncSettingsPage({
   const chooseImport = async () => {
     if (importBusy) return;
     await clearPendingImport();
-    setImportError(''); setImportStatus(''); setImportBusy('select');
+    setImportError('');
+    setImportStatus('');
+    setImportBusy('select');
     try {
       const selection = await selectJsonDocument();
       if (selection.status === 'cancelled') {
@@ -305,13 +442,17 @@ export default function MobileSyncSettingsPage({
     if (importBusy) return;
     setImportBusy('preview');
     await clearPendingImport();
-    setImportError(''); setImportStatus('已取消导入。'); setImportBusy(null);
+    setImportError('');
+    setImportStatus('已取消导入。');
+    setImportBusy(null);
   };
 
   const confirmImport = async () => {
     const preview = importPreview;
     if (!preview || importBusy) return;
-    setImportBusy('commit'); setImportError(''); setImportStatus('正在导入…');
+    setImportBusy('commit');
+    setImportError('');
+    setImportStatus('正在导入…');
     importCommitInFlight.current = true;
     try {
       const result = await commitLocalImport(preview);
@@ -323,7 +464,7 @@ export default function MobileSyncSettingsPage({
       notify('success', '数据已导入。');
     } catch (error) {
       const code = localImportErrorCode(error);
-      const message = localImportErrorMessage(error);
+      const message = localImportErrorMessage(code);
       setImportError(message);
       setImportStatus('');
       if (code === 'import_preview_stale' || code === 'import_stage_changed') {
@@ -348,107 +489,344 @@ export default function MobileSyncSettingsPage({
     }
   };
 
-  return <section className="mobile-sync-settings" aria-labelledby="mobile-sync-title">
-    <header className="mobile-page-heading">
-      <div><h1 id="mobile-sync-title">设置</h1><p>WebDAV 密码由 Android Keystore 保护，不会回显到页面。</p></div>
-      <span className={`mobile-sync-state mobile-sync-state-${stateLabel === '错误' ? 'error' : 'normal'}`}>{stateLabel}</span>
-    </header>
+  return (
+    <section className="mobile-sync-settings" aria-labelledby="mobile-sync-title">
+      <header className="mobile-page-heading">
+        <div>
+          <h1 id="mobile-sync-title">设置</h1>
+          <p>WebDAV 密码由 Android Keystore 保护，不会回显到页面。</p>
+        </div>
+        <span className={`mobile-sync-state mobile-sync-state-${stateLabel === '错误' ? 'error' : 'normal'}`}>
+          {stateLabel}
+        </span>
+      </header>
 
-    <div className="mobile-sync-card" data-testid="mobile-backup-export">
-      <h2>备份与恢复</h2>
-      <p className="mobile-sync-note">导出片库、逐集历史和收藏数据为 JSON 文件。</p>
-      <p className="mobile-sync-note">不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。</p>
-      <button
-        type="button"
-        className="mobile-primary-button"
-        disabled={exportBusy}
-        onClick={() => void exportLocalData()}
-      >{exportBusy ? '正在准备导出…' : '导出数据'}</button>
-      <button
-        type="button"
-        className="mobile-quiet-button mobile-import-button"
-        disabled={importBusy !== null}
-        onClick={() => void chooseImport()}
-      >{importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}</button>
-      {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
-      {importStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-import-status">{importStatus}</p>}
-      {importError && <p className="mobile-sync-error" role="alert" data-testid="mobile-import-error">{importError}</p>}
-      {importPreview && <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview">
-        <h3>导入预览</h3>
+      {/* Backup & Restore */}
+      <div className="mobile-sync-card" data-testid="mobile-backup-export">
+        <h2>备份与恢复</h2>
+        <p className="mobile-sync-note">导出片库、逐集历史和收藏数据为 JSON 文件。</p>
+        <p className="mobile-sync-note">不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。</p>
+        <button
+          type="button"
+          className="mobile-primary-button"
+          disabled={exportBusy}
+          onClick={() => void exportLocalData()}
+        >
+          {exportBusy ? '正在准备导出…' : '导出数据'}
+        </button>
+        <button
+          type="button"
+          className="mobile-quiet-button mobile-import-button"
+          disabled={importBusy !== null}
+          onClick={() => void chooseImport()}
+        >
+          {importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}
+        </button>
+        {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
+        {importStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-import-status">{importStatus}</p>}
+        {importError && <p className="mobile-sync-error" role="alert" data-testid="mobile-import-error">{importError}</p>}
+        {importPreview && (
+          <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview">
+            <h3>导入预览</h3>
+            <dl className="mobile-sync-facts">
+              <div><dt>文件</dt><dd>{importPreview.fileName}</dd></div>
+              <div><dt>大小</dt><dd>{formatImportBytes(importPreview.sizeBytes)}</dd></div>
+              <div><dt>格式</dt><dd>V{importPreview.formatVersion}</dd></div>
+              <div><dt>导出时间</dt><dd>{new Date(importPreview.exportedAt).toLocaleString('zh-CN')}</dd></div>
+              <div><dt>记录</dt><dd>{importPreview.counts.records}</dd></div>
+              <div><dt>逐集历史</dt><dd>{importPreview.counts.episodeCompletions}</dd></div>
+              <div><dt>收藏集</dt><dd>{importPreview.counts.collections}</dd></div>
+              <div><dt>收藏成员</dt><dd>{importPreview.counts.collectionMembers}</dd></div>
+            </dl>
+            <h4>预计影响</h4>
+            <dl className="mobile-import-diff">
+              <div><dt>新增</dt><dd>{importPreview.records.added}</dd></div>
+              <div><dt>更新</dt><dd>{importPreview.records.updated}</dd></div>
+              <div><dt>删除</dt><dd>{importPreview.records.removed}</dd></div>
+              <div><dt>不变</dt><dd>{importPreview.records.unchanged}</dd></div>
+              <div><dt>锁定保护</dt><dd>{importPreview.records.lockedPreserved}</dd></div>
+              <div><dt>导入后记录</dt><dd>{importPreview.records.finalCount}</dd></div>
+            </dl>
+            <p className="mobile-sync-note">
+              未锁定的当前数据可能被替换或删除。锁定记录及其逐集历史会受到保护；操作前会创建恢复点。
+            </p>
+            <div className="mobile-sync-actions">
+              <button type="button" className="mobile-quiet-button" disabled={importBusy !== null} onClick={() => void cancelImport()}>
+                取消导入
+              </button>
+              <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>
+                {importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}
+              </button>
+            </div>
+          </section>
+        )}
+      </div>
+
+      {/* TMDB & Network Proxy */}
+      <div className="mobile-sync-card" data-testid="mobile-tmdb-settings">
+        <h2>TMDB 元数据与网络代理</h2>
+        <p className="mobile-sync-note">用于影视海报拉取、年份及详情自动填充。API 密钥由 Android Keystore 硬件级加密保护。</p>
         <dl className="mobile-sync-facts">
-          <div><dt>文件</dt><dd>{importPreview.fileName}</dd></div>
-          <div><dt>大小</dt><dd>{formatImportBytes(importPreview.sizeBytes)}</dd></div>
-          <div><dt>格式</dt><dd>V{importPreview.formatVersion}</dd></div>
-          <div><dt>导出时间</dt><dd>{new Date(importPreview.exportedAt).toLocaleString('zh-CN')}</dd></div>
-          <div><dt>记录</dt><dd>{importPreview.counts.records}</dd></div>
-          <div><dt>逐集历史</dt><dd>{importPreview.counts.episodeCompletions}</dd></div>
-          <div><dt>收藏集</dt><dd>{importPreview.counts.collections}</dd></div>
-          <div><dt>收藏成员</dt><dd>{importPreview.counts.collectionMembers}</dd></div>
+          <div><dt>TMDB 密钥</dt><dd>{tmdbConfigured ? '✓ 已受 Keystore 保护' : '未配置'}</dd></div>
+          <div><dt>网络代理</dt><dd>{proxyInput.trim() || '直连 (无代理)'}</dd></div>
         </dl>
-        <h4>预计影响</h4>
-        <dl className="mobile-import-diff">
-          <div><dt>新增</dt><dd>{importPreview.records.added}</dd></div>
-          <div><dt>更新</dt><dd>{importPreview.records.updated}</dd></div>
-          <div><dt>删除</dt><dd>{importPreview.records.removed}</dd></div>
-          <div><dt>不变</dt><dd>{importPreview.records.unchanged}</dd></div>
-          <div><dt>锁定保护</dt><dd>{importPreview.records.lockedPreserved}</dd></div>
-          <div><dt>导入后记录</dt><dd>{importPreview.records.finalCount}</dd></div>
+        {!tmdbConfigured ? (
+          <form onSubmit={e => { e.preventDefault(); void saveTmdbKey(); }} style={{ marginTop: '12px' }}>
+            <label>
+              TMDB API KEY (V3)
+              <input type="password" placeholder="输入 TMDB API KEY" value={tmdbInput} onChange={e => setTmdbInput(e.target.value)} required />
+            </label>
+            <button type="submit" className="mobile-primary-button" disabled={!tmdbInput.trim() || tmdbSaving} style={{ marginTop: '8px' }}>
+              {tmdbSaving ? '保存中…' : '保存密钥'}
+            </button>
+          </form>
+        ) : (
+          <div className="mobile-sync-actions" style={{ marginTop: '10px' }}>
+            <button type="button" className="mobile-quiet-button mobile-danger" onClick={() => void clearTmdbKey()}>
+              清除密钥并重新输入
+            </button>
+          </div>
+        )}
+        <form onSubmit={e => { e.preventDefault(); void saveProxy(); }} style={{ marginTop: '16px' }}>
+          <label>
+            网络代理 (可选)
+            <input type="text" placeholder="如 http://127.0.0.1:7890，无代理留空" value={proxyInput} onChange={e => setProxyInput(e.target.value)} />
+          </label>
+          <button type="submit" className="mobile-quiet-button" disabled={proxySaving} style={{ marginTop: '8px' }}>
+            {proxySaving ? '保存中…' : '保存代理设置'}
+          </button>
+        </form>
+      </div>
+
+      {/* Batch Metadata Tool */}
+      <div className="mobile-sync-card" data-testid="mobile-batch-metadata">
+        <h2>批量元数据补全</h2>
+        <p className="mobile-sync-note">
+          基于已录入的 IMDb 编号，通过 TMDB 智能分析并补全缺失的年份、评分、海报、国家、片长与分季信息。绝不覆盖已有数据。
+        </p>
+
+        {(batch.batchPhase === 'idle' || batch.batchPhase === 'done') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+            <button
+              type="button"
+              className="mobile-primary-button"
+              disabled={!tmdbConfigured}
+              onClick={() => void batch.handlePrepare()}
+            >
+              分析并预览缺失字段
+            </button>
+            {Object.keys(batch.batchNoDataState.records).length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#f8fafc', borderRadius: '10px', fontSize: '12px', color: '#64748b' }}>
+                <span>已记住 {Object.keys(batch.batchNoDataState.records).length} 个无数据条目</span>
+                <button
+                  type="button"
+                  className="mobile-quiet-button"
+                  style={{ minHeight: '28px', padding: '0 8px', fontSize: '11px' }}
+                  onClick={() => void batch.handleClearNoData()}
+                >
+                  清除记忆
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {batch.batchSyncing && batch.batchTotal > 0 && (
+          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="mobile-stats-progress-track" style={{ height: '8px' }}>
+              <div
+                className="mobile-stats-progress-seg completed"
+                style={{ width: `${(batch.batchProgress / batch.batchTotal) * 100}%`, background: '#f59e0b' }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#64748b' }}>
+              <span>进度：{batch.batchProgress} / {batch.batchTotal}</span>
+              <button
+                type="button"
+                className="mobile-quiet-button mobile-danger"
+                style={{ minHeight: '28px', padding: '0 8px', fontSize: '11px' }}
+                onClick={batch.handleCancel}
+              >
+                停止
+              </button>
+            </div>
+          </div>
+        )}
+
+        {batch.batchStatus && (
+          <p className="mobile-sync-message" style={{ color: '#d97706', fontWeight: 700, marginTop: '8px' }}>
+            {batch.batchStatus}
+          </p>
+        )}
+
+        {batch.batchPhase === 'preview' && (
+          <div className="mobile-batch-preview-box" style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: '#1e293b' }}>
+                写入预览 ({batch.batchPlan.filter(r => r.status === 'ready').length} 可更新)
+              </span>
+              <small style={{ color: '#94a3b8' }}>只补缺失字段</small>
+            </div>
+
+            <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '4px' }}>
+              {batch.batchPlan.map(row => (
+                <div key={row.recordId} style={{ padding: '8px 10px', borderRadius: '10px', background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.recordName}</strong>
+                    <span style={{
+                      fontSize: '10px', fontWeight: 800, padding: '2px 6px', borderRadius: '6px',
+                      background: row.status === 'ready' ? '#d1fae5' : row.status === 'choice' ? '#fef3c7' : '#f1f5f9',
+                      color: row.status === 'ready' ? '#065f46' : row.status === 'choice' ? '#92400e' : '#64748b'
+                    }}>
+                      {row.status === 'ready' ? '可更新' : row.status === 'choice' ? '待选择' : row.status === 'failed' ? '失败' : '跳过'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '3px' }}>
+                    {row.fields.length ? `补全：${row.fields.map(f => BATCH_METADATA_FIELD_LABELS[f]).join('、')}` : row.reason}
+                  </div>
+                  {row.status === 'choice' && row.candidates && (
+                    <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {row.candidates.map(candidate => (
+                        <button
+                          key={`${candidate.match.type}:${candidate.match.id}`}
+                          type="button"
+                          className="mobile-quiet-button"
+                          style={{ fontSize: '10px', minHeight: '30px', textAlign: 'left', padding: '4px 8px' }}
+                          disabled={batch.batchChoosingId === row.recordId}
+                          onClick={() => void batch.handleSelectCandidate(row, candidate.match)}
+                        >
+                          {batch.batchChoosingId === row.recordId ? '读取中…' : candidate.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="mobile-primary-button"
+                style={{ flex: 2, minHeight: '40px' }}
+                disabled={!batch.batchPlan.some(r => r.status === 'ready')}
+                onClick={() => void batch.handleApply()}
+              >
+                确认写入 ({batch.batchPlan.filter(r => r.status === 'ready').length})
+              </button>
+              <button
+                type="button"
+                className="mobile-quiet-button"
+                style={{ flex: 1, minHeight: '40px' }}
+                onClick={batch.resetBatch}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+
+        {batch.batchPhase === 'done' && batch.batchResults.length > 0 && (
+          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {batch.batchResults.map(res => (
+                <div key={res.plan.recordId} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 8px', borderRadius: '8px', background: '#f8fafc', fontSize: '11px' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{res.plan.recordName}</span>
+                  <span style={{ fontWeight: 800, color: res.status === 'updated' ? '#10b981' : res.status === 'failed' ? '#ef4444' : '#94a3b8' }}>
+                    {res.status === 'updated' ? '已更新' : res.status === 'failed' ? '失败' : '跳过'}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="mobile-quiet-button"
+              style={{ minHeight: '36px', width: '100%' }}
+              onClick={batch.resetBatch}
+            >
+              完成
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* WebDAV Cloud Sync */}
+      <div className="mobile-sync-card" data-testid="mobile-sync-runtime">
+        <h2>WebDAV 同步</h2>
+        <dl className="mobile-sync-facts">
+          <div><dt>凭据</dt><dd>{credentialLabel(connection)}</dd></div>
+          <div><dt>待上传</dt><dd>{liveRuntime?.outbox.pending ? '是' : '否'}</dd></div>
+          <div><dt>冲突</dt><dd>{liveRuntime?.conflictCount ?? conflicts.length}</dd></div>
+          <div><dt>最近检查</dt><dd>{liveRuntime?.scheduler.lastRemoteCheckAt ? new Date(liveRuntime.scheduler.lastRemoteCheckAt).toLocaleString('zh-CN') : '尚未检查'}</dd></div>
         </dl>
-        <p className="mobile-sync-note">未锁定的当前数据可能被替换或删除。锁定记录及其逐集历史会受到保护；操作前会创建恢复点。</p>
-        <div className="mobile-sync-actions">
-          <button type="button" className="mobile-quiet-button" disabled={importBusy !== null} onClick={() => void cancelImport()}>取消导入</button>
-          <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>{importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}</button>
-        </div>
-      </section>}
-    </div>
-
-    <div className="mobile-sync-card" data-testid="mobile-sync-runtime">
-      <h2>WebDAV 同步</h2>
-      <dl className="mobile-sync-facts">
-        <div><dt>凭据</dt><dd>{credentialLabel(connection)}</dd></div>
-        <div><dt>待上传</dt><dd>{liveRuntime?.outbox.pending ? '是' : '否'}</dd></div>
-        <div><dt>冲突</dt><dd>{liveRuntime?.conflictCount ?? conflicts.length}</dd></div>
-        <div><dt>最近检查</dt><dd>{liveRuntime?.scheduler.lastRemoteCheckAt ? new Date(liveRuntime.scheduler.lastRemoteCheckAt).toLocaleString('zh-CN') : '尚未检查'}</dd></div>
-      </dl>
-      {connection && <p className="mobile-sync-target" title={display.safeUrl}>{connection.username} · {display.summary}</p>}
-      {liveRuntime?.scheduler.lastErrorCode && <p className="mobile-sync-error" role="alert">同步错误：{liveRuntime.scheduler.lastErrorCode}。本地修改已保留。</p>}
-      {status && <p className="mobile-sync-message" role="status">{status}</p>}
-      {connection && <div className="mobile-sync-actions">
-        {connection.credentialAvailable && <>
-          <button type="button" className="mobile-primary-button" disabled={busy !== null || isSyncing} onClick={() => void syncNow()}>{busy === 'sync' || isSyncing ? '同步中…' : '立即同步'}</button>
-          <button type="button" className="mobile-quiet-button" disabled={busy !== null} onClick={() => void togglePause()}>{liveRuntime?.scheduler.paused ? '恢复自动同步' : '暂停自动同步'}</button>
-        </>}
-        <button type="button" className="mobile-danger-button" disabled={busy !== null} onClick={() => void clear()}>清除凭据</button>
-      </div>}
-    </div>
-
-    <form className="mobile-sync-card mobile-sync-form" onSubmit={event => { event.preventDefault(); void runProbe(); }}>
-      <h2>{connection ? '更新或切换目标' : '配置 WebDAV'}</h2>
-      <label>WebDAV URL<input type="url" autoCapitalize="none" autoCorrect="off" value={url} onChange={event => editInput(setUrl)(event.target.value)} required /></label>
-      <label>用户名<input type="text" autoCapitalize="none" autoCorrect="off" value={username} onChange={event => editInput(setUsername)(event.target.value)} required /></label>
-      <label>密码<input type="password" value={password} onChange={event => editInput(setPassword)(event.target.value)} autoComplete="new-password" required /></label>
-      <button type="submit" className="mobile-primary-button" disabled={busy !== null || !url.trim() || !username.trim() || !password}>{busy === 'probe' ? '检查中…' : '测试连接'}</button>
-      {probe && <div className="mobile-sync-probe" role="region" aria-label="目标检查结果"><p>{probeLabel(probe)}</p><button type="button" className="mobile-primary-button" disabled={busy !== null} onClick={() => void activate()}>{busy === 'activate' ? '激活中…' : '确认激活并首次同步'}</button></div>}
-      <p className="mobile-sync-note">激活前只进行只读检查。切换目标不会删除旧目标的待上传、基线、冲突或暂存状态。</p>
-    </form>
-
-    <div className="mobile-sync-card" data-testid="mobile-conflict-center">
-      <h2>同步冲突</h2>
-      {conflicts.length === 0 ? <p className="mobile-sync-empty">暂无冲突</p> : conflicts.map(conflict => <article key={`${conflict.id}-${conflict.detectedAt}`} className="mobile-sync-conflict">
-        <h3>{conflictTitle(conflict)}</h3>
-        <p>{conflict.kind === 'delete-edit' ? '删除与编辑冲突' : conflict.kind === 'locked' ? '锁定记录与远端不同' : `相同字段同时修改：${conflict.fields.join('、') || '记录'}`}</p>
-        <div className="mobile-sync-actions">
-          {conflict.kind === 'delete-edit' ? <>
-            <button type="button" disabled={busy !== null} onClick={() => void resolve(conflict, 'keep')}>保留条目</button>
-            <button type="button" disabled={busy !== null} onClick={() => void resolve(conflict, 'delete')}>确认删除</button>
-          </> : <>
-            <button type="button" disabled={busy !== null || !conflict.local} onClick={() => void resolve(conflict, 'local')}>采用本机</button>
-            <button type="button" disabled={busy !== null || !conflict.remote} onClick={() => void resolve(conflict, 'remote')}>采用云端</button>
+        {connection && <p className="mobile-sync-target" title={display.safeUrl}>{connection.username} · {display.summary}</p>}
+        {liveRuntime?.scheduler.lastErrorCode && <p className="mobile-sync-error" role="alert">同步错误：{liveRuntime.scheduler.lastErrorCode}。本地修改已保留。</p>}
+        {status && <p className="mobile-sync-message" role="status">{status}</p>}
+        {connection && <div className="mobile-sync-actions">
+          {connection.credentialAvailable && <>
+            <button type="button" className="mobile-primary-button" disabled={busy !== null || isSyncing} onClick={() => void syncNow()}>{busy === 'sync' || isSyncing ? '同步中…' : '立即同步'}</button>
+            <button type="button" className="mobile-quiet-button" disabled={busy !== null} onClick={() => void togglePause()}>{liveRuntime?.scheduler.paused ? '恢复自动同步' : '暂停自动同步'}</button>
           </>}
-        </div>
-      </article>)}
-    </div>
+          <button type="button" className="mobile-danger-button" disabled={busy !== null} onClick={() => void clear()}>清除凭据</button>
+        </div>}
+      </div>
 
-    {registry && registry.targets.length > 1 && <p className="mobile-sync-target-count">已保留 {registry.targets.length} 个隔离同步目标的本地状态。</p>}
-  </section>;
+      {/* WebDAV Form */}
+      <form className="mobile-sync-card mobile-sync-form" onSubmit={event => { event.preventDefault(); void runProbe(); }}>
+        <h2>{connection ? '更新或切换目标' : '配置 WebDAV'}</h2>
+        <label>WebDAV URL<input type="url" autoCapitalize="none" autoCorrect="off" value={url} onChange={event => editInput(setUrl)(event.target.value)} required /></label>
+        <label>用户名<input type="text" autoCapitalize="none" autoCorrect="off" value={username} onChange={event => editInput(setUsername)(event.target.value)} required /></label>
+        <label>密码<input type="password" value={password} onChange={event => editInput(setPassword)(event.target.value)} autoComplete="new-password" required /></label>
+        <button type="submit" className="mobile-primary-button" disabled={busy !== null || !url.trim() || !username.trim() || !password}>{busy === 'probe' ? '检查中…' : '测试连接'}</button>
+        {probe && <div className="mobile-sync-probe" role="region" aria-label="目标检查结果"><p>{probeLabel(probe)}</p><button type="button" className="mobile-primary-button" disabled={busy !== null} onClick={() => void activate()}>{busy === 'activate' ? '激活中…' : '确认激活并首次同步'}</button></div>}
+        <p className="mobile-sync-note">激活前只进行只读检查。切换目标不会删除旧目标的待上传、基线、冲突或暂存状态。</p>
+      </form>
+
+      {/* Sync Conflicts */}
+      <div className="mobile-sync-card" data-testid="mobile-conflict-center">
+        <h2>同步冲突</h2>
+        {conflicts.length === 0 ? <p className="mobile-sync-empty">暂无冲突</p> : conflicts.map(conflict => <article key={`${conflict.id}-${conflict.detectedAt}`} className="mobile-sync-conflict">
+          <h3>{conflictTitle(conflict)}</h3>
+          <p>{conflict.kind === 'delete-edit' ? '删除与编辑冲突' : conflict.kind === 'locked' ? '锁定记录与远端不同' : `相同字段同时修改：${conflict.fields.join('、') || '记录'}`}</p>
+          <div className="mobile-sync-actions">
+            {conflict.kind === 'delete-edit' ? <>
+              <button type="button" disabled={busy !== null} onClick={() => void resolve(conflict, 'keep')}>保留条目</button>
+              <button type="button" disabled={busy !== null} onClick={() => void resolve(conflict, 'delete')}>确认删除</button>
+            </> : <>
+              <button type="button" disabled={busy !== null || !conflict.local} onClick={() => void resolve(conflict, 'local')}>采用本机</button>
+              <button type="button" disabled={busy !== null || !conflict.remote} onClick={() => void resolve(conflict, 'remote')}>采用云端</button>
+            </>}
+          </div>
+        </article>)}
+      </div>
+
+      {/* Storage & Maintenance */}
+      <div className="mobile-sync-card" data-testid="mobile-maintenance">
+        <h2>存储维护与优化</h2>
+        <p className="mobile-sync-note">维护本地 SQLite 数据库与封面缓存，优化启动速度并释放手机存储空间。</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>整理并压缩数据库 (VACUUM)</strong>
+              <button type="button" className="mobile-quiet-button" disabled={vacuumBusy} onClick={() => void handleVacuum()}>{vacuumBusy ? '压缩中…' : '立即压缩'}</button>
+            </div>
+            <p className="mobile-sync-note" style={{ margin: '2px 0 0' }}>整理磁盘碎片，回收已删除记录的空间</p>
+            {vacuumStatus && <p className="mobile-sync-message">{vacuumStatus}</p>}
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>清理孤立海报缓存</strong>
+              <button type="button" className="mobile-quiet-button" disabled={cleanCacheBusy} onClick={() => void handleCleanCache()}>{cleanCacheBusy ? '清理中…' : '清理缓存'}</button>
+            </div>
+            <p className="mobile-sync-note" style={{ margin: '2px 0 0' }}>清除已删除影片的无用封面文件</p>
+            {cleanCacheStatus && <p className="mobile-sync-message">{cleanCacheStatus}</p>}
+          </div>
+        </div>
+      </div>
+
+      {registry && registry.targets.length > 1 && (
+        <p className="mobile-sync-target-count">已保留 {registry.targets.length} 个隔离同步目标的本地状态。</p>
+      )}
+    </section>
+  );
 }

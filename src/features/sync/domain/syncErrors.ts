@@ -22,6 +22,8 @@ export function syncFailureMessage(error?: string): string | null {
       return '云端数据版本高于当前程序，已停止同步且未写入。';
     case 'legacy_remote_changed':
       return '检测到旧版程序仍在写入 records.json；请升级其他设备后再显式导入旧数据。';
+    case 'sync_target_unavailable':
+      return 'WebDAV 目标目录不存在或无法访问，请确认目录已创建后重试。';
     case 'episode_sync_upgrade_required':
       return '逐集历史尚未获准升级云端同步格式；本地数据已保留。';
     case 'episode_completion_conflict':
@@ -46,8 +48,10 @@ export function syncError(error: unknown): SyncErrorResult {
   if (message.includes('unsupported_remote_schema')) return { ok: false, error: 'unsupported_remote_schema' };
   if (message.includes('conditional_write_unsupported')) return { ok: false, error: 'conditional_write_unsupported' };
   if (message.includes('conditional_validator_rejected')) return { ok: false, error: 'conditional_validator_rejected' };
+  if (message.includes('remote_busy')) return { ok: false, error: 'remote_busy' };
   if (message.includes('Invalid WebDAV entity tag')) return { ok: false, error: 'conditional_write_unsupported' };
   if (message.includes('legacy_remote_changed')) return { ok: false, error: 'legacy_remote_changed' };
+  if (message.includes('sync_target_unavailable')) return { ok: false, error: 'sync_target_unavailable' };
   if (message.includes('episode_completion_conflict')) return { ok: false, error: 'episode_completion_conflict' };
   if (message.includes('episode_sync_upgrade_required')) return { ok: false, error: 'episode_sync_upgrade_required' };
   if (message.includes('collections_sync_upgrade_required')) return { ok: false, error: 'collections_sync_upgrade_required' };

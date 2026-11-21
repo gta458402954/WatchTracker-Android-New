@@ -15,6 +15,12 @@ import { formatMovieTime } from './recordFormModel';
 
 export type RecordFormValues = Omit<WatchRecord, 'id' | 'createdAt'>;
 
+export function extractImdbId(input?: string | null): string | null {
+  if (!input) return null;
+  const match = input.match(/\b(tt\d{5,})\b/i) || input.match(/(tt\d+)/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 interface UseTmdbRecordSearchOptions {
   form: RecordFormValues;
   setForm: React.Dispatch<React.SetStateAction<RecordFormValues>>;
@@ -37,10 +43,12 @@ export function useTmdbRecordSearch({ form, setForm, isEpisodic, onNotify }: Use
     });
   }
 
-  async function handleTMDBSearch() {
-    let query = form.imdbId || form.chineseName || form.originalName;
+  async function handleTMDBSearch(overrideQuery?: string) {
+    const raw = (overrideQuery || form.imdbId || form.chineseName || form.originalName || '').trim();
+    if (!raw) return;
+    const imdb = extractImdbId(raw);
+    const query = imdb || raw.replace(/第\s*\d+\s*季/g, '').replace(/Season\s*\d+/gi, '').replace(/第\s*[一二三四五六七八九十]+\s*季/g, '').trim();
     if (!query) return;
-    query = query.replace(/第\s*\d+\s*季/g, '').replace(/Season\s*\d+/gi, '').replace(/第\s*[一二三四五六七八九十]+\s*季/g, '').trim();
     if (!(await getTmdbCredentialStatus()).available) {
       setSearchError('请先在设置中配置 TMDB API KEY');
       setShowResults(true);
@@ -92,10 +100,11 @@ export function useTmdbRecordSearch({ form, setForm, isEpisodic, onNotify }: Use
         const originalSeason = originalSeasonResult?.success ? originalSeasonResult.data : undefined;
         const poster = targetSeason.poster_path || detail.poster_path || null;
         if (poster) downloadPosterInBackground(poster);
-        const query = form.imdbId || form.chineseName || form.originalName || '';
+        const rawQuery = form.imdbId || form.chineseName || form.originalName || '';
+        const extracted = extractImdbId(rawQuery);
         const updates: Partial<RecordFormValues> = {
           ...seasonRecordMetadata({ ...detail, id: detail.id ?? fetchId }, targetSeason, form, originalSeason),
-          imdbId: query.startsWith('tt') ? query : (detail.external_ids?.imdb_id || detail.imdb_id || form.imdbId),
+          imdbId: extracted || (detail.external_ids?.imdb_id || detail.imdb_id || form.imdbId),
           tmdbParentId: fetchId,
         };
         if (isEpisode && item.episode_number) updates.progress = `S${String(item.season_number).padStart(2, '0')}E${String(item.episode_number).padStart(2, '0')}`;
@@ -131,7 +140,10 @@ export function useTmdbRecordSearch({ form, setForm, isEpisodic, onNotify }: Use
         updates.movieDuration = detail.runtime ? detail.runtime * 60 : null;
         setMovieDurationStr(updates.movieDuration != null ? formatMovieTime(updates.movieDuration) : '');
       }
-      if (detail.external_ids?.imdb_id) updates.imdbId = detail.external_ids.imdb_id;
+      const rawQuery = form.imdbId || form.chineseName || form.originalName || '';
+      const extracted = extractImdbId(rawQuery);
+      if (extracted) updates.imdbId = extracted;
+      else if (detail.external_ids?.imdb_id) updates.imdbId = detail.external_ids.imdb_id;
       else if (detail.imdb_id) updates.imdbId = detail.imdb_id;
       setForm(prev => ({ ...prev, ...updates }));
       setShowResults(false);

@@ -72,6 +72,18 @@ test('@sync-target-isolation password rotation keeps the same target and proceed
   expect(dialogCount).toBe(0);
 });
 
+test('@sync-target-isolation reports HTTP 409 as an inaccessible target directory', async ({ page }) => {
+  await setupMockIpc(page, { settings, webdavFailureStatus: 409, webdavFailureCount: 1 });
+  await openSyncSettings(page);
+  await page.getByPlaceholder('WebDAV 服务器地址').fill('https://new.example.test/dav/');
+  await page.getByPlaceholder('用户名').fill('new-user');
+  await page.getByPlaceholder('WebDAV 密码 / 应用密码').fill('new-password');
+  await page.getByRole('button', { name: '只读检查并更新目标' }).click();
+  await expect(page.getByText('WebDAV 目标目录不存在或无法访问，请确认目录已创建后重试。', { exact: true })).toBeVisible();
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'activate_sync_target')).toBe(false);
+});
+
 test('@credential-boundary saved requests never expose credentials to the frontend', async ({ page }) => {
   await setupMockIpc(page, { settings });
   await page.goto('/');

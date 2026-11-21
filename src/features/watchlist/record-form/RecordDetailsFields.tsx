@@ -1,6 +1,7 @@
+import ViewingDateField from './ViewingDateField';
 import type { RecordFormValues } from './useTmdbRecordSearch';
 interface RecordDetailsFieldsProps { form: RecordFormValues; startYearOnly: boolean; endYearOnly: boolean; years: number[]; onStartYearOnlyChange: (value: boolean) => void; onEndYearOnlyChange: (value: boolean) => void; onInterestLevelChange: (value: number | null) => void; onRatingChange: (value: number | null) => void; onStartDateChange: (value: string) => void; onEndDateChange: (value: string) => void; onNotesChange: (value: string) => void; }
-export default function RecordDetailsFields({ form, startYearOnly, endYearOnly, years, onStartYearOnlyChange, onEndYearOnlyChange, onInterestLevelChange, onRatingChange, onStartDateChange, onEndDateChange, onNotesChange }: RecordDetailsFieldsProps) {
+export default function RecordDetailsFields({ form, startYearOnly, endYearOnly, onStartYearOnlyChange, onEndYearOnlyChange, onInterestLevelChange, onRatingChange, onStartDateChange, onEndDateChange, onNotesChange }: RecordDetailsFieldsProps) {
   return <div>          {/* Rating / Interest Level */}
           {form.status === '未看' ? (
             <div>
@@ -56,94 +57,9 @@ export default function RecordDetailsFields({ form, startYearOnly, endYearOnly, 
             </div>
           )}
 
-          {/* Dates */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium text-gray-700">开始时间</label>
-                <label className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={startYearOnly}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      onStartYearOnlyChange(checked);
-                      if (checked) {
-                        const yr = form.startDate ? form.startDate.slice(0, 4) : new Date().getFullYear().toString();
-                        onStartDateChange(yr);
-                      } else {
-                        const dateVal = form.startDate && /^\d{4}$/.test(form.startDate) ? `${form.startDate}-01-01` : '';
-                        onStartDateChange(dateVal);
-                      }
-                    }}
-                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3 h-3"
-                  />
-                  仅选年份
-                </label>
-              </div>
-              {startYearOnly ? (
-                <select
-                  value={form.startDate || ''}
-                  onChange={e => onStartDateChange(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition bg-white"
-                >
-                  <option value="">选择年份</option>
-                  {years.map(y => (
-                    <option key={y} value={y.toString()}>{y}年</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="date"
-                  value={form.startDate}
-                  onChange={e => onStartDateChange(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition"
-                />
-              )}
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium text-gray-700">结束时间</label>
-                <label className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={endYearOnly}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      onEndYearOnlyChange(checked);
-                      if (checked) {
-                        const yr = form.endDate ? form.endDate.slice(0, 4) : new Date().getFullYear().toString();
-                        onEndDateChange(yr);
-                      } else {
-                        const dateVal = form.endDate && /^\d{4}$/.test(form.endDate) ? `${form.endDate}-01-01` : '';
-                        onEndDateChange(dateVal);
-                      }
-                    }}
-                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3 h-3"
-                  />
-                  仅选年份
-                </label>
-              </div>
-              {endYearOnly ? (
-                <select
-                  value={form.endDate || ''}
-                  onChange={e => onEndDateChange(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition bg-white"
-                >
-                  <option value="">选择年份</option>
-                  {years.map(y => (
-                    <option key={y} value={y.toString()}>{y}年</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="date"
-                  value={form.endDate}
-                  onChange={e => onEndDateChange(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition"
-                />
-              )}
-            </div>
+            <ViewingDateField label="开始时间" value={form.startDate || ''} yearOnly={startYearOnly} onYearOnlyChange={onStartYearOnlyChange} onChange={onStartDateChange} />
+            <ViewingDateField label="结束时间" value={form.endDate || ''} yearOnly={endYearOnly} onYearOnlyChange={onEndYearOnlyChange} onChange={onEndDateChange} />
           </div>
 
           {/* Notes */}

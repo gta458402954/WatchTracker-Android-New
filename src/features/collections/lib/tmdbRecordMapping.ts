@@ -35,8 +35,11 @@ export function seasonRecordMetadata(
     series.networks?.[0]?.name || series.production_companies?.[0]?.name,
   );
   const runtime = positiveEpisodeRuntimeOf(series);
-  const seasonNumber = season.season_number ?? originalSeason?.season_number ?? 0;
-  const titles = formatSeasonTitles({
+  const seasonNumber = season.season_number ?? originalSeason?.season_number ?? existing?.tmdbSeasonNumber ?? null;
+  const titles = seasonNumber === null ? {
+    chineseName: season.name || seriesName,
+    originalName: originalSeason?.name || originalName,
+  } : formatSeasonTitles({
     seriesName,
     originalName,
     seasonNumber,
@@ -56,7 +59,7 @@ export function seasonRecordMetadata(
     tmdbMediaKind: 'tv-season',
     tmdbId: season.id ?? null,
     tmdbParentId: series.id ?? null,
-    tmdbSeasonNumber: seasonNumber || null,
+    tmdbSeasonNumber: seasonNumber,
     seriesRecordKind: 'season',
   };
   if (missingText(existing?.genres) && classification.genres) next.genres = classification.genres;
