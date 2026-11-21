@@ -257,7 +257,6 @@ export default function MobileStatsPage({ records, onDetail }: MobileStatsPagePr
                     <SafePosterImage
                       posterPath={r.posterPath}
                       alt={title}
-                      size="w92"
                       compact
                       autoDownload={false}
                       className="mini-card-poster"
@@ -299,7 +298,6 @@ export default function MobileStatsPage({ records, onDetail }: MobileStatsPagePr
                     <SafePosterImage
                       posterPath={r.posterPath}
                       alt={title}
-                      size="w92"
                       compact
                       autoDownload={false}
                       className="mini-card-poster"

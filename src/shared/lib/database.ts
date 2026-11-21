@@ -341,6 +341,9 @@ export async function downloadPosterAsync(path: string, size: 'w92' | 'w342' = '
   return invoke('download_poster', { path, size, proxy });
 }
 
+export const getMissingPostersAsync = (posterPaths: string[], size: 'w92' | 'w342' = 'w342'): Promise<string[]> =>
+  invoke('get_missing_posters', { posterPaths, size });
+
 export const getPosterCacheStats = (): Promise<PosterCacheStats> => invoke('get_poster_cache_stats');
 export const cleanPosterCache = (mode: 'unreferenced' | 'all'): Promise<PosterCacheStats> => invoke('clean_poster_cache', { mode });
 

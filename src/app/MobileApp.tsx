@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Status, UpdateWatchRecord, WatchRecord } from '../shared/types';
 import type { RecordFormValues } from '../features/watchlist/record-form/recordFormModel';
 import { useMobileRecordRepository } from '../features/watchlist/hooks/useMobileRecordRepository';
@@ -15,6 +15,15 @@ import MobileSyncSettingsPage from '../features/settings/components/MobileSyncSe
 import MobileStatsPage from '../features/watchlist/components/MobileStatsPage.tsx';
 import MobileDiscoverPage from '../features/watchlist/components/MobileDiscoverPage.tsx';
 import MobileCollectionsPage from '../features/collections/components/MobileCollectionsPage.tsx';
+import { subscribeProgress, getProgressSnapshot } from '../features/settings/useBatchPosterDownload.ts';
+import { getSettingAsync } from '../shared/lib/database.ts';
+import {
+  DEFAULT_MOBILE_LIBRARY_PREFERENCES,
+  MOBILE_LIBRARY_PREFERENCES_KEY,
+  normalizeMobilePreferences,
+  setCachedMobilePreferences,
+  setCachedMobileViewMode,
+} from '../features/watchlist/mobileLibraryModel.ts';
 
 declare global { interface Window { __WATCHTRACKER_ANDROID_BACK__?: () => AndroidBackAction; } }
 type InitializationState = 'loading' | 'ready' | 'error';
@@ -27,6 +36,8 @@ function PlaceholderPage({ route }: { route: Exclude<MobileRoute, 'library' | 'f
 export default function MobileApp() {
   const navigation = useMobileNavigation();
   const { notices, notify, dismiss } = useNotifications();
+  const posterProgress = useSyncExternalStore(subscribeProgress, getProgressSnapshot);
+  const isPosterDownloading = posterProgress.status === 'running';
   const scheduleLocalWriteRef = useRef<() => void | Promise<void>>(() => undefined);
   const repository = useMobileRecordRepository(() => scheduleLocalWriteRef.current());
   const { records, reloadRecords, addRecord, updateMobileRecord, deleteMobileRecord, changeMobileEpisode } = repository;
@@ -38,7 +49,51 @@ export default function MobileApp() {
   const initializationPromise = useRef<Promise<void> | null>(null);
   const loadRecords = useCallback(() => {
     if (initializationPromise.current) return initializationPromise.current;
-    const pending = (async () => { try { await reloadRecords(); setInitialization('ready'); void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步'))); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
+    const pending = (async () => {
+      try {
+        await Promise.all([
+          reloadRecords(),
+          (async () => {
+            try {
+              const [raw, startupView, viewMode] = await Promise.all([
+                getSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY),
+                getSettingAsync('mobile_startup_view'),
+                getSettingAsync('mobile_library_view_mode'),
+              ]);
+              if (viewMode === 'poster' || viewMode === 'list') {
+                setCachedMobileViewMode(viewMode);
+              }
+              if (raw) {
+                try {
+                  const parsed = JSON.parse(raw);
+                  const normalized = normalizeMobilePreferences(parsed);
+                  if (startupView === 'watching' && (!raw.includes('"statuses":') || parsed.statuses?.length === 0)) {
+                    normalized.statuses = ['在看'];
+                  }
+                  setCachedMobilePreferences(normalized);
+                } catch {
+                  // ignore
+                }
+              } else if (startupView === 'watching') {
+                setCachedMobilePreferences({
+                  ...DEFAULT_MOBILE_LIBRARY_PREFERENCES,
+                  statuses: ['在看'],
+                });
+              }
+            } catch {
+              // ignore
+            }
+          })(),
+        ]);
+        setInitialization('ready');
+        void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步')));
+      } catch (error) {
+        console.error('[MobileApp.Initialize]', error);
+        setInitialization('error');
+      } finally {
+        initializationPromise.current = null;
+      }
+    })();
     initializationPromise.current = pending;
     return pending;
   }, [onBackgroundSyncError, reloadRecords, startCoordinator]);
@@ -120,5 +175,9 @@ export default function MobileApp() {
     return <PlaceholderPage route={navigation.route} />;
   }, [episode, handleBatchUpdateRecord, initialization, isSyncing, loadRecords, lock, navigation, notify, notifySyncConfigurationChanged, onBack, openForm, records, reloadRecords, remove, saveNew, saveUpdate, scheduleLocalWrite, status, syncNow, syncRuntime, toggleSyncPause]);
   const immersive = navigation.route === 'detail' || navigation.route === 'form';
-  return <div className="mobile-shell"><NotificationRegion notices={notices} onDismiss={dismiss} /><main className={`mobile-content ${immersive ? 'mobile-content-immersive' : ''}`}><ErrorBoundary>{page}</ErrorBoundary></main>{!immersive && <><button type="button" className="mobile-fab" aria-label="添加记录" onClick={() => openForm('new')}><span aria-hidden="true">＋</span></button><nav className="mobile-bottom-nav" aria-label="主导航">{tabs.map(tab => <button key={tab.route} type="button" className="mobile-nav-item" aria-current={navigation.route === tab.route ? 'page' : undefined} onClick={() => navigation.navigate(tab.route)}><span className="mobile-nav-icon" aria-hidden="true">{tab.icon}</span><span>{tab.label}</span></button>)}</nav></>}</div>;
+  return <div className="mobile-shell"><NotificationRegion notices={notices} onDismiss={dismiss} /><main className={`mobile-content ${immersive ? 'mobile-content-immersive' : ''}`}><ErrorBoundary>{page}</ErrorBoundary></main>{!immersive && <><button type="button" className="mobile-fab" aria-label="添加记录" onClick={() => openForm('new')}><span aria-hidden="true">＋</span></button><nav className="mobile-bottom-nav" aria-label="主导航">{tabs.map(tab => {
+    const isSettings = tab.route === 'settings';
+    const showBadge = isSettings && isPosterDownloading;
+    return <button key={tab.route} type="button" className="mobile-nav-item" aria-current={navigation.route === tab.route ? 'page' : undefined} onClick={() => navigation.navigate(tab.route)}><span className="mobile-nav-icon" aria-hidden="true" style={{ position: 'relative' }}>{tab.icon}{showBadge && <span style={{ position: 'absolute', top: '-2px', right: '-4px', width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#4f46e5', boxShadow: '0 0 0 2px #ffffff' }} />}</span><span>{tab.label}</span></button>;
+  })}</nav></>}</div>;
 }

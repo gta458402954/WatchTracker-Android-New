@@ -153,6 +153,25 @@ pub fn cleanup_stale_temporary_files(paths: &AppPaths) -> Result<usize, String> 
     Ok(removed)
 }
 
+pub fn valid_file_names(paths: &AppPaths) -> Result<HashSet<String>, String> {
+    let mut result = HashSet::new();
+    let posters_dir = paths.posters();
+    if !posters_dir.exists() {
+        return Ok(result);
+    }
+    for entry in fs::read_dir(posters_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !path.is_file() || is_temporary(&path) {
+            continue;
+        }
+        if read_valid(&path).is_ok() {
+            result.insert(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    Ok(result)
+}
+
 pub fn stats(paths: &AppPaths, records: &[WatchRecord]) -> Result<PosterCacheStats, String> {
     let referenced = referenced_file_names(records);
     let mut result = PosterCacheStats {

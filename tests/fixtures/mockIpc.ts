@@ -1079,6 +1079,9 @@ export async function setupMockIpc(page: Page, options: MockIpcOptions = {}) {
             case 'download_poster':
               requireKeys(command, args, ['path', 'proxy', 'size']);
               return { status: 'downloaded', fileName: `${args.size === 'w92' ? 'w92_' : ''}${String(args.path).replace(/^\//, '')}` };
+            case 'get_missing_posters':
+              requireKeys(command, args, ['posterPaths']);
+              return (args.posterPaths as string[]) ?? [];
             case 'get_poster_cache_stats':
               requireKeys(command, args, []);
               return { totalBytes: 0, validCount: 0, referencedCount: 0, orphanCount: 0, invalidCount: 0, temporaryCount: 0, capacityBytes: 524288000, capacityExceeded: false };

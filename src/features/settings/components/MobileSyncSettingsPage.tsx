@@ -20,6 +20,7 @@ import {
   type SyncTargetRegistry,
 } from '../../../shared/lib/database.ts';
 import { formatWebDavTargetUrl } from '../../../shared/lib/webdavDisplay.ts';
+import { setCachedMobilePreferences } from '../../watchlist/mobileLibraryModel.ts';
 import {
   clearCreds,
   normalizeSyncTargetUrl,
@@ -139,6 +140,7 @@ export default function MobileSyncSettingsPage({
 
   const handleStartupViewChange = useCallback(async (view: 'watching' | 'all') => {
     setStartupView(view);
+    setCachedMobilePreferences(null);
     try {
       await setSettingAsync('mobile_startup_view', view);
       notify('success', view === 'watching' ? '已设为启动默认展示在看视频。' : '已设为启动默认展示全部记录。');
@@ -147,7 +149,7 @@ export default function MobileSyncSettingsPage({
     }
   }, [notify]);
 
-  const posterBatch = useBatchPosterDownload(records ?? EMPTY_RECORDS);
+  const posterBatch = useBatchPosterDownload(records ?? EMPTY_RECORDS, notify);
   const posterRecordsCount = useMemo(() => (records ?? []).filter(r => Boolean(r.posterPath && r.posterPath.trim())).length, [records]);
 
   const batch = useBatchMetadata({
@@ -526,33 +528,48 @@ export default function MobileSyncSettingsPage({
 
       {/* Backup & Restore */}
       <div className="mobile-sync-card" data-testid="mobile-backup-export">
-        <h2>备份与恢复</h2>
-        <p className="mobile-sync-note">导出片库、逐集历史和收藏数据为 JSON 文件。</p>
-        <p className="mobile-sync-note">不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。</p>
-        <button
-          type="button"
-          className="mobile-primary-button"
-          disabled={exportBusy}
-          onClick={() => void exportLocalData()}
-        >
-          {exportBusy ? '正在准备导出…' : '导出数据'}
-        </button>
-        <button
-          type="button"
-          className="mobile-quiet-button mobile-import-button"
-          disabled={importBusy !== null}
-          onClick={() => void chooseImport()}
-        >
-          {importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}
-        </button>
+        <h2>
+          <span aria-hidden="true">💾 </span>备份与恢复
+        </h2>
+        <p className="mobile-sync-note">导出全量片库、逐集历史和收藏数据为标准 JSON 备份文件，或从备份安全恢复。</p>
+        <p className="mobile-sync-note" style={{ marginTop: '4px', fontSize: '11px', color: '#94a3b8' }}>
+          不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。
+        </p>
+        <div className="mobile-settings-dual-btns" style={{ marginTop: '12px' }}>
+          <button
+            type="button"
+            className="mobile-primary-button"
+            disabled={exportBusy}
+            onClick={() => void exportLocalData()}
+            style={{ minHeight: '48px', borderRadius: '12px', fontSize: '13px', fontWeight: 800 }}
+          >
+            {exportBusy ? '正在准备导出…' : '导出数据'}
+          </button>
+          <button
+            type="button"
+            className="mobile-quiet-button mobile-import-button"
+            disabled={importBusy !== null}
+            onClick={() => void chooseImport()}
+            style={{ minHeight: '48px', marginTop: 0, borderRadius: '12px', fontSize: '13px', fontWeight: 800 }}
+          >
+            {importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}
+          </button>
+        </div>
         {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
         {importStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-import-status">{importStatus}</p>}
         {importError && <p className="mobile-sync-error" role="alert" data-testid="mobile-import-error">{importError}</p>}
         {importPreview && (
-          <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview">
-            <h3>导入预览</h3>
+          <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <h3 style={{ margin: 0, color: '#1e293b', fontSize: '15px', fontWeight: 900 }}>
+                <span aria-hidden="true">📋 </span>导入预览
+              </h3>
+              <span style={{ fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '6px', background: '#e0e7ff', color: '#4338ca' }}>
+                V{importPreview.formatVersion}
+              </span>
+            </div>
             <dl className="mobile-sync-facts">
-              <div><dt>文件</dt><dd>{importPreview.fileName}</dd></div>
+              <div style={{ gridColumn: '1 / -1' }}><dt>文件</dt><dd style={{ wordBreak: 'break-all' }}>{importPreview.fileName}</dd></div>
               <div><dt>大小</dt><dd>{formatImportBytes(importPreview.sizeBytes)}</dd></div>
               <div><dt>格式</dt><dd>V{importPreview.formatVersion}</dd></div>
               <div><dt>导出时间</dt><dd>{new Date(importPreview.exportedAt).toLocaleString('zh-CN')}</dd></div>
@@ -561,23 +578,37 @@ export default function MobileSyncSettingsPage({
               <div><dt>收藏集</dt><dd>{importPreview.counts.collections}</dd></div>
               <div><dt>收藏成员</dt><dd>{importPreview.counts.collectionMembers}</dd></div>
             </dl>
-            <h4>预计影响</h4>
+            <h4 style={{ margin: '14px 0 8px', color: '#1e293b', fontSize: '13px', fontWeight: 800 }}>
+              <span aria-hidden="true">⚡ </span>预计影响
+            </h4>
             <dl className="mobile-import-diff">
-              <div><dt>新增</dt><dd>{importPreview.records.added}</dd></div>
-              <div><dt>更新</dt><dd>{importPreview.records.updated}</dd></div>
-              <div><dt>删除</dt><dd>{importPreview.records.removed}</dd></div>
-              <div><dt>不变</dt><dd>{importPreview.records.unchanged}</dd></div>
-              <div><dt>锁定保护</dt><dd>{importPreview.records.lockedPreserved}</dd></div>
-              <div><dt>导入后记录</dt><dd>{importPreview.records.finalCount}</dd></div>
+              <div><dt>新增</dt><dd style={{ color: '#059669', fontWeight: 900 }}>+{importPreview.records.added}</dd></div>
+              <div><dt>更新</dt><dd style={{ color: '#2563eb', fontWeight: 900 }}>{importPreview.records.updated}</dd></div>
+              <div><dt>删除</dt><dd style={{ color: importPreview.records.removed > 0 ? '#dc2626' : undefined, fontWeight: 900 }}>{importPreview.records.removed}</dd></div>
+              <div><dt>不变</dt><dd style={{ fontWeight: 900 }}>{importPreview.records.unchanged}</dd></div>
+              <div><dt>锁定保护</dt><dd style={{ color: '#d97706', fontWeight: 900 }}>{importPreview.records.lockedPreserved}</dd></div>
+              <div><dt>导入后记录</dt><dd style={{ color: '#4f46e5', fontWeight: 900 }}>{importPreview.records.finalCount}</dd></div>
             </dl>
-            <p className="mobile-sync-note">
+            <p className="mobile-sync-note" style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fef3c7', padding: '10px 12px', borderRadius: '12px', marginTop: '12px' }}>
               未锁定的当前数据可能被替换或删除。锁定记录及其逐集历史会受到保护；操作前会创建恢复点。
             </p>
-            <div className="mobile-sync-actions">
-              <button type="button" className="mobile-quiet-button" disabled={importBusy !== null} onClick={() => void cancelImport()}>
+            <div className="mobile-settings-dual-btns" style={{ marginTop: '14px' }}>
+              <button
+                type="button"
+                className="mobile-quiet-button"
+                disabled={importBusy !== null}
+                onClick={() => void cancelImport()}
+                style={{ width: '100%', minHeight: '48px', borderRadius: '12px', fontWeight: 800 }}
+              >
                 取消导入
               </button>
-              <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>
+              <button
+                type="button"
+                className="mobile-danger-button"
+                disabled={importBusy !== null}
+                onClick={() => void confirmImport()}
+                style={{ width: '100%', minHeight: '48px', borderRadius: '12px', fontWeight: 800, background: '#fee2e2', borderColor: '#fca5a5' }}
+              >
                 {importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}
               </button>
             </div>
@@ -776,7 +807,7 @@ export default function MobileSyncSettingsPage({
       {/* Standalone Poster Downloader */}
       <div className="mobile-sync-card" data-testid="mobile-poster-downloader">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>一键离线下载海报</h2>
+          <h2><span aria-hidden="true">🖼️ </span>一键离线下载海报</h2>
           {posterBatch.progress.status === 'running' && (
             <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#e0e7ff', color: '#4338ca' }}>
               下载中
@@ -784,18 +815,34 @@ export default function MobileSyncSettingsPage({
           )}
           {posterBatch.progress.status === 'completed' && (
             <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#d1fae5', color: '#065f46' }}>
-              已完成
+              已就绪
             </span>
           )}
         </div>
         <p className="mobile-sync-note">
-          独立批量下载所有含海报路径影片的封面到手机本地，无需重新请求全量元数据。已下载封面将自动命中本地缓存，离线加载更迅速。
+          独立批量补充片库封面到手机本地。本地已有的海报直接跳过，只补充缺失封面，离线浏览更流畅且节省流量。
         </p>
         <div style={{ marginTop: '10px' }}>
           {posterBatch.progress.status === 'idle' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#475569' }}>
+              <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5 }}>
                 当前片库共 <strong>{posterRecordsCount}</strong> 部影片已关联海报路径。
+                {posterBatch.counts && (
+                  <div style={{ marginTop: '4px', display: 'flex', gap: '8px', fontSize: '11px', flexWrap: 'wrap' }}>
+                    <span style={{ color: '#059669', fontWeight: 600 }}>
+                      ✓ 本地已有 {posterBatch.counts.cached} 张（将直接跳过）
+                    </span>
+                    {posterBatch.counts.missing > 0 ? (
+                      <span style={{ color: '#d97706', fontWeight: 600 }}>
+                        ! 待补充 {posterBatch.counts.missing} 张
+                      </span>
+                    ) : (
+                      <span style={{ color: '#059669', fontWeight: 600 }}>
+                        (已全部就绪)
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -811,8 +858,8 @@ export default function MobileSyncSettingsPage({
           {posterBatch.progress.status === 'running' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#0f172a', fontWeight: 700 }}>
-                <span>正在下载：{posterBatch.progress.current} / {posterBatch.progress.total}</span>
-                <span>{Math.round((posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100)}%</span>
+                <span>正在补充缺失海报：{posterBatch.progress.current} / {posterBatch.progress.missingTotal || posterBatch.progress.total}</span>
+                <span>{Math.round((posterBatch.progress.current / (posterBatch.progress.missingTotal || posterBatch.progress.total || 1)) * 100)}%</span>
               </div>
               <div style={{ height: '8px', borderRadius: '999px', background: '#e2e8f0', overflow: 'hidden' }}>
                 <div
@@ -820,17 +867,17 @@ export default function MobileSyncSettingsPage({
                     height: '100%',
                     borderRadius: '999px',
                     background: '#4f46e5',
-                    width: `${(posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100}%`,
+                    width: `${(posterBatch.progress.current / (posterBatch.progress.missingTotal || posterBatch.progress.total || 1)) * 100}%`,
                     transition: 'width 0.2s ease',
                   }}
                 />
               </div>
               <div style={{ fontSize: '11px', color: '#64748b' }}>
-                新下载：{posterBatch.progress.downloaded} · 本地已有：{posterBatch.progress.cached} · 失败：{posterBatch.progress.failed}
+                新下载：{posterBatch.progress.downloaded} · 本地已有（已跳过）：{posterBatch.progress.cached} · 失败：{posterBatch.progress.failed}
               </div>
               {posterBatch.progress.currentTitle && (
                 <div style={{ fontSize: '11px', color: '#4338ca', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  正在处理：{posterBatch.progress.currentTitle}
+                  正在下载：{posterBatch.progress.currentTitle}
                 </div>
               )}
               <button

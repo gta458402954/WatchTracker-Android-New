@@ -34,7 +34,7 @@ test('M1.2 legacy poster preference falls back to the only list view without los
   await expect(page.getByRole('button', { name: '打开 其他记录' })).toHaveCount(0);
   await expect(page.getByRole('combobox', { name: '排序' })).toHaveValue('rating');
   await expect(page.getByRole('button', { name: '移除类型：剧集' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '移除状态：在看' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '在看' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('button', { name: '移除锁定筛选' })).toBeVisible();
   await expect(page.getByText('片库偏好版本不兼容，已使用默认设置。', { exact: true })).toHaveCount(0);
 });
@@ -99,7 +99,7 @@ test('M1.2 library refinement compresses the header and keeps search/count seman
   await page.getByRole('button', { name: '打开筛选' }).click();
   await page.locator('fieldset').filter({ hasText: '状态' }).getByRole('button', { name: '在看' }).click();
   await page.getByRole('button', { name: '应用筛选' }).click();
-  await expect(page.getByRole('button', { name: '移除状态：在看' })).toHaveText('在看 ×');
+  await expect(page.getByRole('tab', { name: '在看' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.mobile-section-heading')).toContainText('1 / 2');
 });
 
@@ -189,6 +189,18 @@ test('M1.2 status quick switcher filters instantly and respects startup preferen
   await expect(page.getByRole('tab', { name: /已看/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
   await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+
+  // Switch to another tab (Collections) and switch back to Library
+  await page.getByRole('button', { name: '收藏' }).click();
+  await expect(page.getByRole('heading', { name: '收藏合辑', exact: true })).toBeVisible();
+
+  // Return to Library: preference must be maintained seamlessly without resetting to 全部
+  await page.getByRole('button', { name: '片库' }).click();
+  await expect(page.getByRole('heading', { name: '我的片库' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /已看/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
+  await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('在看剧集', { exact: true })).toHaveCount(0);
 });
 
 test('M1.2 independent batch poster downloader operates from settings without metadata fetching', async ({ page }) => {

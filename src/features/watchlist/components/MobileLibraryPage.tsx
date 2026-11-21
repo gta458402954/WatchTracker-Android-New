@@ -12,6 +12,7 @@ import { useTmdbRecordSearch, extractImdbId } from '../record-form/useTmdbRecord
 import {
   applyMobileLibraryQuery, DEFAULT_MOBILE_LIBRARY_PREFERENCES, isRecordFormDirty, MOBILE_LIBRARY_PREFERENCES_KEY,
   normalizeMobilePreferences, type MobileLibraryPreferences, type MobileSortBy,
+  getCachedMobilePreferences, setCachedMobilePreferences, getCachedMobileViewMode, setCachedMobileViewMode,
 } from '../mobileLibraryModel';
 import { getSettingAsync, setSettingAsync } from '../../../shared/lib/database';
 import type { NoticeTone } from '../../../shared/lib/feedback';
@@ -85,7 +86,6 @@ function LibraryToolbar({
   onToggleViewMode: (mode: 'list' | 'poster') => void;
 }) {
   const chips = [
-    ...prefs.statuses.map(value => ({ key: `status-${value}`, label: value, ariaLabel: `移除状态：${value}`, clear: () => setPrefs({ ...prefs, statuses: prefs.statuses.filter(item => item !== value) }) })),
     ...prefs.mediaTypes.map(value => ({ key: `media-${value}`, label: value, ariaLabel: `移除类型：${value}`, clear: () => setPrefs({ ...prefs, mediaTypes: prefs.mediaTypes.filter(item => item !== value) }) })),
     ...(prefs.lock === 'all' ? [] : [{ key: 'lock', label: prefs.lock === 'locked' ? '已锁定' : '未锁定', ariaLabel: '移除锁定筛选', clear: () => setPrefs({ ...prefs, lock: 'all' as const }) }]),
   ];
@@ -241,7 +241,22 @@ function RecordCard({ record, onOpen, onStatus, onMore, onEpisode }: { record: W
       </button>
       <button type="button" className="mobile-record-more" aria-label={`更多操作：${title}`} title="更多操作" onClick={event => onMore(event.currentTarget)}><span aria-hidden="true">⋮</span></button>
     </div>
-    <div className="mobile-record-quick-action">{episodic ? <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} /> : <button type="button" className={`mobile-primary-button mobile-status-quick-button ${record.status === '已看' ? 'watched' : ''}`} disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}</div>
+    {episodic ? (
+      <div className="mobile-record-quick-action">
+        <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} />
+      </div>
+    ) : record.status !== '已看' ? (
+      <div className="mobile-record-quick-action">
+        <button
+          type="button"
+          className="mobile-primary-button mobile-status-quick-button"
+          disabled={record.isLocked}
+          onClick={() => onStatus('已看')}
+        >
+          标为已看
+        </button>
+      </div>
+    ) : null}
   </article>;
 }
 
@@ -265,7 +280,16 @@ function DetailPage({ record, onBack, onEdit, onDelete, onLock, onStatus, onEpis
       </div>
     </div>
     <div className="mobile-detail-actions">
-      {!episodic && <button type="button" className="mobile-primary-button" disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}
+      {!episodic && record.status !== '已看' && (
+        <button
+          type="button"
+          className="mobile-primary-button"
+          disabled={record.isLocked}
+          onClick={() => onStatus('已看')}
+        >
+          标为已看
+        </button>
+      )}
       <button type="button" className="mobile-quiet-button" onClick={onLock}>{record.isLocked ? '解锁' : '锁定'}</button>
       <button type="button" className="mobile-quiet-button mobile-danger" disabled={record.isLocked} onClick={onDelete}>删除</button>
     </div>
@@ -644,29 +668,43 @@ function MobileRecordForm({ record, onSave, onDelete, onClose, onNotify }: { rec
   );
 }
 
+let cachedScrollTop = 0;
+
 export default function MobileLibraryPage(props: MobileLibraryPageProps) {
   const { records, detailId, formMode, onDetail, onForm, onBack, onAdd, onUpdate, onDelete, onLock, onStatus, onEpisode, onNotify } = props;
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [prefs, setPrefsState] = useState(DEFAULT_MOBILE_LIBRARY_PREFERENCES);
-  const [viewMode, setViewMode] = useState<'list' | 'poster'>('list');
+  const [prefs, setPrefsState] = useState<MobileLibraryPreferences>(() => {
+    return getCachedMobilePreferences() ?? DEFAULT_MOBILE_LIBRARY_PREFERENCES;
+  });
+  const [viewMode, setViewMode] = useState<'list' | 'poster'>(() => {
+    return getCachedMobileViewMode() ?? 'list';
+  });
   const [filterOpen, setFilterOpen] = useState(false);
   const [actionsRecord, setActionsRecord] = useState<WatchRecord | null>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLElement>(null);
-  const scrollTopRef = useRef(0);
+  const scrollTopRef = useRef(cachedScrollTop);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { const timer = window.setTimeout(() => setSearch(searchInput), 250); return () => window.clearTimeout(timer); }, [searchInput]);
+  useEffect(() => {
+    return () => {
+      const container = document.querySelector<HTMLElement>('.mobile-content');
+      if (container) cachedScrollTop = container.scrollTop;
+    };
+  }, []);
   useEffect(() => {
     let active = true;
     void getSettingAsync('mobile_library_view_mode').then(val => {
       if (active && (val === 'poster' || val === 'list')) {
+        setCachedMobileViewMode(val);
         setViewMode(val);
       }
     }).catch(() => undefined);
     return () => { active = false; };
   }, []);
   const handleToggleViewMode = useCallback((mode: 'list' | 'poster') => {
+    setCachedMobileViewMode(mode);
     setViewMode(mode);
     void setSettingAsync('mobile_library_view_mode', mode).catch(() => undefined);
   }, []);
@@ -685,19 +723,36 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
           if (startupView === 'watching' && (!raw.includes('"statuses":') || parsed.statuses?.length === 0)) {
             normalized.statuses = ['在看'];
           }
-          setPrefsState(normalized);
+          setCachedMobilePreferences(normalized);
+          setPrefsState(prev => {
+            if (JSON.stringify(prev) === JSON.stringify(normalized)) return prev;
+            return normalized;
+          });
         } catch {
           onNotify('warning', '片库偏好读取失败，已使用默认设置。');
         }
       } else if (startupView === 'watching') {
-        setPrefsState(prev => ({ ...prev, statuses: ['在看'] }));
+        const watchingPrefs: MobileLibraryPreferences = {
+          ...DEFAULT_MOBILE_LIBRARY_PREFERENCES,
+          statuses: ['在看'],
+        };
+        setCachedMobilePreferences(watchingPrefs);
+        setPrefsState(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(watchingPrefs)) return prev;
+          return watchingPrefs;
+        });
       }
     }).catch(() => {
       if (active) onNotify('warning', '片库偏好读取失败，已使用默认设置。');
     });
     return () => { active = false; };
   }, [onNotify]);
-  const setPrefs = useCallback((next: MobileLibraryPreferences) => { const normalized = normalizeMobilePreferences(next); setPrefsState(normalized); void setSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY, JSON.stringify(normalized)).catch(() => onNotify('warning', '片库偏好保存失败，本次操作仍已生效。')); }, [onNotify]);
+  const setPrefs = useCallback((next: MobileLibraryPreferences) => {
+    const normalized = normalizeMobilePreferences(next);
+    setCachedMobilePreferences(normalized);
+    setPrefsState(normalized);
+    void setSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY, JSON.stringify(normalized)).catch(() => onNotify('warning', '片库偏好保存失败，本次操作仍已生效。'));
+  }, [onNotify]);
   useEffect(() => { if (props.route !== 'library') return; const timer = window.requestAnimationFrame(() => { const container = document.querySelector<HTMLElement>('.mobile-content'); if (container) container.scrollTop = scrollTopRef.current; }); return () => window.cancelAnimationFrame(timer); }, [props.route]);
   const captureScroll = useCallback(() => { scrollTopRef.current = document.querySelector<HTMLElement>('.mobile-content')?.scrollTop ?? 0; }, []);
   const filtered = useMemo(() => applyMobileLibraryQuery(records, search, prefs), [records, search, prefs]);

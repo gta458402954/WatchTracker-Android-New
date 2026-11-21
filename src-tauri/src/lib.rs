@@ -63,7 +63,7 @@ pub fn run() {
             // `poster://` 只应访问海报目录中的单个文件。拒绝目录、绝对路径和
             // `..`，避免来自导入数据的 posterPath 跳出 posters 目录。
             let paths = context.app_handle().state::<AppPaths>();
-            let full_path = match paths.poster_file(file_name) {
+            let mut full_path = match paths.poster_file(file_name) {
                 Ok(path) => path,
                 Err(_) => {
                     return tauri::http::Response::builder()
@@ -72,6 +72,24 @@ pub fn run() {
                         .unwrap();
                 }
             };
+
+            // 若请求的文件不存在（例如请求了缩略图 w92_xxx.jpg，但本地只缓存了基础图 xxx.jpg，反之亦然），自动尝试回退读取
+            if !full_path.is_file() {
+                if let Some(stripped) = file_name.strip_prefix("w92_") {
+                    if let Ok(fallback) = paths.poster_file(stripped) {
+                        if fallback.is_file() {
+                            full_path = fallback;
+                        }
+                    }
+                } else {
+                    let prefixed = format!("w92_{}", file_name);
+                    if let Ok(fallback) = paths.poster_file(&prefixed) {
+                        if fallback.is_file() {
+                            full_path = fallback;
+                        }
+                    }
+                }
+            }
 
             if !full_path.is_file() {
                 return tauri::http::Response::builder()
@@ -194,6 +212,7 @@ pub fn run() {
             commands::get_tmdb_detail,
             commands::get_tmdb_season_detail,
             commands::download_poster,
+            commands::get_missing_posters,
             commands::get_poster_cache_stats,
             commands::clean_poster_cache,
             commands::webdav_request,
