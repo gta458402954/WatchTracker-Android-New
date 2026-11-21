@@ -241,7 +241,22 @@ function RecordCard({ record, onOpen, onStatus, onMore, onEpisode }: { record: W
       </button>
       <button type="button" className="mobile-record-more" aria-label={`更多操作：${title}`} title="更多操作" onClick={event => onMore(event.currentTarget)}><span aria-hidden="true">⋮</span></button>
     </div>
-    <div className="mobile-record-quick-action">{episodic ? <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} /> : <button type="button" className={`mobile-primary-button mobile-status-quick-button ${record.status === '已看' ? 'watched' : ''}`} disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}</div>
+    {episodic ? (
+      <div className="mobile-record-quick-action">
+        <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} />
+      </div>
+    ) : record.status !== '已看' ? (
+      <div className="mobile-record-quick-action">
+        <button
+          type="button"
+          className="mobile-primary-button mobile-status-quick-button"
+          disabled={record.isLocked}
+          onClick={() => onStatus('已看')}
+        >
+          标为已看
+        </button>
+      </div>
+    ) : null}
   </article>;
 }
 
@@ -265,7 +280,16 @@ function DetailPage({ record, onBack, onEdit, onDelete, onLock, onStatus, onEpis
       </div>
     </div>
     <div className="mobile-detail-actions">
-      {!episodic && <button type="button" className="mobile-primary-button" disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}
+      {!episodic && record.status !== '已看' && (
+        <button
+          type="button"
+          className="mobile-primary-button"
+          disabled={record.isLocked}
+          onClick={() => onStatus('已看')}
+        >
+          标为已看
+        </button>
+      )}
       <button type="button" className="mobile-quiet-button" onClick={onLock}>{record.isLocked ? '解锁' : '锁定'}</button>
       <button type="button" className="mobile-quiet-button mobile-danger" disabled={record.isLocked} onClick={onDelete}>删除</button>
     </div>

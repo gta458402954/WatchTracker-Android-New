@@ -526,33 +526,48 @@ export default function MobileSyncSettingsPage({
 
       {/* Backup & Restore */}
       <div className="mobile-sync-card" data-testid="mobile-backup-export">
-        <h2>备份与恢复</h2>
-        <p className="mobile-sync-note">导出片库、逐集历史和收藏数据为 JSON 文件。</p>
-        <p className="mobile-sync-note">不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。</p>
-        <button
-          type="button"
-          className="mobile-primary-button"
-          disabled={exportBusy}
-          onClick={() => void exportLocalData()}
-        >
-          {exportBusy ? '正在准备导出…' : '导出数据'}
-        </button>
-        <button
-          type="button"
-          className="mobile-quiet-button mobile-import-button"
-          disabled={importBusy !== null}
-          onClick={() => void chooseImport()}
-        >
-          {importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}
-        </button>
+        <h2>
+          <span aria-hidden="true">💾 </span>备份与恢复
+        </h2>
+        <p className="mobile-sync-note">导出全量片库、逐集历史和收藏数据为标准 JSON 备份文件，或从备份安全恢复。</p>
+        <p className="mobile-sync-note" style={{ marginTop: '4px', fontSize: '11px', color: '#94a3b8' }}>
+          不会包含 WebDAV 密码、TMDB API Key 或同步运行状态。
+        </p>
+        <div className="mobile-settings-dual-btns" style={{ marginTop: '12px' }}>
+          <button
+            type="button"
+            className="mobile-primary-button"
+            disabled={exportBusy}
+            onClick={() => void exportLocalData()}
+            style={{ minHeight: '48px', borderRadius: '12px', fontSize: '13px', fontWeight: 800 }}
+          >
+            {exportBusy ? '正在准备导出…' : '导出数据'}
+          </button>
+          <button
+            type="button"
+            className="mobile-quiet-button mobile-import-button"
+            disabled={importBusy !== null}
+            onClick={() => void chooseImport()}
+            style={{ minHeight: '48px', marginTop: 0, borderRadius: '12px', fontSize: '13px', fontWeight: 800 }}
+          >
+            {importBusy === 'select' || importBusy === 'preview' ? '正在读取备份…' : '导入数据'}
+          </button>
+        </div>
         {exportStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-export-status">{exportStatus}</p>}
         {importStatus && <p className="mobile-sync-message" role="status" data-testid="mobile-import-status">{importStatus}</p>}
         {importError && <p className="mobile-sync-error" role="alert" data-testid="mobile-import-error">{importError}</p>}
         {importPreview && (
-          <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview">
-            <h3>导入预览</h3>
+          <section className="mobile-import-preview" role="region" aria-label="导入预览" data-testid="mobile-import-preview" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <h3 style={{ margin: 0, color: '#1e293b', fontSize: '15px', fontWeight: 900 }}>
+                <span aria-hidden="true">📋 </span>导入预览
+              </h3>
+              <span style={{ fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '6px', background: '#e0e7ff', color: '#4338ca' }}>
+                V{importPreview.formatVersion}
+              </span>
+            </div>
             <dl className="mobile-sync-facts">
-              <div><dt>文件</dt><dd>{importPreview.fileName}</dd></div>
+              <div style={{ gridColumn: '1 / -1' }}><dt>文件</dt><dd style={{ wordBreak: 'break-all' }}>{importPreview.fileName}</dd></div>
               <div><dt>大小</dt><dd>{formatImportBytes(importPreview.sizeBytes)}</dd></div>
               <div><dt>格式</dt><dd>V{importPreview.formatVersion}</dd></div>
               <div><dt>导出时间</dt><dd>{new Date(importPreview.exportedAt).toLocaleString('zh-CN')}</dd></div>
@@ -561,23 +576,37 @@ export default function MobileSyncSettingsPage({
               <div><dt>收藏集</dt><dd>{importPreview.counts.collections}</dd></div>
               <div><dt>收藏成员</dt><dd>{importPreview.counts.collectionMembers}</dd></div>
             </dl>
-            <h4>预计影响</h4>
+            <h4 style={{ margin: '14px 0 8px', color: '#1e293b', fontSize: '13px', fontWeight: 800 }}>
+              <span aria-hidden="true">⚡ </span>预计影响
+            </h4>
             <dl className="mobile-import-diff">
-              <div><dt>新增</dt><dd>{importPreview.records.added}</dd></div>
-              <div><dt>更新</dt><dd>{importPreview.records.updated}</dd></div>
-              <div><dt>删除</dt><dd>{importPreview.records.removed}</dd></div>
-              <div><dt>不变</dt><dd>{importPreview.records.unchanged}</dd></div>
-              <div><dt>锁定保护</dt><dd>{importPreview.records.lockedPreserved}</dd></div>
-              <div><dt>导入后记录</dt><dd>{importPreview.records.finalCount}</dd></div>
+              <div><dt>新增</dt><dd style={{ color: '#059669', fontWeight: 900 }}>+{importPreview.records.added}</dd></div>
+              <div><dt>更新</dt><dd style={{ color: '#2563eb', fontWeight: 900 }}>{importPreview.records.updated}</dd></div>
+              <div><dt>删除</dt><dd style={{ color: importPreview.records.removed > 0 ? '#dc2626' : undefined, fontWeight: 900 }}>{importPreview.records.removed}</dd></div>
+              <div><dt>不变</dt><dd style={{ fontWeight: 900 }}>{importPreview.records.unchanged}</dd></div>
+              <div><dt>锁定保护</dt><dd style={{ color: '#d97706', fontWeight: 900 }}>{importPreview.records.lockedPreserved}</dd></div>
+              <div><dt>导入后记录</dt><dd style={{ color: '#4f46e5', fontWeight: 900 }}>{importPreview.records.finalCount}</dd></div>
             </dl>
-            <p className="mobile-sync-note">
+            <p className="mobile-sync-note" style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fef3c7', padding: '10px 12px', borderRadius: '12px', marginTop: '12px' }}>
               未锁定的当前数据可能被替换或删除。锁定记录及其逐集历史会受到保护；操作前会创建恢复点。
             </p>
-            <div className="mobile-sync-actions">
-              <button type="button" className="mobile-quiet-button" disabled={importBusy !== null} onClick={() => void cancelImport()}>
+            <div className="mobile-settings-dual-btns" style={{ marginTop: '14px' }}>
+              <button
+                type="button"
+                className="mobile-quiet-button"
+                disabled={importBusy !== null}
+                onClick={() => void cancelImport()}
+                style={{ width: '100%', minHeight: '48px', borderRadius: '12px', fontWeight: 800 }}
+              >
                 取消导入
               </button>
-              <button type="button" className="mobile-danger-button" disabled={importBusy !== null} onClick={() => void confirmImport()}>
+              <button
+                type="button"
+                className="mobile-danger-button"
+                disabled={importBusy !== null}
+                onClick={() => void confirmImport()}
+                style={{ width: '100%', minHeight: '48px', borderRadius: '12px', fontWeight: 800, background: '#fee2e2', borderColor: '#fca5a5' }}
+              >
                 {importBusy === 'commit' ? '正在导入…' : '确认导入并替换'}
               </button>
             </div>
