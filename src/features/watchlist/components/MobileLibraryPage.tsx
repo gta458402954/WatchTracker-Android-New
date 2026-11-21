@@ -19,6 +19,7 @@ import MobileEpisodeTracking, { MobileEpisodeCardStatus, MobileEpisodeQuickActio
 import MobileRecordActionsSheet from './MobileRecordActionsSheet.tsx';
 import MobilePosterWall from './MobilePosterWall.tsx';
 import { isMobileEpisodeTrackable } from '../mobileEpisodeTracking.ts';
+import { openExternalUrl } from '../../../platform/externalLink.ts';
 
 interface MobileLibraryPageProps {
   records: WatchRecord[];
@@ -114,7 +115,33 @@ function RecordCard({ record, onOpen, onStatus, onMore, onEpisode }: { record: W
     <div className="mobile-record-card-main">
       <button type="button" className="mobile-record-open" onClick={onOpen} aria-label={`打开 ${title}`}>
         {record.posterPath ? <SafePosterImage posterPath={record.posterPath} alt={`${title} 海报`} className="mobile-record-thumbnail" compact autoDownload={false} /> : <div className="mobile-record-thumbnail mobile-poster-fallback" aria-label={`${title} 无海报`}>无图</div>}
-        <div className="mobile-record-card-body"><div className="mobile-record-title">{title}</div>{displayTitlesOf(record).secondary && <div className="mobile-record-subtitle">{displayTitlesOf(record).secondary}</div>}<div className="mobile-record-meta"><span>{record.mediaType}</span><span>{record.status}</span>{record.releaseYear && <span>{record.releaseYear}</span>}{record.rating != null && <span>★ {record.rating}</span>}{record.isLocked && <span>🔒 已锁定</span>}</div><MobileEpisodeCardStatus record={record} /></div>
+        <div className="mobile-record-card-body">
+          <div className="mobile-record-title">{title}</div>
+          {displayTitlesOf(record).secondary && <div className="mobile-record-subtitle">{displayTitlesOf(record).secondary}</div>}
+          <div className="mobile-record-meta">
+            <span>{record.mediaType}</span>
+            <span>{record.status}</span>
+            {record.releaseYear && <span>{record.releaseYear}</span>}
+            {record.rating != null && <span>★ {record.rating}</span>}
+            {record.imdbRating != null && <span>IMDb {record.imdbRating.toFixed(1)}</span>}
+            {record.imdbId && (
+              <span
+                role="button"
+                tabIndex={0}
+                className="mobile-imdb-link-tag"
+                title="在 IMDb 中打开"
+                onClick={event => {
+                  event.stopPropagation();
+                  openExternalUrl(`https://www.imdb.com/title/${record.imdbId}/`);
+                }}
+              >
+                IMDb ↗
+              </span>
+            )}
+            {record.isLocked && <span>🔒 已锁定</span>}
+          </div>
+          <MobileEpisodeCardStatus record={record} />
+        </div>
       </button>
       <button type="button" className="mobile-record-more" aria-label={`更多操作：${title}`} title="更多操作" onClick={event => onMore(event.currentTarget)}><span aria-hidden="true">⋮</span></button>
     </div>
@@ -126,7 +153,52 @@ function DetailPage({ record, onBack, onEdit, onDelete, onLock, onStatus, onEpis
   const title = titleOf(record);
   const episodic = isMobileEpisodeTrackable(record);
   const fields: Array<[string, string | number | null | undefined]> = [['中文名', record.chineseName], ['原名', record.originalName], ['类型', record.mediaType], ['状态', record.status], ['进度', record.progress], ['总集数', record.totalEpisodes], ['平台', record.platform], ['上映年份', record.releaseYear], ['评分', record.rating], ['开始日期', viewingDateText(record.startDate, 'start')], ['完成日期', viewingDateText(record.endDate, 'end')], ['备注', record.notes], ['IMDb ID', record.imdbId], ['类型标签', record.genres], ['地区', record.originCountry], ['内容标签', record.contentTags]];
-  return <section className="mobile-detail-page" aria-labelledby="mobile-detail-title"><div className="mobile-page-header"><button type="button" className="mobile-icon-button" aria-label="返回片库" onClick={onBack}>‹</button><h1 id="mobile-detail-title">{title}</h1><button type="button" className="mobile-icon-button" aria-label="编辑记录" onClick={onEdit} disabled={record.isLocked}>✎</button></div><div className="mobile-detail-hero">{record.posterPath && <SafePosterImage posterPath={record.posterPath} alt={`${title} 海报`} className="mobile-detail-poster" />}<div><h2>{title}</h2><p>{record.originalName || '暂无原名'}</p><span className="mobile-status-pill">{record.status}</span>{record.isLocked && <span className="mobile-status-pill locked">🔒 已锁定</span>}</div></div><div className="mobile-detail-actions">{!episodic && <button type="button" className="mobile-primary-button" disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}<button type="button" className="mobile-quiet-button" onClick={onLock}>{record.isLocked ? '解锁' : '锁定'}</button><button type="button" className="mobile-quiet-button mobile-danger" disabled={record.isLocked} onClick={onDelete}>删除</button></div>{episodic && <MobileEpisodeTracking key={record.id} record={record} onAction={onEpisode} />}<dl className="mobile-detail-grid">{fields.map(([label, value]) => value !== null && value !== undefined && value !== '' ? <div key={label}><dt>{label}</dt><dd>{value}</dd></div> : null)}</dl>{record.isLocked && <p className="mobile-locked-hint">此记录已锁定。可以查看和解锁；编辑、删除和逐集写入会被拒绝。</p>}{record.notes && <p className="mobile-detail-notes">{record.notes}</p>}</section>;
+  return <section className="mobile-detail-page" aria-labelledby="mobile-detail-title">
+    <div className="mobile-page-header">
+      <button type="button" className="mobile-icon-button" aria-label="返回片库" onClick={onBack}>‹</button>
+      <h1 id="mobile-detail-title">{title}</h1>
+      <button type="button" className="mobile-icon-button" aria-label="编辑记录" onClick={onEdit} disabled={record.isLocked}>✎</button>
+    </div>
+    <div className="mobile-detail-hero">
+      {record.posterPath && <SafePosterImage posterPath={record.posterPath} alt={`${title} 海报`} className="mobile-detail-poster" />}
+      <div>
+        <h2>{title}</h2>
+        <p>{record.originalName || '暂无原名'}</p>
+        <span className="mobile-status-pill">{record.status}</span>
+        {record.isLocked && <span className="mobile-status-pill locked">🔒 已锁定</span>}
+      </div>
+    </div>
+    <div className="mobile-detail-actions">
+      {!episodic && <button type="button" className="mobile-primary-button" disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}
+      <button type="button" className="mobile-quiet-button" onClick={onLock}>{record.isLocked ? '解锁' : '锁定'}</button>
+      <button type="button" className="mobile-quiet-button mobile-danger" disabled={record.isLocked} onClick={onDelete}>删除</button>
+    </div>
+    {episodic && <MobileEpisodeTracking key={record.id} record={record} onAction={onEpisode} />}
+    <dl className="mobile-detail-grid">
+      {fields.map(([label, value]) => {
+        if (value === null || value === undefined || value === '') return null;
+        if (label === 'IMDb ID' && typeof value === 'string' && value.startsWith('tt')) {
+          return (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>
+                <button
+                  type="button"
+                  className="mobile-text-link-btn"
+                  onClick={() => openExternalUrl(`https://www.imdb.com/title/${value}/`)}
+                >
+                  {value} ↗
+                </button>
+              </dd>
+            </div>
+          );
+        }
+        return <div key={label}><dt>{label}</dt><dd>{value}</dd></div>;
+      })}
+    </dl>
+    {record.isLocked && <p className="mobile-locked-hint">此记录已锁定。可以查看和解锁；编辑、删除和逐集写入会被拒绝。</p>}
+    {record.notes && <p className="mobile-detail-notes">{record.notes}</p>}
+  </section>;
 }
 
 function MobileRecordForm({ record, onSave, onDelete, onClose, onNotify }: { record: WatchRecord | null; onSave: (value: RecordFormValues) => Promise<boolean>; onDelete: () => void; onClose: () => void; onNotify: (tone: NoticeTone, message: string) => void }) {

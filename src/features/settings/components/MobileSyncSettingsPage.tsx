@@ -44,6 +44,9 @@ import {
   localImportErrorMessage,
   type LocalImportPreview,
 } from '../../backup/localImport.ts';
+import { useBatchMetadata } from '../hooks/useBatchMetadata.ts';
+import { BATCH_METADATA_FIELD_LABELS } from '../../../shared/lib/batchMetadata.ts';
+import type { UpdateWatchRecord, WatchRecord } from '../../../shared/types';
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/%E5%BD%B1%E8%A7%86%E8%BF%BD%E8%B8%AA/';
 
@@ -56,6 +59,8 @@ interface Props {
   onSyncWorkQueued: () => Promise<void>;
   onReloadRecords: () => Promise<unknown>;
   notify: (tone: NoticeTone, message: string) => void;
+  records?: WatchRecord[];
+  onUpdateRecord?: (id: string, updates: UpdateWatchRecord) => Promise<void>;
 }
 
 function credentialLabel(connection: ActiveSyncConnection | null): string {
@@ -90,7 +95,7 @@ function conflictTitle(conflict: SyncConflict): string {
 
 export default function MobileSyncSettingsPage({
   runtime, isSyncing, onSyncNow, onTogglePause, onConfigurationChanged,
-  onSyncWorkQueued, onReloadRecords, notify,
+  onSyncWorkQueued, onReloadRecords, notify, records, onUpdateRecord,
 }: Props) {
   const [connection, setConnection] = useState<ActiveSyncConnection | null>(null);
   const [registry, setRegistry] = useState<SyncTargetRegistry | null>(null);
@@ -126,6 +131,24 @@ export default function MobileSyncSettingsPage({
   const [proxySaving, setProxySaving] = useState(false);
   const pendingImportToken = useRef<string | null>(null);
   const importCommitInFlight = useRef(false);
+
+  const batch = useBatchMetadata({
+    records: records ?? [],
+    tmdbSaved: tmdbConfigured,
+    initialBatchNoDataState: { version: 1, records: {} },
+    onUpdateRecord: onUpdateRecord ?? (async () => undefined),
+    onDatabaseRestored: async () => {
+      await onReloadRecords();
+      return records ?? [];
+    },
+    onNotify: notify,
+    showFailure: (_scope, action, error, setStatus) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      notify('error', `${action}失败: ${msg}`);
+      if (setStatus) setStatus(`${action}失败`);
+    },
+    showSuccess: msg => notify('success', msg),
+  });
 
   useEffect(() => () => {
     const token = pendingImportToken.current;
@@ -781,6 +804,168 @@ export default function MobileSyncSettingsPage({
             </div>
           </form>
         </div>
+      </div>
+
+      {/* Group: Batch Metadata Completion */}
+      <div className="mobile-settings-section" data-testid="mobile-batch-metadata">
+        <div className="mobile-settings-header">
+          <h2>✨ 批量元数据补全</h2>
+          <span className={`mobile-settings-tag ${batch.batchSyncing ? 'amber' : tmdbConfigured ? 'green' : 'gray'}`}>
+            {batch.batchSyncing ? '正在处理' : tmdbConfigured ? '就绪' : '需配置 TMDB'}
+          </span>
+        </div>
+        <p className="mobile-settings-desc">
+          基于已录入的 IMDb 编号，通过 TMDB 智能分析并补全缺失的年份、评分、海报、国家、片长与分季信息。绝不覆盖已有数据。
+        </p>
+
+        {/* Idle / Done state action button */}
+        {(batch.batchPhase === 'idle' || batch.batchPhase === 'done') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <button
+              type="button"
+              className="mobile-settings-btn primary"
+              style={{ width: '100%', minHeight: '44px', fontWeight: 800 }}
+              disabled={!tmdbConfigured}
+              onClick={() => void batch.handlePrepare()}
+            >
+              🔎 分析并预览缺失字段
+            </button>
+            {Object.keys(batch.batchNoDataState.records).length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#f8fafc', borderRadius: '10px', fontSize: '11px', color: '#64748b' }}>
+                <span>已记住 {Object.keys(batch.batchNoDataState.records).length} 个无数据条目</span>
+                <button
+                  type="button"
+                  className="mobile-quiet-button"
+                  style={{ minHeight: '28px', padding: '0 8px', fontSize: '11px' }}
+                  onClick={() => void batch.handleClearNoData()}
+                >
+                  清除记忆
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Progress bar during planning / applying */}
+        {batch.batchSyncing && batch.batchTotal > 0 && (
+          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="mobile-stats-progress-track" style={{ height: '8px' }}>
+              <div
+                className="mobile-stats-progress-seg completed"
+                style={{ width: `${(batch.batchProgress / batch.batchTotal) * 100}%`, background: '#f59e0b' }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#64748b' }}>
+              <span>进度：{batch.batchProgress} / {batch.batchTotal}</span>
+              <button
+                type="button"
+                className="mobile-quiet-button mobile-danger"
+                style={{ minHeight: '28px', padding: '0 8px', fontSize: '11px' }}
+                onClick={batch.handleCancel}
+              >
+                停止
+              </button>
+            </div>
+          </div>
+        )}
+
+        {batch.batchStatus && (
+          <p className="mobile-sync-message" style={{ color: '#d97706', fontWeight: 700 }}>
+            {batch.batchStatus}
+          </p>
+        )}
+
+        {/* Preview Phase */}
+        {batch.batchPhase === 'preview' && (
+          <div className="mobile-batch-preview-box" style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: '#1e293b' }}>
+                写入预览 ({batch.batchPlan.filter(r => r.status === 'ready').length} 可更新)
+              </span>
+              <small style={{ color: '#94a3b8' }}>只补缺失字段</small>
+            </div>
+
+            <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '4px' }}>
+              {batch.batchPlan.map(row => (
+                <div key={row.recordId} style={{ padding: '8px 10px', borderRadius: '10px', background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.recordName}</strong>
+                    <span style={{
+                      fontSize: '10px', fontWeight: 800, padding: '2px 6px', borderRadius: '6px',
+                      background: row.status === 'ready' ? '#d1fae5' : row.status === 'choice' ? '#fef3c7' : '#f1f5f9',
+                      color: row.status === 'ready' ? '#065f46' : row.status === 'choice' ? '#92400e' : '#64748b'
+                    }}>
+                      {row.status === 'ready' ? '可更新' : row.status === 'choice' ? '待选择' : row.status === 'failed' ? '失败' : '跳过'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '3px' }}>
+                    {row.fields.length ? `补全：${row.fields.map(f => BATCH_METADATA_FIELD_LABELS[f]).join('、')}` : row.reason}
+                  </div>
+                  {row.status === 'choice' && row.candidates && (
+                    <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {row.candidates.map(candidate => (
+                        <button
+                          key={`${candidate.match.type}:${candidate.match.id}`}
+                          type="button"
+                          className="mobile-quiet-button"
+                          style={{ fontSize: '10px', minHeight: '30px', textAlign: 'left', padding: '4px 8px' }}
+                          disabled={batch.batchChoosingId === row.recordId}
+                          onClick={() => void batch.handleSelectCandidate(row, candidate.match)}
+                        >
+                          {batch.batchChoosingId === row.recordId ? '读取中…' : candidate.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="mobile-primary-button"
+                style={{ flex: 2, minHeight: '40px' }}
+                disabled={!batch.batchPlan.some(r => r.status === 'ready')}
+                onClick={() => void batch.handleApply()}
+              >
+                确认写入 ({batch.batchPlan.filter(r => r.status === 'ready').length})
+              </button>
+              <button
+                type="button"
+                className="mobile-quiet-button"
+                style={{ flex: 1, minHeight: '40px' }}
+                onClick={batch.resetBatch}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Done Phase */}
+        {batch.batchPhase === 'done' && batch.batchResults.length > 0 && (
+          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {batch.batchResults.map(res => (
+                <div key={res.plan.recordId} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 8px', borderRadius: '8px', background: '#f8fafc', fontSize: '11px' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{res.plan.recordName}</span>
+                  <span style={{ fontWeight: 800, color: res.status === 'updated' ? '#10b981' : res.status === 'failed' ? '#ef4444' : '#94a3b8' }}>
+                    {res.status === 'updated' ? '已更新' : res.status === 'failed' ? '失败' : '跳过'}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="mobile-quiet-button"
+              style={{ minHeight: '36px', width: '100%' }}
+              onClick={batch.resetBatch}
+            >
+              完成
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Group 3: Backup & Restore */}
