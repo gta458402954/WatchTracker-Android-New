@@ -83,7 +83,10 @@ pub async fn search_tmdb(
     // Support raw IMDb ID (tt1234567), with trailing slash/query (tt1234567/), or full IMDb URL (https://www.imdb.com/title/tt1234567/)
     let extracted_imdb = if let Some(pos) = trimmed.find("tt") {
         let remainder = &trimmed[pos + 2..];
-        let digits: String = remainder.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: String = remainder
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         if digits.len() >= 2 && (trimmed.starts_with("tt") || trimmed.contains("imdb.com")) {
             Some(format!("tt{}", digits))
         } else {

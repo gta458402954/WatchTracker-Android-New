@@ -44,10 +44,10 @@ export function useTmdbRecordSearch({ form, setForm, isEpisodic, onNotify }: Use
   }
 
   async function handleTMDBSearch(overrideQuery?: string) {
-    let raw = (overrideQuery || form.imdbId || form.chineseName || form.originalName || '').trim();
+    const raw = (overrideQuery || form.imdbId || form.chineseName || form.originalName || '').trim();
     if (!raw) return;
     const imdb = extractImdbId(raw);
-    let query = imdb || raw.replace(/第\s*\d+\s*季/g, '').replace(/Season\s*\d+/gi, '').replace(/第\s*[一二三四五六七八九十]+\s*季/g, '').trim();
+    const query = imdb || raw.replace(/第\s*\d+\s*季/g, '').replace(/Season\s*\d+/gi, '').replace(/第\s*[一二三四五六七八九十]+\s*季/g, '').trim();
     if (!query) return;
     if (!(await getTmdbCredentialStatus()).available) {
       setSearchError('请先在设置中配置 TMDB API KEY');
