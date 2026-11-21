@@ -521,6 +521,12 @@ pub(crate) fn setup_db(conn: &Connection) -> Result<()> {
     migrate_episode_history_schema(conn)?;
     crate::collections::migrate_schema(conn)?;
 
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('mobile_startup_view', 'watching') \
+         ON CONFLICT(key) DO NOTHING",
+        [],
+    )?;
+
     Ok(())
 }
 

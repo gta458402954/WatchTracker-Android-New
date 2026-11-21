@@ -150,3 +150,68 @@ test('M1.2 list cards retain poster fallback and primary quick action as the onl
   await expect(page.locator('.mobile-poster-grid')).toHaveCount(0);
   await expect(page.locator('.mobile-record-list')).toBeVisible();
 });
+
+test('M1.2 status quick switcher filters instantly and respects startup preference', async ({ page }) => {
+  await setupMockIpc(page, {
+    records: [
+      record('在看剧集', { status: '在看' }),
+      record('未看电影', { status: '未看' }),
+      record('已看完结', { status: '已看' }),
+    ],
+    settings: {
+      mobile_startup_view: 'watching',
+    },
+  });
+
+  await page.goto('/');
+
+  // When mobile_startup_view is watching, on cold startup it automatically defaults to 在看
+  await expect(page.getByRole('tab', { name: /在看/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('在看剧集', { exact: true })).toBeVisible();
+  await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('已看完结', { exact: true })).toHaveCount(0);
+
+  // Switch to 全部 with one tap
+  await page.getByRole('tab', { name: /全部/ }).click();
+  await expect(page.getByRole('tab', { name: /全部/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('在看剧集', { exact: true })).toBeVisible();
+  await expect(page.getByText('未看电影', { exact: true })).toBeVisible();
+  await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
+
+  // Switch to 未看
+  await page.getByRole('tab', { name: /未看/ }).click();
+  await expect(page.getByRole('tab', { name: /未看/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('未看电影', { exact: true })).toBeVisible();
+  await expect(page.getByText('在看剧集', { exact: true })).toHaveCount(0);
+
+  // Switch to 已看
+  await page.getByRole('tab', { name: /已看/ }).click();
+  await expect(page.getByRole('tab', { name: /已看/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
+  await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+});
+
+test('M1.2 independent batch poster downloader operates from settings without metadata fetching', async ({ page }) => {
+  await setupMockIpc(page, {
+    records: [
+      record('海报电影1', { posterPath: '/poster1.jpg' }),
+      record('海报电影2', { posterPath: '/poster2.jpg' }),
+      record('无海报电影', { posterPath: null }),
+    ],
+  });
+
+  await page.goto('/#settings');
+  await expect(page.getByRole('heading', { name: '一键离线下载海报' })).toBeVisible();
+  await expect(page.getByText('当前片库共 2 部影片已关联海报路径。')).toBeVisible();
+
+  const startBtn = page.getByRole('button', { name: '开始一键下载海报' });
+  await expect(startBtn).toBeVisible();
+  await startBtn.click();
+
+  await expect(page.getByText(/海报下载完成！共处理 2 张海报/)).toBeVisible();
+  const snapshot = await mockSnapshot(page);
+  const downloadCalls = snapshot.calls.filter(c => c.command === 'download_poster');
+  expect(downloadCalls.length).toBe(2);
+  expect(downloadCalls.some(c => c.args.path === '/poster1.jpg')).toBeTruthy();
+  expect(downloadCalls.some(c => c.args.path === '/poster2.jpg')).toBeTruthy();
+});

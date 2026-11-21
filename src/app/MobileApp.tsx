@@ -38,7 +38,7 @@ export default function MobileApp() {
   const initializationPromise = useRef<Promise<void> | null>(null);
   const loadRecords = useCallback(() => {
     if (initializationPromise.current) return initializationPromise.current;
-    const pending = (async () => { try { await new Promise(resolve => window.setTimeout(resolve, 1500)); await reloadRecords(); setInitialization('ready'); void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步'))); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
+    const pending = (async () => { try { await reloadRecords(); setInitialization('ready'); void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步'))); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
     initializationPromise.current = pending;
     return pending;
   }, [onBackgroundSyncError, reloadRecords, startCoordinator]);
