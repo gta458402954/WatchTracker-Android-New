@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { WatchRecord } from '../src/shared/types';
 import type { SyncPayloadV3 } from '../src/shared/lib/syncMerge';
-import { mockSnapshot, setupMockIpc } from './fixtures/mockIpc';
+import { mockSnapshot, setupMockIpc, type MockIpcOptions } from './fixtures/mockIpc';
 
 function record(id: string, overrides: Partial<WatchRecord> = {}): WatchRecord {
   return {
@@ -32,7 +32,7 @@ function record(id: string, overrides: Partial<WatchRecord> = {}): WatchRecord {
   };
 }
 
-function payload(records: WatchRecord[]): SyncPayloadV3 {
+function payload(records: WatchRecord[], overrides: Partial<SyncPayloadV3> = {}): SyncPayloadV3 {
   return {
     schemaVersion: 3,
     documentId: 'sync-reliability-document',
@@ -43,6 +43,7 @@ function payload(records: WatchRecord[]): SyncPayloadV3 {
     committedAt: '2026-08-02T00:00:00.000Z',
     records,
     tombstones: [],
+    ...overrides,
   };
 }
 
@@ -54,6 +55,840 @@ const credentials = {
 async function webdavCallCount(page: Page): Promise<number> {
   return (await mockSnapshot(page)).calls.filter(call => call.command === 'webdav_request').length;
 }
+
+async function runSync(page: Page) {
+  return page.evaluate(async () => (await import('/src/shared/lib/webdav.ts')).syncToWebDAV());
+}
+
+function cleanConditionalSettings(baseline: SyncPayloadV3, etag = '"conditional-etag"') {
+  return {
+    ...credentials,
+    sync_v3_baseline: JSON.stringify(baseline),
+    sync_v3_remote_etag: etag,
+    sync_v2_source_fingerprint: '"legacy-1"',
+    sync_outbox_v1: JSON.stringify({
+      version: 1, pending: false, dirtyGeneration: 0, reasons: [], firstQueuedAt: null, lastQueuedAt: null,
+    }),
+  };
+}
+
+function pendingSettings(baseline: SyncPayloadV3, etag = '"conditional-etag"') {
+  return {
+    ...cleanConditionalSettings(baseline, etag),
+    sync_outbox_v1: JSON.stringify({
+      version: 1, pending: true, dirtyGeneration: 0, reasons: ['record-update'],
+      firstQueuedAt: '2026-08-30T00:00:00.000Z', lastQueuedAt: '2026-08-30T00:00:00.000Z',
+    }),
+    sync_scheduler_v1: JSON.stringify({
+      version: 1, paused: true, consecutiveFailures: 0, nextAttemptAt: null,
+      lastAttemptAt: null, lastSuccessAt: null, lastErrorCode: null, lastRemoteCheckAt: null,
+    }),
+  };
+}
+
+const cleanScheduler = JSON.stringify({
+  version: 1, paused: true, consecutiveFailures: 0, nextAttemptAt: null,
+  lastAttemptAt: null, lastSuccessAt: null, lastErrorCode: null, lastRemoteCheckAt: null,
+});
+
+test('@conditional-pull clean unchanged remote uses PROPFIND without v3 GET, commit, or PUT', async ({ page }) => {
+  const local = record('conditional-clean');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"',
+    webdavConditionalGet: true, settings: cleanConditionalSettings(baseline),
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: true, records: [expect.objectContaining({ id: local.id })] });
+
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'PROPFIND' && String(call.args.url).endsWith('records-v3.json'))).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'))).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records.json'))).toBe(true);
+  expect(snapshot.recoveryPoints).toHaveLength(0);
+  expect(snapshot.records).toEqual([local]);
+  expect(snapshot.settings.sync_v3_baseline).toBe(JSON.stringify(baseline));
+  expect(snapshot.settings.sync_v3_remote_etag).toBe('"conditional-etag"');
+  expect(JSON.parse(snapshot.settings.sync_outbox_v1 as string).pending).toBe(false);
+  const scheduler = JSON.parse(snapshot.settings.sync_scheduler_v1 as string);
+  expect(scheduler.lastRemoteCheckAt).not.toBeNull();
+  expect(scheduler.lastSuccessAt).not.toBeNull();
+  expect(scheduler.consecutiveFailures).toBe(0);
+});
+
+const fatalPropfindCases: Array<{ name: string; options: Partial<MockIpcOptions> }> = [
+  { name: '401', options: { webdavPropfindStatus: 401 } },
+  { name: '403', options: { webdavPropfindStatus: 403 } },
+  { name: '500', options: { webdavPropfindStatus: 500 } },
+  { name: '503', options: { webdavPropfindStatus: 503 } },
+  { name: 'transport failure', options: { webdavPropfindNetworkFailure: true } },
+  { name: 'missing response body', options: { webdavPropfindText: null } },
+  { name: 'malformed XML', options: { webdavPropfindText: '<d:multistatus' } },
+];
+
+for (const failure of fatalPropfindCases) {
+  test(`@conditional-pull PROPFIND ${failure.name} fails closed before every fallback or write`, async ({ page }) => {
+    const local = record(`propfind-fatal-${failure.name}`);
+    const baseline = payload([local]);
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: baseline, webdavV3Etag: '"propfind-fatal"',
+      settings: { ...cleanConditionalSettings(baseline, '"propfind-fatal"'), sync_scheduler_v1: cleanScheduler },
+      ...failure.options,
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(false);
+    const snapshot = await mockSnapshot(page);
+    const v3Calls = snapshot.calls.filter(call => call.command === 'webdav_request'
+      && String(call.args.url).endsWith('records-v3.json'));
+    expect(v3Calls.filter(call => call.args.method === 'PROPFIND')).toHaveLength(1);
+    expect(v3Calls.some(call => call.args.range === 'bytes=0-0')).toBe(false);
+    expect(v3Calls.some(call => call.args.method === 'GET')).toBe(false);
+    expect(v3Calls.some(call => call.args.method === 'PUT')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+    expect(snapshot.settings.sync_scheduler_v1).toBe(cleanScheduler);
+  });
+}
+
+test('@conditional-pull PROPFIND same detects a concurrent local edit through narrow stale CAS', async ({ page }) => {
+  const local = record('propfind-toctou');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"propfind-etag"', mutateLocalDuringPropfind: true,
+    settings: cleanConditionalSettings(baseline, '"propfind-etag"'),
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'stale_local_snapshot', staleLocal: true });
+  const staleSnapshot = await mockSnapshot(page);
+  expect(staleSnapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+  expect(staleSnapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(staleSnapshot.records[0].notes).toBe('edited during PROPFIND');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const recovered = await mockSnapshot(page);
+  expect(recovered.webdavV3Remote?.records[0].notes).toBe('edited during PROPFIND');
+  expect(recovered.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(true);
+});
+
+test('@conditional-pull JianGuoYun unquoted GET ETag uses quoted DAV preflight', async ({ page }) => {
+  const local = record('jianguoyun-shape');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"dav-quoted"',
+    webdavGetEtag: 'dav-unquoted', webdavPropfindEtag: '"dav-quoted"',
+    settings: cleanConditionalSettings(baseline, '"dav-quoted"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'PROPFIND' && String(call.args.url).endsWith('records-v3.json'))).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'))).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+});
+
+test('@conditional-pull 304 without response ETag preserves the stored validator', async ({ page }) => {
+  const local = record('conditional-no-response-etag');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'W/"weak-etag"',
+    webdavConditionalGet: true, webdavPropfindStatus: 405, omitConditionalGetEtag: true,
+    settings: cleanConditionalSettings(baseline, 'W/"weak-etag"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.settings.sync_v3_remote_etag).toBe('W/"weak-etag"');
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+});
+
+test('@conditional-pull fallback 200 with same validator avoids merge and PUT', async ({ page }) => {
+  const local = record('conditional-ignored');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"', webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+});
+
+test('@conditional-pull range metadata probe same unquoted ETag skips the full v3 GET', async ({ page }) => {
+  const local = record('range-same');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+    webdavPropfindStatus: 405, webdavRangeStatus: 206, webdavRangeEtag: 'range-server',
+    webdavRangeContentRange: 'bytes 0-0/1208148', webdavRangeBodyLength: 1,
+    settings: cleanConditionalSettings(baseline, '"range-server"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const range = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0');
+  expect(range).toBeDefined();
+  expect(range?.args.ifNoneMatch).toBeNull();
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records.json'))).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+});
+
+test('@conditional-pull range metadata probe changed ETag uses a full GET without the old conditional validator', async ({ page }) => {
+  const local = record('range-changed');
+  const remoteOnly = record('range-remote-only');
+  const baseline = payload([local]);
+  const remote = { ...payload([local, remoteOnly]), revision: 2, commitId: 'range-changed-commit' };
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: remote, webdavV3Etag: 'range-new',
+    webdavPropfindStatus: 405, webdavRangeStatus: 206, webdavRangeEtag: 'range-new',
+    webdavRangeContentRange: 'bytes 0-0/1208148', webdavRangeBodyLength: 1,
+    settings: cleanConditionalSettings(baseline, '"range-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const range = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0');
+  const fullGet = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range);
+  expect(range).toBeDefined();
+  expect(fullGet).toBeDefined();
+  expect(fullGet?.args.ifNoneMatch).toBeNull();
+  expect(snapshot.records.map(item => item.id)).toContain(remoteOnly.id);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
+});
+
+test('@conditional-pull range change detector never supplies the PUT validator', async ({ page }) => {
+  const base = record('range-put-base');
+  const local = record('range-put-base', { notes: 'local change', rev: 2, revActor: 'local-device' });
+  const baseline = payload([base]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"full-current"',
+    webdavPropfindStatus: 405, webdavRangeStatus: 206, webdavRangeEtag: 'range-current',
+    webdavRangeContentRange: 'bytes 0-0/1208148', webdavRangeBodyLength: 1,
+    settings: cleanConditionalSettings(baseline, '"range-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const range = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0');
+  const fullGet = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range);
+  const put = snapshot.calls.find(call => call.command === 'webdav_request' && call.args.method === 'PUT');
+  expect(range).toBeDefined();
+  expect(fullGet?.args.ifNoneMatch).toBeNull();
+  expect(put?.args.ifMatch).toBe('"full-current"');
+  expect(put?.args.ifMatch).not.toBe('"range-current"');
+  expect(put?.args.ifDavEtag).toBeNull();
+});
+
+const rangeFallbacks: Array<{
+  name: string;
+  etag: string | null;
+  contentRange: string | null;
+  bodyLength: number | null;
+  status?: number;
+}> = [
+  { name: 'missing ETag', etag: null, contentRange: 'bytes 0-0/1208148', bodyLength: 1 },
+  { name: 'malformed ETag', etag: 'bad"quote', contentRange: 'bytes 0-0/1208148', bodyLength: 1 },
+  { name: 'server ignores Range with 200', etag: 'range-server', contentRange: null, bodyLength: null, status: 200 },
+  { name: 'missing Content-Range', etag: 'range-server', contentRange: null, bodyLength: 1 },
+  { name: 'invalid Content-Range', etag: 'range-server', contentRange: 'bytes 1-1/1208148', bodyLength: 1 },
+  { name: 'empty response body', etag: 'range-server', contentRange: 'bytes 0-0/1208148', bodyLength: 0 },
+  { name: 'invalid response body length', etag: 'range-server', contentRange: 'bytes 0-0/1208148', bodyLength: 2 },
+];
+
+for (const entry of rangeFallbacks) {
+  test(`@conditional-pull range ${entry.name} falls back to conditional GET`, async ({ page }) => {
+    const local = record(`range-fallback-${entry.name}`);
+    const baseline = payload([local]);
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+      webdavGetEtag: '"range-server"',
+      webdavPropfindStatus: 405, webdavConditionalGet: true,
+      webdavRangeStatus: entry.status ?? 206, webdavRangeEtag: entry.etag,
+      webdavRangeContentRange: entry.contentRange, webdavRangeBodyLength: entry.bodyLength,
+      settings: cleanConditionalSettings(baseline, '"range-server"'),
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(true);
+    const snapshot = await mockSnapshot(page);
+    const range = snapshot.calls.find(call => call.command === 'webdav_request'
+      && call.args.method === 'GET' && call.args.range === 'bytes=0-0');
+    const fullGet = snapshot.calls.find(call => call.command === 'webdav_request'
+      && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range);
+    expect(range).toBeDefined();
+    expect(fullGet?.args.ifNoneMatch).toBe('"range-server"');
+    expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(true);
+    expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  });
+}
+
+test('@conditional-pull range 401 remains a sync failure without fallback GET or writes', async ({ page }) => {
+  const local = record('range-auth-401');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+    webdavPropfindStatus: 405, webdavConditionalGet: true, webdavRangeStatus: 401,
+    settings: cleanConditionalSettings(baseline, '"range-server"'),
+  });
+  await page.goto('/');
+
+  const result = await runSync(page);
+  expect(result).toMatchObject({ ok: false });
+  expect(result.error).toContain('HTTP Error: 401');
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0')).toHaveLength(1);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+});
+
+test('@conditional-pull range 403 remains a sync failure without fallback GET or writes', async ({ page }) => {
+  const local = record('range-auth-403');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+    webdavPropfindStatus: 405, webdavConditionalGet: true, webdavRangeStatus: 403,
+    settings: cleanConditionalSettings(baseline, '"range-server"'),
+  });
+  await page.goto('/');
+
+  const result = await runSync(page);
+  expect(result).toMatchObject({ ok: false });
+  expect(result.error).toContain('HTTP Error: 403');
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0')).toHaveLength(1);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+});
+
+test('@conditional-pull range network failure stops without fallback GET or writes', async ({ page }) => {
+  const local = record('range-network-failure');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: 'range-server',
+    webdavPropfindStatus: 405, webdavConditionalGet: true, webdavRangeNetworkFailure: true,
+    settings: cleanConditionalSettings(baseline, '"range-server"'),
+  });
+  await page.goto('/');
+
+  const result = await runSync(page);
+  expect(result).toMatchObject({ ok: false });
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && call.args.range === 'bytes=0-0')).toHaveLength(1);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toBe(false);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+});
+
+const validatorBindingRaces = [
+  {
+    name: 'missing GET ETag discards the body before a changed DAV observation',
+    responses: (bodyA: SyncPayloadV3, bodyB: SyncPayloadV3) => [
+      { body: bodyA, etag: null }, { body: bodyB, etag: null },
+    ],
+    propfind: ['"binding-b"', '"binding-b"'],
+  },
+  {
+    name: 'weak GET ETag mismatch discards the body',
+    responses: (bodyA: SyncPayloadV3, bodyB: SyncPayloadV3) => [
+      { body: bodyA, etag: 'W/"binding-a"' }, { body: bodyB, etag: 'W/"binding-b"' },
+    ],
+    propfind: ['"binding-b"', 'W/"binding-b"'],
+  },
+  {
+    name: 'unquoted GET ETag mismatch discards the body',
+    responses: (bodyA: SyncPayloadV3, bodyB: SyncPayloadV3) => [
+      { body: bodyA, etag: 'binding-a' }, { body: bodyB, etag: 'binding-b' },
+    ],
+    propfind: ['"binding-b"', '"binding-b"'],
+  },
+];
+
+for (const race of validatorBindingRaces) {
+  test(`@conditional-pull validator binding ${race.name}`, async ({ page }) => {
+    const baseRecord = record(`binding-${race.name}`, { platform: 'base' });
+    const local = { ...baseRecord, notes: 'local pending', rev: 2, revActor: 'mock-device' };
+    const bodyA = payload([baseRecord], { revision: 1, commitId: 'binding-a' });
+    const remoteB = { ...baseRecord, platform: 'remote-b', rev: 2, revActor: 'remote-device' };
+    const bodyB = payload([remoteB], { revision: 2, commitId: 'binding-b' });
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: bodyA, webdavV3Etag: '"binding-a"',
+      webdavFullGetResponses: race.responses(bodyA, bodyB),
+      webdavPropfindEtagSequence: race.propfind,
+      settings: pendingSettings(bodyA, '"binding-a"'),
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(true);
+    const snapshot = await mockSnapshot(page);
+    const bindingCalls = snapshot.calls.filter(call => call.command === 'webdav_request'
+      && String(call.args.url).endsWith('records-v3.json')
+      && (call.args.method === 'PROPFIND' || call.args.method === 'PUT'
+        || call.args.method === 'GET' && !call.args.range));
+    expect(bindingCalls.slice(0, 5).map(call => call.args.method)).toEqual(['GET', 'PROPFIND', 'GET', 'PROPFIND', 'PUT']);
+    expect(bindingCalls[4].args.ifDavEtag).toBeTruthy();
+    expect(String(bindingCalls[4].args.body)).toContain('remote-b');
+    expect(snapshot.webdavV3Remote?.records[0].platform).toBe('remote-b');
+    expect(snapshot.webdavV3Remote?.records[0].notes).toBe('local pending');
+    expect(snapshot.calls.filter(call => call.command === 'commit_sync_result')).toHaveLength(1);
+  });
+}
+
+test('@conditional-pull missing GET ETag binds only after stable before-and-after DAV observations', async ({ page }) => {
+  const base = record('binding-stable');
+  const local = { ...base, notes: 'local pending', rev: 2, revActor: 'mock-device' };
+  const remote = payload([base], { commitId: 'binding-stable' });
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: remote, webdavV3Etag: '"binding-stable"',
+    webdavFullGetResponses: [{ body: remote, etag: null }, { body: remote, etag: null }],
+    webdavPropfindEtagSequence: ['"binding-stable"', '"binding-stable"'],
+    settings: pendingSettings(remote, '"binding-stable"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const v3Gets = snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range);
+  const propfinds = snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'PROPFIND' && String(call.args.url).endsWith('records-v3.json'));
+  const put = snapshot.calls.find(call => call.command === 'webdav_request' && call.args.method === 'PUT');
+  expect(v3Gets).toHaveLength(2);
+  expect(propfinds.length).toBeGreaterThanOrEqual(2);
+  expect(put?.args.ifDavEtag).toBe('"binding-stable"');
+  expect(snapshot.calls.filter(call => call.command === 'commit_sync_result')).toHaveLength(1);
+});
+
+test('@conditional-pull continuously changing validators stop after three reads without PUT or commit', async ({ page }) => {
+  const base = record('binding-busy');
+  const local = { ...base, notes: 'local pending', rev: 2, revActor: 'mock-device' };
+  const bodies = ['a', 'b', 'c'].map((suffix, index) => payload([
+    { ...base, platform: suffix, rev: index + 1, revActor: 'remote-device' },
+  ], { revision: index + 1, commitId: `binding-${suffix}` }));
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: bodies[0], webdavV3Etag: '"binding-a"',
+    webdavFullGetResponses: bodies.map((body, index) => ({ body, etag: `binding-${String.fromCharCode(97 + index)}` })),
+    webdavPropfindEtagSequence: ['"binding-b"', '"binding-c"', '"binding-d"'],
+    settings: pendingSettings(bodies[0], '"binding-a"'),
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'remote_busy' });
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range)).toHaveLength(3);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+});
+
+test('@conditional-pull locked system-only difference keeps remote revision without PUT', async ({ page }) => {
+  const local = record('locked-equivalent', { isLocked: true, rev: 1, revActor: 'local' });
+  const remoteRecord = record('locked-equivalent', { isLocked: true, rev: 2, revActor: 'remote' });
+  const remote = payload([remoteRecord]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: remote, webdavV3Etag: '"locked-remote"',
+    settings: pendingSettings(remote, '"locked-remote"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.webdavV3Remote?.records[0].rev).toBe(2);
+  expect(snapshot.records[0].rev).toBe(1);
+});
+
+const legacyFailures = [
+  { name: 'PROPFIND same legacy 401', legacyWebdavStatus: 401 },
+  {
+    name: 'Range same legacy 403', legacyWebdavStatus: 403,
+    webdavPropfindStatus: 405, webdavRangeStatus: 206,
+  },
+  {
+    name: 'conditional GET 304 legacy 500', legacyWebdavStatus: 500,
+    webdavPropfindStatus: 405, webdavRangeStatus: 200, webdavConditionalGet: true,
+  },
+  {
+    name: 'conditional GET 304 legacy network failure', legacyNetworkFailure: true,
+    webdavPropfindStatus: 405, webdavRangeStatus: 200, webdavConditionalGet: true,
+  },
+];
+
+for (const failure of legacyFailures) {
+  test(`@conditional-pull ${failure.name} fails closed without writes`, async ({ page }) => {
+    const local = record(`legacy-failure-${failure.name}`);
+    const baseline = payload([local]);
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: baseline, webdavV3Etag: '"legacy-guard"',
+      webdavRangeEtag: 'legacy-guard', webdavRangeContentRange: 'bytes 0-0/100', webdavRangeBodyLength: 1,
+      settings: cleanConditionalSettings(baseline, '"legacy-guard"'),
+      ...failure,
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(false);
+    const snapshot = await mockSnapshot(page);
+    expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+    expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  });
+}
+
+test('@conditional-pull validator unavailable accepts a semantic no-op pull and clears the stale ETag', async ({ page }) => {
+  const local = record('validatorless-no-op');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"server-current"',
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline, '"stored-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const first = await mockSnapshot(page);
+  expect(first.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  const commit = first.calls.find(call => call.command === 'commit_sync_result');
+  expect(commit?.args.input).toMatchObject({ remoteEtag: null });
+  expect(first.settings.sync_v3_remote_etag).toBeUndefined();
+  expect(first.recoveryPoints).toHaveLength(0);
+
+  const callCount = first.calls.length;
+  expect((await runSync(page)).ok).toBe(true);
+  const second = await mockSnapshot(page);
+  const nextCalls = second.calls.slice(callCount);
+  const nextV3Get = nextCalls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
+  expect(nextV3Get?.args.ifNoneMatch).toBeNull();
+  expect(nextCalls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+});
+
+test('@conditional-pull validator unavailable safely applies a remote-only pull without PUT', async ({ page }) => {
+  const local = record('validatorless-existing');
+  const remoteOnly = record('validatorless-remote-only');
+  const baseline = payload([local]);
+  const remote = payload([local, remoteOnly], {
+    revision: 2, commitId: 'validatorless-remote-commit', parentCommitId: baseline.commitId,
+  });
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: remote, webdavV3Etag: '"server-current"',
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline, '"stored-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.records.map(item => item.id)).toEqual([local.id, remoteOnly.id]);
+  expect(JSON.parse(snapshot.settings.sync_v3_baseline as string).commitId).toBe(remote.commitId);
+  expect(JSON.parse(snapshot.settings.sync_v3_last_commit as string).commitId).toBe(remote.commitId);
+  expect(snapshot.settings.sync_v3_remote_etag).toBeUndefined();
+  expect(snapshot.recoveryPoints).toHaveLength(1);
+});
+
+test('@conditional-pull validator unavailable still blocks a required local upload', async ({ page }) => {
+  const base = record('validatorless-dirty');
+  const local = record('validatorless-dirty', { notes: 'local pending change', rev: 2, revActor: 'local-device' });
+  const baseline = payload([base]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: null,
+    omitGetEtag: true, webdavPropfindStatus: 405,
+    settings: {
+      ...cleanConditionalSettings(baseline, '"stored-old"'),
+      sync_outbox_v1: JSON.stringify({
+        version: 1, pending: true, dirtyGeneration: 0, reasons: ['record-update'],
+        firstQueuedAt: '2026-08-30T00:00:00.000Z', lastQueuedAt: '2026-08-30T00:00:00.000Z',
+      }),
+    },
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'conditional_write_unsupported' });
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(JSON.parse(snapshot.settings.sync_outbox_v1 as string).pending).toBe(true);
+  expect(snapshot.records).toEqual([local]);
+});
+
+test('@conditional-pull semantic no-op ignores remote entity array order', async ({ page }) => {
+  const first = record('semantic-first');
+  const second = record('semantic-second');
+  const baseline = payload([second, first]);
+  const remote = { ...payload([first, second]), revision: 2, commitId: 'semantic-order-change' };
+  await setupMockIpc(page, {
+    records: [second, first], webdavV3Remote: remote, webdavV3Etag: '"semantic-new"', webdavPropfindStatus: 405,
+    settings: cleanConditionalSettings(baseline, '"semantic-old"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+});
+
+test('@conditional-pull semantic no-op canonicalizes records, episodes, collections, and members', async ({ page }) => {
+  const first = record('canonical-first');
+  const second = record('canonical-second');
+  const completionFirst = { id: 'completion-first', recordId: first.id, episodeNumber: 1, completedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const completionSecond = { ...completionFirst, id: 'completion-second', recordId: second.id, episodeNumber: 2, completedAt: null };
+  const collectionFirst = { id: 'collection-first', name: 'First', normalizedName: 'first', description: null, sourceKind: 'manual' as const, sourceKey: null, collectionKind: 'manual' as const, orderMode: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const collectionSecond = { ...collectionFirst, id: 'collection-second', name: 'Second', normalizedName: 'second' };
+  const memberFirst = { id: 'member-first', collectionId: collectionFirst.id, recordId: first.id, position: 0, sourceKind: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const memberSecond = { ...memberFirst, id: 'member-second', collectionId: collectionSecond.id, recordId: second.id, position: 1 };
+  const recordTombstones = [{ id: 'tombstone-first', deletedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' }, { id: 'tombstone-second', deletedAt: '2026-01-02T00:00:00.000Z', rev: 1, revActor: 'fixture' }];
+  const baseline = payload([second, first], {
+    schemaVersion: 6, episodeCompletions: [completionSecond, completionFirst],
+    collections: [collectionSecond, collectionFirst], collectionMembers: [memberSecond, memberFirst],
+    collectionTombstones: [], collectionMemberTombstones: [], tombstones: [...recordTombstones].reverse(),
+  });
+  const remote = { ...baseline, revision: 2, commitId: 'canonical-order-change' };
+  await setupMockIpc(page, {
+    records: [second, first], episodeCompletions: [completionSecond, completionFirst],
+    collections: [collectionSecond, collectionFirst], collectionMembers: [memberSecond, memberFirst],
+    webdavV3Remote: remote, webdavV3Etag: '"canonical-new"', webdavPropfindStatus: 405,
+    settings: { ...cleanConditionalSettings(baseline, '"canonical-old"'), sync_v6_upgrade_confirmed: '1', sync_tombstones: JSON.stringify([...recordTombstones].reverse()) },
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
+});
+
+test('@conditional-pull real collection member position change produces a conditional PUT', async ({ page }) => {
+  const local = record('collection-sync-record');
+  const collection = { id: 'collection-sync', name: '同步收藏集', normalizedName: '同步收藏集', description: null, sourceKind: 'manual' as const, sourceKey: null, collectionKind: 'manual' as const, orderMode: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const baseMember = { id: 'collection-member-sync', collectionId: collection.id, recordId: local.id, position: 0, sourceKind: 'manual' as const, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', rev: 1, revActor: 'fixture' };
+  const baseline = payload([local], { schemaVersion: 6, episodeCompletions: [], collections: [collection], collectionMembers: [baseMember], collectionTombstones: [], collectionMemberTombstones: [] });
+  const pendingMember = { ...baseMember, position: 2, rev: 2, revActor: 'fixture-local' };
+  const pendingOutbox = {
+    version: 1, pending: true, dirtyGeneration: 0, reasons: ['collection-member-update'], firstQueuedAt: '2026-01-01T00:00:00.000Z', lastQueuedAt: '2026-01-01T00:00:00.000Z',
+  };
+  await setupMockIpc(page, {
+    records: [local], collections: [collection], collectionMembers: [pendingMember],
+    webdavV3Remote: baseline, webdavV3Etag: '"collection-change"',
+    settings: { ...cleanConditionalSettings(baseline), sync_v6_upgrade_confirmed: '1', sync_outbox_v1: JSON.stringify(pendingOutbox) },
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const put = snapshot.calls.find(call => call.command === 'webdav_request' && call.args.method === 'PUT');
+  expect(put).toBeDefined();
+  expect(JSON.parse(String(put?.args.body)).collectionMembers[0].position).toBe(2);
+});
+
+test('@conditional-pull changed ETag returns 200 and merges the new remote payload', async ({ page }) => {
+  const local = record('conditional-changed');
+  const remoteOnly = record('conditional-remote-new');
+  const baseline = payload([local]);
+  const changed = { ...payload([local, remoteOnly]), revision: 2, commitId: 'changed-commit' };
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: changed, webdavV3Etag: '"new-etag"', webdavConditionalGet: true,
+    settings: cleanConditionalSettings(baseline, '"old-etag"'),
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const v3Get = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
+  expect(v3Get?.args.ifNoneMatch).toBeNull();
+  expect(snapshot.records.map(item => item.id)).toContain(remoteOnly.id);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(true);
+});
+
+const unconditionalCases: Array<{
+  name: string;
+  settings: (baseline: SyncPayloadV3) => Record<string, string>;
+}> = [
+  {
+    name: 'publish intent pending',
+    settings: baseline => ({
+      ...cleanConditionalSettings(baseline),
+      sync_publish_intent_v1: JSON.stringify({
+        version: 1, commitId: 'pending', previousCommitId: baseline.commitId,
+        expectedGeneration: 0, includedEntries: [], payloadFingerprint: 'pending-fingerprint',
+        createdAt: '2026-08-30T00:00:00.000Z',
+      }),
+    }),
+  },
+  {
+    name: 'staging non-empty',
+    settings: baseline => ({
+      ...cleanConditionalSettings(baseline),
+      sync_staging_v1: JSON.stringify({
+        version: 2, entries: [{ entityKind: 'record', id: 'staged', operation: 'upsert', base: null, local: {}, firstGeneration: 0, lastGeneration: 0 }],
+      }),
+    }),
+  },
+  {
+    name: 'baseline missing',
+    settings: () => ({ ...credentials, sync_v3_remote_etag: '"conditional-etag"' }),
+  },
+  {
+    name: 'remote ETag missing',
+    settings: baseline => {
+      const settings = cleanConditionalSettings(baseline);
+      delete (settings as { sync_v3_remote_etag?: string }).sync_v3_remote_etag;
+      return settings;
+    },
+  },
+  {
+    name: 'stored remote ETag malformed',
+    settings: baseline => cleanConditionalSettings(baseline, 'unsafe-unquoted-etag'),
+  },
+  {
+    name: 'stored remote ETag has surrounding whitespace',
+    settings: baseline => cleanConditionalSettings(baseline, ' "conditional-etag" '),
+  },
+];
+
+for (const entry of unconditionalCases) {
+  test(`@conditional-pull ${entry.name} uses unconditional GET`, async ({ page }) => {
+    const local = record(`conditional-${entry.name}`);
+    const baseline = payload([local]);
+    await setupMockIpc(page, {
+      records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"',
+      webdavConditionalGet: true, settings: entry.settings(baseline),
+    });
+    await page.goto('/');
+
+    expect((await runSync(page)).ok).toBe(true);
+    const snapshot = await mockSnapshot(page);
+    const v3Get = snapshot.calls.find(call => call.command === 'webdav_request'
+      && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
+    expect(v3Get?.args.ifNoneMatch).toBeNull();
+    expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PROPFIND')).toBe(false);
+    expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.range === 'bytes=0-0')).toBe(false);
+  });
+}
+
+test('@conditional-pull pending outbox keeps the full GET and conditional PUT path', async ({ page }) => {
+  const base = record('conditional-dirty');
+  const local = record('conditional-dirty', { notes: 'local pending change', rev: 2, revActor: 'mock-device' });
+  const baseline = payload([base]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"', webdavConditionalGet: true,
+    settings: {
+      ...cleanConditionalSettings(baseline),
+      sync_outbox_v1: JSON.stringify({
+        version: 1, pending: true, dirtyGeneration: 0, reasons: ['record-update'],
+        firstQueuedAt: '2026-08-30T00:00:00.000Z', lastQueuedAt: '2026-08-30T00:00:00.000Z',
+      }),
+    },
+  });
+  await page.goto('/');
+
+  expect((await runSync(page)).ok).toBe(true);
+  const snapshot = await mockSnapshot(page);
+  const v3Get = snapshot.calls.find(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json'));
+  expect(v3Get?.args.ifNoneMatch).toBeNull();
+  expect(snapshot.calls.filter(call => call.command === 'webdav_request' && call.args.range === 'bytes=0-0')).toHaveLength(0);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(true);
+  expect(snapshot.webdavV3Remote?.records[0].notes).toBe('local pending change');
+});
+
+test('@conditional-pull local mutation during 304 is rejected and retried through full upload', async ({ page }) => {
+  const local = record('conditional-toctou');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"',
+    webdavConditionalGet: true, webdavPropfindStatus: 405, mutateLocalDuringConditionalGet: true,
+    settings: cleanConditionalSettings(baseline),
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: /云端同步：/ }).click();
+  await page.getByRole('button', { name: '立即同步' }).click();
+
+  await expect.poll(async () => (await mockSnapshot(page)).webdavV3Remote?.records[0].notes)
+    .toBe('edited during conditional pull');
+  const snapshot = await mockSnapshot(page);
+  const v3Gets = snapshot.calls.filter(call => call.command === 'webdav_request'
+    && call.args.method === 'GET' && String(call.args.url).endsWith('records-v3.json') && !call.args.range);
+  expect(v3Gets[0].args.ifNoneMatch).toBe('"conditional-etag"');
+  expect(v3Gets.some(call => call.args.ifNoneMatch === null)).toBe(true);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(true);
+  expect(JSON.parse(snapshot.settings.sync_outbox_v1 as string).pending).toBe(false);
+  expect(snapshot.records[0].notes).toBe('edited during conditional pull');
+});
+
+test('@conditional-pull 304 preserves unresolved conflicts', async ({ page }) => {
+  const local = record('conditional-conflict');
+  const baseline = payload([local]);
+  const conflicts = [{
+    id: local.id, kind: 'edit-edit', fields: ['notes'], base: local, local, remote: local,
+    localDeleted: false, remoteDeleted: false, detectedAt: '2026-08-30T00:00:00.000Z',
+  }];
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"', webdavConditionalGet: true, webdavPropfindStatus: 405,
+    settings: { ...cleanConditionalSettings(baseline), sync_v3_conflicts: JSON.stringify(conflicts) },
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: true, conflictCount: 1 });
+  const snapshot = await mockSnapshot(page);
+  expect(JSON.parse(snapshot.settings.sync_v3_conflicts as string)).toEqual(conflicts);
+});
+
+test('@conditional-pull changed legacy resource still blocks the 304 fast path', async ({ page }) => {
+  const local = record('conditional-legacy-block');
+  const baseline = payload([local]);
+  await setupMockIpc(page, {
+    records: [local], webdavV3Remote: baseline, webdavV3Etag: '"conditional-etag"', webdavConditionalGet: true,
+    settings: { ...cleanConditionalSettings(baseline), sync_v2_source_fingerprint: '"legacy-older"' },
+  });
+  await page.goto('/');
+
+  expect(await runSync(page)).toMatchObject({ ok: false, error: 'legacy_remote_changed' });
+  const snapshot = await mockSnapshot(page);
+  expect(snapshot.calls.some(call => call.command === 'record_sync_remote_unchanged')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'commit_sync_result')).toBe(false);
+  expect(snapshot.calls.some(call => call.command === 'webdav_request' && call.args.method === 'PUT')).toBe(false);
+});
 
 test('@expected-sync-v3 durable outbox survives reload and resumes without losing the edit', async ({ page }) => {
   const original = record('崩溃恢复条目');

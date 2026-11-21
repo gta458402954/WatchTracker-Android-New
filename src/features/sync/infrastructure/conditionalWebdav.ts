@@ -21,6 +21,25 @@ function davEtagFromPropfind(text: string | null): string | null {
   );
 }
 
+/**
+ * Reads only DAV:getetag for a resource. A missing/unsupported/malformed
+ * response is deliberately represented as null so callers can choose a safe
+ * fallback without coupling this transport helper to sync policy.
+ */
+export async function probeDavEntityTagForResource(
+  creds: WebDAVCreds,
+  proxy: string | null,
+  resource: string,
+  transport: WebDavTransport,
+): Promise<string | null> {
+  try {
+    const properties = await transport.request('PROPFIND', creds, proxy, resource);
+    return successful(properties.status) ? davEtagFromPropfind(properties.text) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolves a safe strong/weak validator without deciding upload or merge policy. */
 export async function conditionalValidatorForResource(
   response: WebDavResponse,
@@ -34,8 +53,7 @@ export async function conditionalValidatorForResource(
   if (rawResponseEtag && entityTagKind(rawResponseEtag) === 'strong') {
     return { etag: rawResponseEtag, header: 'if-match' };
   }
-  const properties = await transport.request('PROPFIND', creds, proxy, resource);
-  const propertyEtag = successful(properties.status) ? davEtagFromPropfind(properties.text) : null;
+  const propertyEtag = await probeDavEntityTagForResource(creds, proxy, resource, transport);
   if (propertyEtag) return { etag: propertyEtag, header: 'dav-if' };
   if (responseEtag) return { etag: responseEtag, header: 'dav-if' };
   throw new Error('conditional_write_unsupported');

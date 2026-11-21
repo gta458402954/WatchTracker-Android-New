@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { mergeEpisodeCompletions, mergeSyncStates, parseSyncPayloadV3 } from '../syncMerge.ts';
+import { episodeCompletionStateEquivalent, mergeEpisodeCompletions, mergeSyncStates, parseSyncPayloadV3, syncSideEquivalent } from '../syncMerge.ts';
 
 const now = '2026-08-02T00:00:00.000Z';
 function record(id, fields = {}) {
@@ -13,6 +13,25 @@ function record(id, fields = {}) {
 const side = (records = [], tombstones = []) => ({ records, tombstones });
 
 describe('TASK-D-SYNC-001 three-way merge', () => {
+  test('sync side equivalence ignores entity order but detects a field change', () => {
+    const first = record('a', { notes: 'same' });
+    const second = record('b', { notes: 'same' });
+    assert.equal(syncSideEquivalent(side([first, second]), side([second, first])), true);
+    assert.equal(syncSideEquivalent(side([first, second]), side([second, { ...first, notes: 'changed' }])), false);
+  });
+
+  test('sync state comparisons normalize empty optional dates before classifying changes', () => {
+    const baseline = record('same', { endDate: '' });
+    const local = record('same', { endDate: null });
+    const remote = record('same', { endDate: '', notes: 'remote edit', rev: 2, revActor: 'remote' });
+    assert.equal(syncSideEquivalent(side([baseline]), side([local])), true);
+
+    const result = mergeSyncStates(side([baseline]), side([local]), side([remote]), 'device-a', now);
+    assert.equal(result.conflicts.length, 0);
+    assert.equal(result.local.records[0].notes, 'remote edit');
+    assert.equal(result.remote.records[0].rev, 2);
+    assert.equal(syncSideEquivalent(result.remote, side([remote])), true);
+  });
   test('automatically merges different fields without using wall-clock order', () => {
     const base = record('same', { notes: 'base', platform: '' });
     const local = record('same', { notes: 'local', platform: '', updatedAt: '2020-01-01T00:00:00Z' });
@@ -59,6 +78,16 @@ describe('TASK-D-SYNC-001 three-way merge', () => {
     assert.equal(result.remote.records[0].notes, 'remote');
   });
 
+  test('business-equivalent locked local stays local while remote revision never regresses', () => {
+    const local = record('same', { isLocked: true, rev: 1, revActor: 'local', updatedAt: '2020-01-01T00:00:00Z' });
+    const remote = record('same', { isLocked: true, rev: 2, revActor: 'remote', updatedAt: '2030-01-01T00:00:00Z' });
+    const result = mergeSyncStates(side(), side([local]), side([remote]), 'device-a', now);
+    assert.equal(result.conflicts.length, 0);
+    assert.equal(result.local.records[0].rev, 1);
+    assert.equal(result.remote.records[0].rev, 2);
+    assert.equal(syncSideEquivalent(result.remote, side([remote])), true);
+  });
+
   test('unknown future schema is rejected instead of parsed as empty data', () => {
     assert.throws(() => parseSyncPayloadV3({ schemaVersion: 7, records: [], tombstones: [] }), /unsupported_remote_schema/);
   });
@@ -83,6 +112,41 @@ describe('TASK-D-SYNC-001 three-way merge', () => {
     assert.equal(repeated.local.records[0].notes, 'local');
     assert.equal(repeated.remote.records[0].notes, 'remote');
     assert.equal(repeated.conflicts.length, 1);
+  });
+
+  test('frozen conflict remains even after both sides become business-equivalent', () => {
+    const base = record('same', { notes: 'base' });
+    const local = record('same', { notes: 'local', rev: 2, revActor: 'local' });
+    const remote = record('same', { notes: 'remote', rev: 2, revActor: 'remote' });
+    const initial = mergeSyncStates(side([base]), side([local]), side([remote]), 'device-a', now);
+    const laterLocal = record('same', { notes: 'resolved-looking', rev: 3, revActor: 'local' });
+    const laterRemote = record('same', { notes: 'resolved-looking', rev: 4, revActor: 'remote' });
+    const repeated = mergeSyncStates(side([remote]), side([laterLocal]), side([laterRemote]), 'device-a', now, initial.conflicts);
+    assert.equal(repeated.conflicts.length, 1);
+    assert.equal(repeated.local.records[0].rev, 3);
+    assert.equal(repeated.remote.records[0].rev, 4);
+  });
+
+  test('equivalent empty optional dates merge disjoint edits and normalize output strings', () => {
+    const base = record('same', { startDate: '2026-01-01', endDate: '2026-02-01', notes: 'base', platform: '' });
+    const local = record('same', { startDate: null, endDate: '   ', notes: 'local', platform: '' });
+    const remote = record('same', { startDate: '', endDate: undefined, notes: 'base', platform: 'remote' });
+    const result = mergeSyncStates(side([base]), side([local]), side([remote]), 'device-a', now);
+    assert.equal(result.conflicts.length, 0);
+    assert.equal(result.local.records[0].notes, 'local');
+    assert.equal(result.local.records[0].platform, 'remote');
+    assert.equal(result.local.records[0].startDate, '');
+    assert.equal(result.local.records[0].endDate, '');
+    assert.equal(typeof result.remote.records[0].startDate, 'string');
+    assert.equal(typeof result.remote.records[0].endDate, 'string');
+  });
+
+  test('different non-empty optional dates remain a real conflict', () => {
+    const base = record('same', { startDate: '' });
+    const local = record('same', { startDate: '2026-01-01' });
+    const remote = record('same', { startDate: '2026-02-01' });
+    const result = mergeSyncStates(side([base]), side([local]), side([remote]), 'device-a', now);
+    assert.deepEqual(result.conflicts[0].fields, ['startDate']);
   });
 
   test('a new client does not report a conflict for system-field-only differences', () => {
@@ -113,5 +177,12 @@ describe('TASK-D-HISTORY-001 completion merge', () => {
     assert.throws(() => mergeEpisodeCompletions([], [known], [completion('2026-08-03T00:00:00.000Z')]), /episode_completion_conflict/);
     const remote = completion('2026-08-03T00:00:00.000Z');
     assert.equal(mergeEpisodeCompletions([], [known], [remote], () => 'remote')[0].completedAt, remote.completedAt);
+  });
+
+  test('episode completion equivalence uses domain identity instead of array order', () => {
+    const one = completion(now, { id: 'one', recordId: 'series', episodeNumber: 1 });
+    const two = completion(null, { id: 'two', recordId: 'series', episodeNumber: 2 });
+    assert.equal(episodeCompletionStateEquivalent([one, two], [two, one]), true);
+    assert.equal(episodeCompletionStateEquivalent([one, two], [{ ...two, completedAt: now } , one]), false);
   });
 });

@@ -39,7 +39,11 @@ export function useSyncSettings(options: Options) {
       setTargetRegistry(await getSyncTargets()); setSyncStatus('目标已激活，正在执行首次拉取与合并...'); const result = onSync ? await onSync() : await syncToWebDAV(records);
       if (!result.ok) { const safeMessage = syncFailureMessage(result.error); setSyncStatus(`⚠️ 目标已保存；首次同步未完成。${safeMessage || '请稍后重试。'}`); onNotify?.('warning', safeMessage || '目标已保存，但首次同步未完成。'); }
       else { setSyncStatus(result.conflictCount ? `⚠️ 目标已激活，有 ${result.conflictCount} 项冲突等待选择` : '✅ 目标已激活并完成首次同步'); showSuccess('WebDAV 目标已激活并完成首次同步。'); }
-    } catch (error) { showFailure('Settings.SaveWebDav', '保存 WebDAV 凭据', error, setSyncStatus); }
+    } catch (error) {
+      const safeMessage = syncFailureMessage(error instanceof Error ? error.message : String(error));
+      if (safeMessage) { setSyncStatus(`⚠️ ${safeMessage}`); onNotify?.('warning', safeMessage); }
+      else showFailure('Settings.SaveWebDav', '保存 WebDAV 凭据', error, setSyncStatus);
+    }
     setTimeout(() => setSyncStatus(''), 3000);
   }
   async function handleClear() {

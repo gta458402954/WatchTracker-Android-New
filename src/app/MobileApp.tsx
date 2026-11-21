@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Status, WatchRecord } from '../shared/types';
+import type { Status, UpdateWatchRecord, WatchRecord } from '../shared/types';
 import type { RecordFormValues } from '../features/watchlist/record-form/recordFormModel';
 import { useMobileRecordRepository } from '../features/watchlist/hooks/useMobileRecordRepository';
 import MobileLibraryPage from '../features/watchlist/components/MobileLibraryPage';
@@ -12,6 +12,9 @@ import type { EpisodeTracking } from '../shared/lib/database.ts';
 import type { MobileEpisodeAction } from '../features/watchlist/mobileEpisodeTracking.ts';
 import { useSyncCoordinator } from '../features/sync/hooks/useSyncCoordinator.ts';
 import MobileSyncSettingsPage from '../features/settings/components/MobileSyncSettingsPage.tsx';
+import MobileStatsPage from '../features/watchlist/components/MobileStatsPage.tsx';
+import MobileDiscoverPage from '../features/watchlist/components/MobileDiscoverPage.tsx';
+import MobileCollectionsPage from '../features/collections/components/MobileCollectionsPage.tsx';
 
 declare global { interface Window { __WATCHTRACKER_ANDROID_BACK__?: () => AndroidBackAction; } }
 type InitializationState = 'loading' | 'ready' | 'error';
@@ -77,7 +80,45 @@ export default function MobileApp() {
     notify('success', message);
     return result.tracking;
   }, [changeMobileEpisode, notify]);
-  const page = useMemo(() => { if (initialization === 'loading') return <div className="mobile-loading" role="status">正在读取本地片库…</div>; if (initialization === 'error') return <div className="mobile-error" role="alert"><h1>无法读取本地数据</h1><p>本地数据库未被当作空数据处理，请稍后重试。</p><button type="button" className="mobile-primary-button" onClick={() => { setInitialization('loading'); void loadRecords(); }}>重试</button></div>; if (navigation.route === 'library' || navigation.route === 'detail' || navigation.route === 'form') return <MobileLibraryPage route={navigation.route} records={records} detailId={navigation.detailId} formMode={navigation.formMode} onDetail={record => navigation.navigateDetail(record.id)} onForm={openForm} onBack={onBack} onAdd={saveNew} onUpdate={saveUpdate} onDelete={remove} onLock={lock} onStatus={status} onEpisode={episode} onNotify={notify} />; if (navigation.route === 'settings') return <MobileSyncSettingsPage runtime={syncRuntime} isSyncing={isSyncing} onSyncNow={syncNow} onTogglePause={toggleSyncPause} onConfigurationChanged={notifySyncConfigurationChanged} onSyncWorkQueued={scheduleLocalWrite} onReloadRecords={reloadRecords} notify={notify} />; return <PlaceholderPage route={navigation.route} />; }, [episode, initialization, isSyncing, loadRecords, lock, navigation, notify, notifySyncConfigurationChanged, onBack, openForm, records, reloadRecords, remove, saveNew, saveUpdate, scheduleLocalWrite, status, syncNow, syncRuntime, toggleSyncPause]);
+  const handleBatchUpdateRecord = useCallback(async (id: string, updates: UpdateWatchRecord) => {
+    const current = records.find(r => r.id === id);
+    if (!current) return;
+    await updateMobileRecord(id, updates, current.rev ?? 0, 'edit');
+  }, [records, updateMobileRecord]);
+
+  const page = useMemo(() => {
+    if (initialization === 'loading') return <div className="mobile-loading" role="status">正在读取本地片库…</div>;
+    if (initialization === 'error') return <div className="mobile-error" role="alert"><h1>无法读取本地数据</h1><p>本地数据库未被当作空数据处理，请稍后重试。</p><button type="button" className="mobile-primary-button" onClick={() => { setInitialization('loading'); void loadRecords(); }}>重试</button></div>;
+    if (navigation.route === 'library' || navigation.route === 'detail' || navigation.route === 'form') {
+      return <MobileLibraryPage route={navigation.route} records={records} detailId={navigation.detailId} formMode={navigation.formMode} onDetail={record => navigation.navigateDetail(record.id)} onForm={openForm} onBack={onBack} onAdd={saveNew} onUpdate={saveUpdate} onDelete={remove} onLock={lock} onStatus={status} onEpisode={episode} onNotify={notify} />;
+    }
+    if (navigation.route === 'discover') {
+      return <MobileDiscoverPage records={records} onDetail={record => navigation.navigateDetail(record.id)} />;
+    }
+    if (navigation.route === 'collections') {
+      return <MobileCollectionsPage records={records} onDetail={record => navigation.navigateDetail(record.id)} onNotify={notify} />;
+    }
+    if (navigation.route === 'stats') {
+      return <MobileStatsPage records={records} onDetail={record => navigation.navigateDetail(record.id)} />;
+    }
+    if (navigation.route === 'settings') {
+      return (
+        <MobileSyncSettingsPage
+          runtime={syncRuntime}
+          isSyncing={isSyncing}
+          onSyncNow={syncNow}
+          onTogglePause={toggleSyncPause}
+          onConfigurationChanged={notifySyncConfigurationChanged}
+          onSyncWorkQueued={scheduleLocalWrite}
+          onReloadRecords={reloadRecords}
+          notify={notify}
+          records={records}
+          onUpdateRecord={handleBatchUpdateRecord}
+        />
+      );
+    }
+    return <PlaceholderPage route={navigation.route} />;
+  }, [episode, handleBatchUpdateRecord, initialization, isSyncing, loadRecords, lock, navigation, notify, notifySyncConfigurationChanged, onBack, openForm, records, reloadRecords, remove, saveNew, saveUpdate, scheduleLocalWrite, status, syncNow, syncRuntime, toggleSyncPause]);
   const immersive = navigation.route === 'detail' || navigation.route === 'form';
   return <div className="mobile-shell"><NotificationRegion notices={notices} onDismiss={dismiss} /><main className={`mobile-content ${immersive ? 'mobile-content-immersive' : ''}`}><ErrorBoundary>{page}</ErrorBoundary></main>{!immersive && <><button type="button" className="mobile-fab" aria-label="添加记录" onClick={() => openForm('new')}><span aria-hidden="true">＋</span></button><nav className="mobile-bottom-nav" aria-label="主导航">{tabs.map(tab => <button key={tab.route} type="button" className="mobile-nav-item" aria-current={navigation.route === tab.route ? 'page' : undefined} onClick={() => navigation.navigate(tab.route)}><span className="mobile-nav-icon" aria-hidden="true">{tab.icon}</span><span>{tab.label}</span></button>)}</nav></>}</div>;
 }
