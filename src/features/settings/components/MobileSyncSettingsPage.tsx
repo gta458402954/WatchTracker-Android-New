@@ -46,6 +46,7 @@ import {
 } from '../../backup/localImport.ts';
 import { useBatchMetadata } from '../hooks/useBatchMetadata.ts';
 import { BATCH_METADATA_FIELD_LABELS, type BatchMetadataNoDataState } from '../../../shared/lib/batchMetadata.ts';
+import { useBatchPosterDownload } from '../useBatchPosterDownload.ts';
 import type { UpdateWatchRecord, WatchRecord } from '../../../shared/types';
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/%E5%BD%B1%E8%A7%86%E8%BF%BD%E8%B8%AA/';
@@ -124,8 +125,30 @@ export default function MobileSyncSettingsPage({
   const [vacuumStatus, setVacuumStatus] = useState('');
   const [cleanCacheBusy, setCleanCacheBusy] = useState(false);
   const [cleanCacheStatus, setCleanCacheStatus] = useState('');
+  const [startupView, setStartupView] = useState<'watching' | 'all'>('watching');
   const pendingImportToken = useRef<string | null>(null);
   const importCommitInFlight = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    void getSettingAsync('mobile_startup_view').then(val => {
+      if (active && (val === 'watching' || val === 'all')) setStartupView(val);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const handleStartupViewChange = useCallback(async (view: 'watching' | 'all') => {
+    setStartupView(view);
+    try {
+      await setSettingAsync('mobile_startup_view', view);
+      notify('success', view === 'watching' ? '已设为启动默认展示在看视频。' : '已设为启动默认展示全部记录。');
+    } catch {
+      notify('warning', '启动展示设置保存失败。');
+    }
+  }, [notify]);
+
+  const posterBatch = useBatchPosterDownload(records ?? EMPTY_RECORDS);
+  const posterRecordsCount = useMemo(() => (records ?? []).filter(r => Boolean(r.posterPath && r.posterPath.trim())).length, [records]);
 
   const batch = useBatchMetadata({
     records: records ?? EMPTY_RECORDS,
@@ -748,6 +771,131 @@ export default function MobileSyncSettingsPage({
             </button>
           </div>
         )}
+      </div>
+
+      {/* Standalone Poster Downloader */}
+      <div className="mobile-sync-card" data-testid="mobile-poster-downloader">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2>一键离线下载海报</h2>
+          {posterBatch.progress.status === 'running' && (
+            <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#e0e7ff', color: '#4338ca' }}>
+              下载中
+            </span>
+          )}
+          {posterBatch.progress.status === 'completed' && (
+            <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#d1fae5', color: '#065f46' }}>
+              已完成
+            </span>
+          )}
+        </div>
+        <p className="mobile-sync-note">
+          独立批量下载所有含海报路径影片的封面到手机本地，无需重新请求全量元数据。已下载封面将自动命中本地缓存，离线加载更迅速。
+        </p>
+        <div style={{ marginTop: '10px' }}>
+          {posterBatch.progress.status === 'idle' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ fontSize: '12px', color: '#475569' }}>
+                当前片库共 <strong>{posterRecordsCount}</strong> 部影片已关联海报路径。
+              </div>
+              <button
+                type="button"
+                className="mobile-primary-button"
+                onClick={() => void posterBatch.startDownload()}
+                disabled={posterRecordsCount === 0}
+              >
+                开始一键下载海报
+              </button>
+            </div>
+          )}
+
+          {posterBatch.progress.status === 'running' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#0f172a', fontWeight: 700 }}>
+                <span>正在下载：{posterBatch.progress.current} / {posterBatch.progress.total}</span>
+                <span>{Math.round((posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100)}%</span>
+              </div>
+              <div style={{ height: '8px', borderRadius: '999px', background: '#e2e8f0', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    height: '100%',
+                    borderRadius: '999px',
+                    background: '#4f46e5',
+                    width: `${(posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100}%`,
+                    transition: 'width 0.2s ease',
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: '11px', color: '#64748b' }}>
+                新下载：{posterBatch.progress.downloaded} · 本地已有：{posterBatch.progress.cached} · 失败：{posterBatch.progress.failed}
+              </div>
+              {posterBatch.progress.currentTitle && (
+                <div style={{ fontSize: '11px', color: '#4338ca', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  正在处理：{posterBatch.progress.currentTitle}
+                </div>
+              )}
+              <button
+                type="button"
+                className="mobile-quiet-button mobile-danger"
+                onClick={posterBatch.cancelDownload}
+                style={{ marginTop: '4px' }}
+              >
+                取消下载
+              </button>
+            </div>
+          )}
+
+          {(posterBatch.progress.status === 'completed' || posterBatch.progress.status === 'cancelled') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <p className="mobile-sync-message" style={{ margin: 0 }}>
+                {posterBatch.progress.status === 'completed'
+                  ? `海报下载完成！共处理 ${posterBatch.progress.total} 张海报（新下载: ${posterBatch.progress.downloaded}，本地已有: ${posterBatch.progress.cached}，失败: ${posterBatch.progress.failed}）。`
+                  : `海报下载已取消。已下载 ${posterBatch.progress.downloaded} 张海报。`}
+              </p>
+              <button
+                type="button"
+                className="mobile-quiet-button"
+                onClick={posterBatch.reset}
+                style={{ minHeight: '36px' }}
+              >
+                重新检查与下载
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Library Startup Preference */}
+      <div className="mobile-sync-card" data-testid="mobile-startup-settings">
+        <h2>片库启动偏好</h2>
+        <p className="mobile-sync-note">设置打开 App 时片库默认显示的内容。</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '12px', background: startupView === 'watching' ? '#eef2ff' : '#f8fafc', border: `1px solid ${startupView === 'watching' ? '#818cf8' : '#e2e8f0'}`, cursor: 'pointer' }}>
+            <div>
+              <strong style={{ color: '#0f172a', fontSize: '13px' }}>正在观看 (在看)</strong>
+              <p className="mobile-sync-note" style={{ margin: '2px 0 0' }}>启动 App 默认展示在看视频，直接继续追踪集数</p>
+            </div>
+            <input
+              type="radio"
+              name="startup-view"
+              value="watching"
+              checked={startupView === 'watching'}
+              onChange={() => void handleStartupViewChange('watching')}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '12px', background: startupView === 'all' ? '#eef2ff' : '#f8fafc', border: `1px solid ${startupView === 'all' ? '#818cf8' : '#e2e8f0'}`, cursor: 'pointer' }}>
+            <div>
+              <strong style={{ color: '#0f172a', fontSize: '13px' }}>全部记录</strong>
+              <p className="mobile-sync-note" style={{ margin: '2px 0 0' }}>启动 App 展示全部影片与剧集</p>
+            </div>
+            <input
+              type="radio"
+              name="startup-view"
+              value="all"
+              checked={startupView === 'all'}
+              onChange={() => void handleStartupViewChange('all')}
+            />
+          </label>
+        </div>
       </div>
 
       {/* WebDAV Cloud Sync */}

@@ -68,16 +68,112 @@ function FilterSheet({ prefs, setPrefs, records, onClose, returnFocusRef }: { pr
   </div>;
 }
 
-function LibraryToolbar({ search, setSearch, prefs, setPrefs, onFilter, filterTriggerRef, filteredCount, totalCount, viewMode, onToggleViewMode }: { search: string; setSearch: (value: string) => void; prefs: MobileLibraryPreferences; setPrefs: (next: MobileLibraryPreferences) => void; onFilter: () => void; filterTriggerRef: RefObject<HTMLButtonElement | null>; filteredCount: number; totalCount: number; viewMode: 'list' | 'poster'; onToggleViewMode: (mode: 'list' | 'poster') => void }) {
+function LibraryToolbar({
+  search, setSearch, prefs, setPrefs, onFilter, filterTriggerRef,
+  filteredCount, totalCount, statusCounts, viewMode, onToggleViewMode,
+}: {
+  search: string;
+  setSearch: (value: string) => void;
+  prefs: MobileLibraryPreferences;
+  setPrefs: (next: MobileLibraryPreferences) => void;
+  onFilter: () => void;
+  filterTriggerRef: RefObject<HTMLButtonElement | null>;
+  filteredCount: number;
+  totalCount: number;
+  statusCounts: { '在看': number; '未看': number; '已看': number };
+  viewMode: 'list' | 'poster';
+  onToggleViewMode: (mode: 'list' | 'poster') => void;
+}) {
   const chips = [
     ...prefs.statuses.map(value => ({ key: `status-${value}`, label: value, ariaLabel: `移除状态：${value}`, clear: () => setPrefs({ ...prefs, statuses: prefs.statuses.filter(item => item !== value) }) })),
     ...prefs.mediaTypes.map(value => ({ key: `media-${value}`, label: value, ariaLabel: `移除类型：${value}`, clear: () => setPrefs({ ...prefs, mediaTypes: prefs.mediaTypes.filter(item => item !== value) }) })),
     ...(prefs.lock === 'all' ? [] : [{ key: 'lock', label: prefs.lock === 'locked' ? '已锁定' : '未锁定', ariaLabel: '移除锁定筛选', clear: () => setPrefs({ ...prefs, lock: 'all' as const }) }]),
   ];
   const countLabel = filteredCount === totalCount ? String(totalCount) : `${filteredCount} / ${totalCount}`;
+
+  const isWatchingOnly = prefs.statuses.length === 1 && prefs.statuses[0] === '在看';
+  const isAllStatuses = prefs.statuses.length === 0;
+  const isUnwatchedOnly = prefs.statuses.length === 1 && prefs.statuses[0] === '未看';
+  const isWatchedOnly = prefs.statuses.length === 1 && prefs.statuses[0] === '已看';
+
   return <>
-    <div className="mobile-section-heading"><h1 id="mobile-library-title">我的片库</h1><span className="mobile-count" aria-label={`片库数量 ${countLabel}`}>{countLabel}</span></div>
-    <div className="mobile-search-row"><label className="mobile-search-label"><span className="mobile-search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg></span><span className="sr-only">搜索片库</span><input aria-label="搜索片库" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索标题、平台、备注" />{search && <button type="button" className="mobile-search-clear" aria-label="清空搜索" onClick={() => setSearch('')}>×</button>}</label></div>
+    <div className="mobile-section-heading">
+      <h1 id="mobile-library-title">我的片库</h1>
+      <span className="mobile-count" aria-label={`片库数量 ${countLabel}`}>{countLabel}</span>
+    </div>
+    <div className="mobile-search-row">
+      <label className="mobile-search-label">
+        <span className="mobile-search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <circle cx="11" cy="11" r="6" />
+            <path d="m16 16 4 4" />
+          </svg>
+        </span>
+        <span className="sr-only">搜索片库</span>
+        <input
+          aria-label="搜索片库"
+          value={search}
+          onChange={event => setSearch(event.target.value)}
+          placeholder="搜索标题、平台、备注"
+        />
+        {search && (
+          <button
+            type="button"
+            className="mobile-search-clear"
+            aria-label="清空搜索"
+            onClick={() => setSearch('')}
+          >
+            ×
+          </button>
+        )}
+      </label>
+    </div>
+
+    {/* Segmented Quick Status Switcher */}
+    <div className="mobile-status-segment-bar" role="tablist" aria-label="状态快速筛选">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isWatchingOnly}
+        className={`mobile-status-tab ${isWatchingOnly ? 'selected' : ''}`}
+        onClick={() => setPrefs({ ...prefs, statuses: ['在看'] })}
+      >
+        <span className="mobile-status-tab-dot watching" aria-hidden="true" />
+        在看
+        <span className="mobile-status-tab-count">{statusCounts['在看'] || 0}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isAllStatuses}
+        className={`mobile-status-tab ${isAllStatuses ? 'selected' : ''}`}
+        onClick={() => setPrefs({ ...prefs, statuses: [] })}
+      >
+        全部
+        <span className="mobile-status-tab-count">{totalCount}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isUnwatchedOnly}
+        className={`mobile-status-tab ${isUnwatchedOnly ? 'selected' : ''}`}
+        onClick={() => setPrefs({ ...prefs, statuses: ['未看'] })}
+      >
+        未看
+        <span className="mobile-status-tab-count">{statusCounts['未看'] || 0}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isWatchedOnly}
+        className={`mobile-status-tab ${isWatchedOnly ? 'selected' : ''}`}
+        onClick={() => setPrefs({ ...prefs, statuses: ['已看'] })}
+      >
+        已看
+        <span className="mobile-status-tab-count">{statusCounts['已看'] || 0}</span>
+      </button>
+    </div>
+
     <div className="mobile-toolbar-row">
       {chips.length ? <div className="mobile-active-chips" aria-label="当前筛选条件"><span className="sr-only">已启用筛选</span>{chips.map(chip => <button key={chip.key} type="button" aria-label={chip.ariaLabel} onClick={chip.clear}>{chip.label} ×</button>)}</div> : <span className="mobile-toolbar-spacer" aria-hidden="true" />}
       <div className="mobile-view-toggle" role="group" aria-label="视图切换">
@@ -119,11 +215,11 @@ function RecordCard({ record, onOpen, onStatus, onMore, onEpisode }: { record: W
           <div className="mobile-record-title">{title}</div>
           {displayTitlesOf(record).secondary && <div className="mobile-record-subtitle">{displayTitlesOf(record).secondary}</div>}
           <div className="mobile-record-meta">
-            <span>{record.mediaType}</span>
-            <span>{record.status}</span>
-            {record.releaseYear && <span>{record.releaseYear}</span>}
-            {record.rating != null && <span>★ {record.rating}</span>}
-            {record.imdbRating != null && <span>IMDb {record.imdbRating.toFixed(1)}</span>}
+            <span className="mobile-meta-tag">{record.mediaType}</span>
+            <span className={`mobile-meta-tag mobile-status-tag ${record.status === '在看' ? 'watching' : record.status === '已看' ? 'watched' : 'unwatched'}`}>{record.status}</span>
+            {record.releaseYear && <span className="mobile-meta-tag">{record.releaseYear}</span>}
+            {record.rating != null && <span className="mobile-meta-tag mobile-rating-tag">★ {record.rating}</span>}
+            {record.imdbRating != null && <span className="mobile-meta-tag">IMDb {record.imdbRating.toFixed(1)}</span>}
             {record.imdbId && (
               <span
                 role="button"
@@ -138,14 +234,14 @@ function RecordCard({ record, onOpen, onStatus, onMore, onEpisode }: { record: W
                 IMDb ↗
               </span>
             )}
-            {record.isLocked && <span>🔒 已锁定</span>}
+            {record.isLocked && <span className="mobile-meta-tag mobile-locked-tag">🔒 已锁定</span>}
           </div>
           <MobileEpisodeCardStatus record={record} />
         </div>
       </button>
       <button type="button" className="mobile-record-more" aria-label={`更多操作：${title}`} title="更多操作" onClick={event => onMore(event.currentTarget)}><span aria-hidden="true">⋮</span></button>
     </div>
-    <div className="mobile-record-quick-action">{episodic ? <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} /> : <button type="button" className="mobile-primary-button mobile-status-quick-button" disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}</div>
+    <div className="mobile-record-quick-action">{episodic ? <MobileEpisodeQuickAction record={record} onAction={onEpisode} onOpen={onOpen} /> : <button type="button" className={`mobile-primary-button mobile-status-quick-button ${record.status === '已看' ? 'watched' : ''}`} disabled={record.isLocked} onClick={() => onStatus(record.status === '已看' ? '未看' : '已看')}>{record.status === '已看' ? '标为未看' : '标为已看'}</button>}</div>
   </article>;
 }
 
@@ -574,11 +670,46 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
     setViewMode(mode);
     void setSettingAsync('mobile_library_view_mode', mode).catch(() => undefined);
   }, []);
-  useEffect(() => { let active = true; void getSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY).then(raw => { if (!active || !raw) return; try { const parsed = JSON.parse(raw); const normalized = normalizeMobilePreferences(parsed); if (parsed?.version !== 1) onNotify('warning', '片库偏好版本不兼容，已使用默认设置。'); setPrefsState(normalized); } catch { onNotify('warning', '片库偏好读取失败，已使用默认设置。'); } }).catch(() => { if (active) onNotify('warning', '片库偏好读取失败，已使用默认设置。'); }); return () => { active = false; }; }, [onNotify]);
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      getSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY),
+      getSettingAsync('mobile_startup_view'),
+    ]).then(([raw, startupView]) => {
+      if (!active) return;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          const normalized = normalizeMobilePreferences(parsed);
+          if (parsed?.version !== 1) onNotify('warning', '片库偏好版本不兼容，已使用默认设置。');
+          if (startupView === 'watching' && (!raw.includes('"statuses":') || parsed.statuses?.length === 0)) {
+            normalized.statuses = ['在看'];
+          }
+          setPrefsState(normalized);
+        } catch {
+          onNotify('warning', '片库偏好读取失败，已使用默认设置。');
+        }
+      } else if (startupView === 'watching') {
+        setPrefsState(prev => ({ ...prev, statuses: ['在看'] }));
+      }
+    }).catch(() => {
+      if (active) onNotify('warning', '片库偏好读取失败，已使用默认设置。');
+    });
+    return () => { active = false; };
+  }, [onNotify]);
   const setPrefs = useCallback((next: MobileLibraryPreferences) => { const normalized = normalizeMobilePreferences(next); setPrefsState(normalized); void setSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY, JSON.stringify(normalized)).catch(() => onNotify('warning', '片库偏好保存失败，本次操作仍已生效。')); }, [onNotify]);
   useEffect(() => { if (props.route !== 'library') return; const timer = window.requestAnimationFrame(() => { const container = document.querySelector<HTMLElement>('.mobile-content'); if (container) container.scrollTop = scrollTopRef.current; }); return () => window.cancelAnimationFrame(timer); }, [props.route]);
   const captureScroll = useCallback(() => { scrollTopRef.current = document.querySelector<HTMLElement>('.mobile-content')?.scrollTop ?? 0; }, []);
   const filtered = useMemo(() => applyMobileLibraryQuery(records, search, prefs), [records, search, prefs]);
+  const statusCounts = useMemo(() => {
+    const counts = { '在看': 0, '未看': 0, '已看': 0 };
+    for (const r of records) {
+      if (r.status === '在看') counts['在看']++;
+      else if (r.status === '未看') counts['未看']++;
+      else if (r.status === '已看') counts['已看']++;
+    }
+    return counts;
+  }, [records]);
   const detail = detailId ? records.find(record => record.id === detailId) ?? null : null;
   const formRecord = formMode === 'edit' && detailId ? records.find(record => record.id === detailId) ?? null : null;
   const emptyKind = records.length === 0 ? 'library' : filtered.length === 0 ? (search ? 'search' : 'filter') : null;
@@ -594,5 +725,5 @@ export default function MobileLibraryPage(props: MobileLibraryPageProps) {
   if (props.route === 'form' && formMode === 'edit' && !formRecord) return <section className="mobile-error" role="alert"><h1>记录不存在</h1><p>这条记录可能已被删除。</p><button type="button" className="mobile-primary-button" onClick={onBack}>返回片库</button></section>;
   if (props.route === 'form') return <MobileRecordForm record={formRecord} onSave={value => formRecord ? onUpdate(formRecord, value) : onAdd(value)} onDelete={() => { if (formRecord) void onDelete(formRecord); }} onClose={onBack} onNotify={onNotify} />;
   if (props.route === 'detail' && detailId && detail) return <DetailPage record={detail} onBack={onBack} onEdit={() => { if (!detail.isLocked) onForm('edit', detail); else onNotify('warning', '已锁定记录不能编辑。'); }} onDelete={() => void onDelete(detail)} onLock={() => void onLock(detail, !detail.isLocked)} onStatus={status => void onStatus(detail, status)} onEpisode={onEpisode} />;
-  return <section className="mobile-library" aria-labelledby="mobile-library-title" ref={contentRef}><LibraryToolbar search={searchInput} setSearch={value => { setSearchInput(value); if (!value) setSearch(''); }} prefs={prefs} setPrefs={setPrefs} onFilter={() => setFilterOpen(true)} filterTriggerRef={filterTriggerRef} filteredCount={filtered.length} totalCount={records.length} viewMode={viewMode} onToggleViewMode={handleToggleViewMode} />{emptyKind ? <EmptyState kind={emptyKind} onAdd={() => onForm('new')} /> : viewMode === 'poster' ? <MobilePosterWall records={filtered} onOpen={record => { captureScroll(); onDetail(record); }} onMore={(record, trigger) => openActions(record, trigger)} onStatus={(record, nextStatus) => void onStatus(record, nextStatus)} /> : <div className="mobile-record-list">{filtered.map(record => <RecordCard key={record.id} record={record} onOpen={() => { captureScroll(); onDetail(record); }} onMore={trigger => openActions(record, trigger)} onStatus={status => void onStatus(record, status)} onEpisode={onEpisode} />)}</div>}{filterOpen && <FilterSheet prefs={prefs} setPrefs={setPrefs} records={records} onClose={() => setFilterOpen(false)} returnFocusRef={filterTriggerRef} />}{actionsRecord && <MobileRecordActionsSheet record={actionsRecord} onEdit={() => openEdit(actionsRecord)} onLock={locked => toggleLock(actionsRecord, locked)} onDelete={() => deleteRecord(actionsRecord)} onClose={closeActions} returnFocusRef={actionsTriggerRef} />}</section>;
+  return <section className="mobile-library" aria-labelledby="mobile-library-title" ref={contentRef}><LibraryToolbar search={searchInput} setSearch={value => { setSearchInput(value); if (!value) setSearch(''); }} prefs={prefs} setPrefs={setPrefs} onFilter={() => setFilterOpen(true)} filterTriggerRef={filterTriggerRef} filteredCount={filtered.length} totalCount={records.length} statusCounts={statusCounts} viewMode={viewMode} onToggleViewMode={handleToggleViewMode} />{emptyKind ? <EmptyState kind={emptyKind} onAdd={() => onForm('new')} /> : viewMode === 'poster' ? <MobilePosterWall records={filtered} onOpen={record => { captureScroll(); onDetail(record); }} onMore={(record, trigger) => openActions(record, trigger)} onStatus={(record, nextStatus) => void onStatus(record, nextStatus)} /> : <div className="mobile-record-list">{filtered.map(record => <RecordCard key={record.id} record={record} onOpen={() => { captureScroll(); onDetail(record); }} onMore={trigger => openActions(record, trigger)} onStatus={status => void onStatus(record, status)} onEpisode={onEpisode} />)}</div>}{filterOpen && <FilterSheet prefs={prefs} setPrefs={setPrefs} records={records} onClose={() => setFilterOpen(false)} returnFocusRef={filterTriggerRef} />}{actionsRecord && <MobileRecordActionsSheet record={actionsRecord} onEdit={() => openEdit(actionsRecord)} onLock={locked => toggleLock(actionsRecord, locked)} onDelete={() => deleteRecord(actionsRecord)} onClose={closeActions} returnFocusRef={actionsTriggerRef} />}</section>;
 }
