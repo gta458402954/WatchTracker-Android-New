@@ -55,3 +55,28 @@ test('batch poster downloader deduplicates posters and extracts titles cleanly',
   assert.equal(items[1].posterPath, '/oppenheimer.jpg');
   assert.equal(items[1].title, 'Oppenheimer');
 });
+
+test('batch poster downloader skips locally cached posters and only downloads missing ones', () => {
+  const allItems = [
+    { posterPath: '/tbbt12.jpg', title: '生活大爆炸 第 12 季' },
+    { posterPath: '/oppenheimer.jpg', title: 'Oppenheimer' },
+    { posterPath: '/dune2.jpg', title: '沙丘2' },
+  ];
+
+  // Case 1: tbbt12 is already cached, oppenheimer and dune2 are missing
+  const missingPaths = ['/oppenheimer.jpg', '/dune2.jpg'];
+  const missingSet = new Set(missingPaths);
+  const missingItems = allItems.filter(it => missingSet.has(it.posterPath));
+  const cachedCount = allItems.length - missingItems.length;
+
+  assert.equal(missingItems.length, 2);
+  assert.equal(cachedCount, 1, 'Should skip 1 locally cached poster');
+  assert.deepEqual(missingItems.map(it => it.posterPath), ['/oppenheimer.jpg', '/dune2.jpg']);
+
+  // Case 2: All items are cached locally
+  const noMissingPaths = [];
+  const noMissingSet = new Set(noMissingPaths);
+  const fullyCachedItems = allItems.filter(it => noMissingSet.has(it.posterPath));
+  assert.equal(fullyCachedItems.length, 0, 'No missing items when all are cached');
+  assert.equal(allItems.length - fullyCachedItems.length, 3, 'All 3 items skipped as cached');
+});

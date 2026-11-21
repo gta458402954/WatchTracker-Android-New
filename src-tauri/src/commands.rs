@@ -841,6 +841,27 @@ pub async fn download_poster(
 }
 
 #[tauri::command]
+pub fn get_missing_posters(
+    paths: State<'_, AppPaths>,
+    poster_paths: Vec<String>,
+    size: Option<String>,
+) -> Result<Vec<String>, crate::error::AppError> {
+    let size = size.unwrap_or_else(|| "w342".to_string());
+    let valid = crate::poster_cache::valid_file_names(&paths)
+        .map_err(crate::error::AppError::General)?;
+    let mut missing = Vec::new();
+    for path in poster_paths {
+        let is_cached = crate::poster_cache::normalized_file_name(&path, &size)
+            .map(|name| valid.contains(&name))
+            .unwrap_or(false);
+        if !is_cached {
+            missing.push(path);
+        }
+    }
+    Ok(missing)
+}
+
+#[tauri::command]
 pub fn get_poster_cache_stats(
     state: State<'_, DbState>,
     paths: State<'_, AppPaths>,

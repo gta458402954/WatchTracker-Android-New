@@ -805,7 +805,7 @@ export default function MobileSyncSettingsPage({
       {/* Standalone Poster Downloader */}
       <div className="mobile-sync-card" data-testid="mobile-poster-downloader">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>一键离线下载海报</h2>
+          <h2><span aria-hidden="true">🖼️ </span>一键离线下载海报</h2>
           {posterBatch.progress.status === 'running' && (
             <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#e0e7ff', color: '#4338ca' }}>
               下载中
@@ -813,18 +813,34 @@ export default function MobileSyncSettingsPage({
           )}
           {posterBatch.progress.status === 'completed' && (
             <span style={{ fontSize: '10px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px', background: '#d1fae5', color: '#065f46' }}>
-              已完成
+              已就绪
             </span>
           )}
         </div>
         <p className="mobile-sync-note">
-          独立批量下载所有含海报路径影片的封面到手机本地，无需重新请求全量元数据。已下载封面将自动命中本地缓存，离线加载更迅速。
+          独立批量补充片库封面到手机本地。本地已有的海报直接跳过，只补充缺失封面，离线浏览更流畅且节省流量。
         </p>
         <div style={{ marginTop: '10px' }}>
           {posterBatch.progress.status === 'idle' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#475569' }}>
+              <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5 }}>
                 当前片库共 <strong>{posterRecordsCount}</strong> 部影片已关联海报路径。
+                {posterBatch.counts && (
+                  <div style={{ marginTop: '4px', display: 'flex', gap: '8px', fontSize: '11px', flexWrap: 'wrap' }}>
+                    <span style={{ color: '#059669', fontWeight: 600 }}>
+                      ✓ 本地已有 {posterBatch.counts.cached} 张（将直接跳过）
+                    </span>
+                    {posterBatch.counts.missing > 0 ? (
+                      <span style={{ color: '#d97706', fontWeight: 600 }}>
+                        ! 待补充 {posterBatch.counts.missing} 张
+                      </span>
+                    ) : (
+                      <span style={{ color: '#059669', fontWeight: 600 }}>
+                        (已全部就绪)
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -840,8 +856,8 @@ export default function MobileSyncSettingsPage({
           {posterBatch.progress.status === 'running' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#0f172a', fontWeight: 700 }}>
-                <span>正在下载：{posterBatch.progress.current} / {posterBatch.progress.total}</span>
-                <span>{Math.round((posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100)}%</span>
+                <span>正在补充缺失海报：{posterBatch.progress.current} / {posterBatch.progress.missingTotal || posterBatch.progress.total}</span>
+                <span>{Math.round((posterBatch.progress.current / (posterBatch.progress.missingTotal || posterBatch.progress.total || 1)) * 100)}%</span>
               </div>
               <div style={{ height: '8px', borderRadius: '999px', background: '#e2e8f0', overflow: 'hidden' }}>
                 <div
@@ -849,17 +865,17 @@ export default function MobileSyncSettingsPage({
                     height: '100%',
                     borderRadius: '999px',
                     background: '#4f46e5',
-                    width: `${(posterBatch.progress.current / (posterBatch.progress.total || 1)) * 100}%`,
+                    width: `${(posterBatch.progress.current / (posterBatch.progress.missingTotal || posterBatch.progress.total || 1)) * 100}%`,
                     transition: 'width 0.2s ease',
                   }}
                 />
               </div>
               <div style={{ fontSize: '11px', color: '#64748b' }}>
-                新下载：{posterBatch.progress.downloaded} · 本地已有：{posterBatch.progress.cached} · 失败：{posterBatch.progress.failed}
+                新下载：{posterBatch.progress.downloaded} · 本地已有（已跳过）：{posterBatch.progress.cached} · 失败：{posterBatch.progress.failed}
               </div>
               {posterBatch.progress.currentTitle && (
                 <div style={{ fontSize: '11px', color: '#4338ca', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  正在处理：{posterBatch.progress.currentTitle}
+                  正在下载：{posterBatch.progress.currentTitle}
                 </div>
               )}
               <button

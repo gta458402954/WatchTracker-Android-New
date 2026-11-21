@@ -194,6 +194,7 @@ pub fn run() {
             commands::get_tmdb_detail,
             commands::get_tmdb_season_detail,
             commands::download_poster,
+            commands::get_missing_posters,
             commands::get_poster_cache_stats,
             commands::clean_poster_cache,
             commands::webdav_request,
