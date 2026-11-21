@@ -85,7 +85,6 @@ function LibraryToolbar({
   onToggleViewMode: (mode: 'list' | 'poster') => void;
 }) {
   const chips = [
-    ...prefs.statuses.map(value => ({ key: `status-${value}`, label: value, ariaLabel: `移除状态：${value}`, clear: () => setPrefs({ ...prefs, statuses: prefs.statuses.filter(item => item !== value) }) })),
     ...prefs.mediaTypes.map(value => ({ key: `media-${value}`, label: value, ariaLabel: `移除类型：${value}`, clear: () => setPrefs({ ...prefs, mediaTypes: prefs.mediaTypes.filter(item => item !== value) }) })),
     ...(prefs.lock === 'all' ? [] : [{ key: 'lock', label: prefs.lock === 'locked' ? '已锁定' : '未锁定', ariaLabel: '移除锁定筛选', clear: () => setPrefs({ ...prefs, lock: 'all' as const }) }]),
   ];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { WatchRecord } from '../../shared/types';
 import { downloadPosterAsync, getMissingPostersAsync } from '../../shared/lib/database';
 import { displayTitlesOf } from '../../shared/lib/displayTitle';
@@ -20,83 +20,129 @@ export interface PosterCounts {
   cached: number;
 }
 
-export function useBatchPosterDownload(records: WatchRecord[]) {
-  const [progress, setProgress] = useState<BatchPosterProgress>({
-    status: 'idle',
-    total: 0,
-    missingTotal: 0,
-    current: 0,
-    downloaded: 0,
-    cached: 0,
-    failed: 0,
-    currentTitle: '',
-  });
+// 模块级单例状态：组件卸载或切页时后台任务不中断，切回设置页可无缝恢复进度
+let globalProgress: BatchPosterProgress = {
+  status: 'idle',
+  total: 0,
+  missingTotal: 0,
+  current: 0,
+  downloaded: 0,
+  cached: 0,
+  failed: 0,
+  currentTitle: '',
+};
 
-  const [counts, setCounts] = useState<PosterCounts | null>(null);
-  const cancelledRef = useRef(false);
+let globalCounts: PosterCounts | null = null;
+let isCancelled = false;
+let isRunning = false;
+let activeDownloadPromise: Promise<void> | null = null;
 
-  // 提取所有唯一海报条目
-  const getUniquePosters = useCallback(() => {
-    const uniquePosters = new Map<string, { posterPath: string; title: string }>();
-    for (const r of records) {
-      if (r.posterPath && r.posterPath.trim()) {
-        if (!uniquePosters.has(r.posterPath)) {
-          const titles = displayTitlesOf(r);
-          uniquePosters.set(r.posterPath, {
-            posterPath: r.posterPath,
-            title: titles.primary || titles.secondary || r.originalName || '未命名影片',
-          });
-        }
+const progressListeners = new Set<() => void>();
+const countsListeners = new Set<() => void>();
+
+function emitProgress() {
+  for (const listener of progressListeners) listener();
+}
+
+function emitCounts() {
+  for (const listener of countsListeners) listener();
+}
+
+export function subscribeProgress(listener: () => void) {
+  progressListeners.add(listener);
+  return () => {
+    progressListeners.delete(listener);
+  };
+}
+
+export function subscribeCounts(listener: () => void) {
+  countsListeners.add(listener);
+  return () => {
+    countsListeners.delete(listener);
+  };
+}
+
+export function getProgressSnapshot(): BatchPosterProgress {
+  return globalProgress;
+}
+
+export function getCountsSnapshot(): PosterCounts | null {
+  return globalCounts;
+}
+
+export function isPosterDownloadRunning(): boolean {
+  return isRunning;
+}
+
+// 刷新片库本地海报完整度统计
+export async function refreshPosterCounts(records: WatchRecord[]): Promise<PosterCounts> {
+  const uniquePaths: string[] = [];
+  for (const r of records) {
+    if (r.posterPath && r.posterPath.trim() && !uniquePaths.includes(r.posterPath)) {
+      uniquePaths.push(r.posterPath);
+    }
+  }
+  if (uniquePaths.length === 0) {
+    globalCounts = { total: 0, missing: 0, cached: 0 };
+    emitCounts();
+    return globalCounts;
+  }
+  try {
+    const missing = await getMissingPostersAsync(uniquePaths, 'w342');
+    const missingCount = missing.length;
+    const cachedCount = uniquePaths.length - missingCount;
+    globalCounts = { total: uniquePaths.length, missing: missingCount, cached: cachedCount };
+  } catch {
+    globalCounts = { total: uniquePaths.length, missing: uniquePaths.length, cached: 0 };
+  }
+  emitCounts();
+  return globalCounts;
+}
+
+// 核心优化：直接查询本地已有海报，毫秒级跳过已存在的封面，仅补充缺失海报
+export async function startBatchPosterDownload(
+  records: WatchRecord[],
+  onNotice?: (type: 'success' | 'warning' | 'error', msg: string) => void
+): Promise<void> {
+  if (isRunning) {
+    return activeDownloadPromise ?? Promise.resolve();
+  }
+
+  const uniquePosters = new Map<string, { posterPath: string; title: string }>();
+  for (const r of records) {
+    if (r.posterPath && r.posterPath.trim()) {
+      if (!uniquePosters.has(r.posterPath)) {
+        const titles = displayTitlesOf(r);
+        uniquePosters.set(r.posterPath, {
+          posterPath: r.posterPath,
+          title: titles.primary || titles.secondary || r.originalName || '未命名影片',
+        });
       }
     }
-    return uniquePosters;
-  }, [records]);
+  }
 
-  // 刷新片库本地海报完整度统计
-  const refreshCounts = useCallback(async () => {
-    const uniqueMap = getUniquePosters();
-    const uniquePaths = Array.from(uniqueMap.keys());
-    if (uniquePaths.length === 0) {
-      setCounts({ total: 0, missing: 0, cached: 0 });
-      return;
-    }
-    try {
-      const missing = await getMissingPostersAsync(uniquePaths, 'w342');
-      const missingCount = missing.length;
-      const cachedCount = uniquePaths.length - missingCount;
-      setCounts({ total: uniquePaths.length, missing: missingCount, cached: cachedCount });
-    } catch {
-      setCounts({ total: uniquePaths.length, missing: uniquePaths.length, cached: 0 });
-    }
-  }, [getUniquePosters]);
+  const allItems = Array.from(uniquePosters.values());
+  if (allItems.length === 0) {
+    globalProgress = {
+      status: 'completed',
+      total: 0,
+      missingTotal: 0,
+      current: 0,
+      downloaded: 0,
+      cached: 0,
+      failed: 0,
+      currentTitle: '',
+    };
+    globalCounts = { total: 0, missing: 0, cached: 0 };
+    emitProgress();
+    emitCounts();
+    return;
+  }
 
-  useEffect(() => {
-    // Checking crosses the Rust IPC boundary; counts are updated after awaited read.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshCounts();
-  }, [refreshCounts]);
+  isCancelled = false;
+  isRunning = true;
 
-  const startDownload = useCallback(async () => {
-    const uniqueMap = getUniquePosters();
-    const allItems = Array.from(uniqueMap.values());
-    if (allItems.length === 0) {
-      setProgress({
-        status: 'completed',
-        total: 0,
-        missingTotal: 0,
-        current: 0,
-        downloaded: 0,
-        cached: 0,
-        failed: 0,
-        currentTitle: '',
-      });
-      setCounts({ total: 0, missing: 0, cached: 0 });
-      return;
-    }
-
-    cancelledRef.current = false;
-
-    // 核心优化：直接查询本地已有海报，毫秒级跳过已存在的封面，仅补充缺失海报
+  const downloadTask = (async () => {
     let missingPaths: string[];
     try {
       missingPaths = await getMissingPostersAsync(allItems.map(it => it.posterPath), 'w342');
@@ -109,8 +155,7 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
     const cachedCount = allItems.length - missingItems.length;
 
     if (missingItems.length === 0) {
-      // 本地已有的海报直接跳过，全部已就绪
-      setProgress({
+      globalProgress = {
         status: 'completed',
         total: allItems.length,
         missingTotal: 0,
@@ -119,8 +164,12 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
         cached: cachedCount,
         failed: 0,
         currentTitle: '',
-      });
-      setCounts({ total: allItems.length, missing: 0, cached: allItems.length });
+      };
+      globalCounts = { total: allItems.length, missing: 0, cached: allItems.length };
+      isRunning = false;
+      activeDownloadPromise = null;
+      emitProgress();
+      emitCounts();
       return;
     }
 
@@ -128,7 +177,7 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
     let downloaded = 0;
     let failed = 0;
 
-    setProgress({
+    globalProgress = {
       status: 'running',
       total: allItems.length,
       missingTotal: missingItems.length,
@@ -137,20 +186,28 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
       cached: cachedCount,
       failed: 0,
       currentTitle: missingItems[0]?.title || '',
-    });
+    };
+    emitProgress();
 
     for (const item of missingItems) {
-      if (cancelledRef.current) {
-        setProgress(prev => ({ ...prev, status: 'cancelled' }));
-        void refreshCounts();
+      if (isCancelled) {
+        globalProgress = {
+          ...globalProgress,
+          status: 'cancelled',
+        };
+        isRunning = false;
+        activeDownloadPromise = null;
+        emitProgress();
+        void refreshPosterCounts(records);
         return;
       }
 
-      setProgress(prev => ({
-        ...prev,
+      globalProgress = {
+        ...globalProgress,
         current,
         currentTitle: item.title,
-      }));
+      };
+      emitProgress();
 
       try {
         const res = await downloadPosterAsync(item.posterPath, 'w342');
@@ -162,19 +219,18 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
       }
 
       current++;
-      setProgress({
-        status: 'running',
-        total: allItems.length,
-        missingTotal: missingItems.length,
+      globalProgress = {
+        ...globalProgress,
         current,
         downloaded,
         cached: cachedCount,
         failed,
         currentTitle: item.title,
-      });
+      };
+      emitProgress();
     }
 
-    setProgress({
+    globalProgress = {
       status: 'completed',
       total: allItems.length,
       missingTotal: missingItems.length,
@@ -183,30 +239,74 @@ export function useBatchPosterDownload(records: WatchRecord[]) {
       cached: cachedCount,
       failed,
       currentTitle: '',
-    });
+    };
+    isRunning = false;
+    activeDownloadPromise = null;
+    emitProgress();
 
-    void refreshCounts();
-  }, [getUniquePosters, refreshCounts]);
+    if (onNotice && downloaded > 0) {
+      onNotice('success', `海报补充完成！已成功下载 ${downloaded} 张封面。`);
+    }
+
+    void refreshPosterCounts(records);
+  })();
+
+  activeDownloadPromise = downloadTask;
+  return downloadTask;
+}
+
+export function cancelBatchPosterDownload(): void {
+  if (isRunning) {
+    isCancelled = true;
+  }
+}
+
+export function resetBatchPosterDownload(records: WatchRecord[]): void {
+  isCancelled = false;
+  isRunning = false;
+  activeDownloadPromise = null;
+  globalProgress = {
+    status: 'idle',
+    total: 0,
+    missingTotal: 0,
+    current: 0,
+    downloaded: 0,
+    cached: 0,
+    failed: 0,
+    currentTitle: '',
+  };
+  emitProgress();
+  void refreshPosterCounts(records);
+}
+
+export function useBatchPosterDownload(
+  records: WatchRecord[],
+  onNotice?: (type: 'success' | 'warning' | 'error', msg: string) => void
+) {
+  const progress = useSyncExternalStore(subscribeProgress, getProgressSnapshot);
+  const counts = useSyncExternalStore(subscribeCounts, getCountsSnapshot);
+
+  useEffect(() => {
+    if (globalProgress.status === 'idle' && globalCounts === null) {
+      void refreshPosterCounts(records);
+    }
+  }, [records]);
+
+  const startDownload = useCallback(() => {
+    return startBatchPosterDownload(records, onNotice);
+  }, [records, onNotice]);
 
   const cancelDownload = useCallback(() => {
-    cancelledRef.current = true;
-    setProgress(prev => ({ ...prev, status: 'cancelled' }));
+    cancelBatchPosterDownload();
   }, []);
 
   const reset = useCallback(() => {
-    cancelledRef.current = false;
-    setProgress({
-      status: 'idle',
-      total: 0,
-      missingTotal: 0,
-      current: 0,
-      downloaded: 0,
-      cached: 0,
-      failed: 0,
-      currentTitle: '',
-    });
-    void refreshCounts();
-  }, [refreshCounts]);
+    resetBatchPosterDownload(records);
+  }, [records]);
+
+  const refreshCounts = useCallback(() => {
+    return refreshPosterCounts(records);
+  }, [records]);
 
   return {
     progress,

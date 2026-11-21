@@ -147,7 +147,7 @@ export default function MobileSyncSettingsPage({
     }
   }, [notify]);
 
-  const posterBatch = useBatchPosterDownload(records ?? EMPTY_RECORDS);
+  const posterBatch = useBatchPosterDownload(records ?? EMPTY_RECORDS, notify);
   const posterRecordsCount = useMemo(() => (records ?? []).filter(r => Boolean(r.posterPath && r.posterPath.trim())).length, [records]);
 
   const batch = useBatchMetadata({
