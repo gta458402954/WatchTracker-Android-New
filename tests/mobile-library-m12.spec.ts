@@ -189,6 +189,18 @@ test('M1.2 status quick switcher filters instantly and respects startup preferen
   await expect(page.getByRole('tab', { name: /已看/ })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
   await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+
+  // Switch to another tab (Collections) and switch back to Library
+  await page.getByRole('button', { name: '收藏' }).click();
+  await expect(page.getByRole('heading', { name: '收藏合辑', exact: true })).toBeVisible();
+
+  // Return to Library: preference must be maintained seamlessly without resetting to 全部
+  await page.getByRole('button', { name: '片库' }).click();
+  await expect(page.getByRole('heading', { name: '我的片库' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /已看/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('已看完结', { exact: true })).toBeVisible();
+  await expect(page.getByText('未看电影', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('在看剧集', { exact: true })).toHaveCount(0);
 });
 
 test('M1.2 independent batch poster downloader operates from settings without metadata fetching', async ({ page }) => {

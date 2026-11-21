@@ -293,7 +293,6 @@ export default function MobileDiscoverPage({ records, onDetail }: MobileDiscover
                       posterPath={c.record.posterPath}
                       alt={itemTitle}
                       className="queue-peek-poster"
-                      size="w92"
                       compact
                       autoDownload={false}
                     />

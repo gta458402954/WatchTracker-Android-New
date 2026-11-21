@@ -19,6 +19,30 @@ export const DEFAULT_MOBILE_LIBRARY_PREFERENCES: MobileLibraryPreferences = {
   version: 1, sortBy: 'createdAt', mediaTypes: [], statuses: [], lock: 'all',
 };
 
+let cachedPreferences: MobileLibraryPreferences | null = null;
+let cachedViewMode: 'list' | 'poster' | null = null;
+
+export function getCachedMobilePreferences(): MobileLibraryPreferences | null {
+  return cachedPreferences;
+}
+
+export function setCachedMobilePreferences(prefs: MobileLibraryPreferences | null): void {
+  cachedPreferences = prefs;
+}
+
+export function getCachedMobileViewMode(): 'list' | 'poster' | null {
+  return cachedViewMode;
+}
+
+export function setCachedMobileViewMode(mode: 'list' | 'poster' | null): void {
+  cachedViewMode = mode;
+}
+
+export function resetCachedMobilePreferencesForTesting(): void {
+  cachedPreferences = null;
+  cachedViewMode = null;
+}
+
 export function normalizeMobilePreferences(value: unknown): MobileLibraryPreferences {
   const candidate = value && typeof value === 'object' ? value as Partial<MobileLibraryPreferences> : {};
   if (candidate.version !== 1) return { ...DEFAULT_MOBILE_LIBRARY_PREFERENCES };

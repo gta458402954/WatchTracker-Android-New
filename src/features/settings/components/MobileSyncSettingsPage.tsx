@@ -20,6 +20,7 @@ import {
   type SyncTargetRegistry,
 } from '../../../shared/lib/database.ts';
 import { formatWebDavTargetUrl } from '../../../shared/lib/webdavDisplay.ts';
+import { setCachedMobilePreferences } from '../../watchlist/mobileLibraryModel.ts';
 import {
   clearCreds,
   normalizeSyncTargetUrl,
@@ -139,6 +140,7 @@ export default function MobileSyncSettingsPage({
 
   const handleStartupViewChange = useCallback(async (view: 'watching' | 'all') => {
     setStartupView(view);
+    setCachedMobilePreferences(null);
     try {
       await setSettingAsync('mobile_startup_view', view);
       notify('success', view === 'watching' ? '已设为启动默认展示在看视频。' : '已设为启动默认展示全部记录。');

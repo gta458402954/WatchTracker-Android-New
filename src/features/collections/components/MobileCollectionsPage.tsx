@@ -245,7 +245,6 @@ export default function MobileCollectionsPage({ records, onDetail, onNotify }: M
                         posterPath={record.posterPath}
                         alt={itemTitle}
                         className="row-poster"
-                        size="w92"
                         compact
                         autoDownload={false}
                       />
@@ -373,7 +372,6 @@ export default function MobileCollectionsPage({ records, onDetail, onNotify }: M
                           posterPath={poster}
                           alt=""
                           className="stack-img"
-                          size="w92"
                           compact
                           autoDownload={false}
                         />

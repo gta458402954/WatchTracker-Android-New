@@ -16,6 +16,14 @@ import MobileStatsPage from '../features/watchlist/components/MobileStatsPage.ts
 import MobileDiscoverPage from '../features/watchlist/components/MobileDiscoverPage.tsx';
 import MobileCollectionsPage from '../features/collections/components/MobileCollectionsPage.tsx';
 import { subscribeProgress, getProgressSnapshot } from '../features/settings/useBatchPosterDownload.ts';
+import { getSettingAsync } from '../shared/lib/database.ts';
+import {
+  DEFAULT_MOBILE_LIBRARY_PREFERENCES,
+  MOBILE_LIBRARY_PREFERENCES_KEY,
+  normalizeMobilePreferences,
+  setCachedMobilePreferences,
+  setCachedMobileViewMode,
+} from '../features/watchlist/mobileLibraryModel.ts';
 
 declare global { interface Window { __WATCHTRACKER_ANDROID_BACK__?: () => AndroidBackAction; } }
 type InitializationState = 'loading' | 'ready' | 'error';
@@ -41,7 +49,51 @@ export default function MobileApp() {
   const initializationPromise = useRef<Promise<void> | null>(null);
   const loadRecords = useCallback(() => {
     if (initializationPromise.current) return initializationPromise.current;
-    const pending = (async () => { try { await reloadRecords(); setInitialization('ready'); void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步'))); } catch (error) { console.error('[MobileApp.Initialize]', error); setInitialization('error'); } finally { initializationPromise.current = null; } })();
+    const pending = (async () => {
+      try {
+        await Promise.all([
+          reloadRecords(),
+          (async () => {
+            try {
+              const [raw, startupView, viewMode] = await Promise.all([
+                getSettingAsync(MOBILE_LIBRARY_PREFERENCES_KEY),
+                getSettingAsync('mobile_startup_view'),
+                getSettingAsync('mobile_library_view_mode'),
+              ]);
+              if (viewMode === 'poster' || viewMode === 'list') {
+                setCachedMobileViewMode(viewMode);
+              }
+              if (raw) {
+                try {
+                  const parsed = JSON.parse(raw);
+                  const normalized = normalizeMobilePreferences(parsed);
+                  if (startupView === 'watching' && (!raw.includes('"statuses":') || parsed.statuses?.length === 0)) {
+                    normalized.statuses = ['在看'];
+                  }
+                  setCachedMobilePreferences(normalized);
+                } catch {
+                  // ignore
+                }
+              } else if (startupView === 'watching') {
+                setCachedMobilePreferences({
+                  ...DEFAULT_MOBILE_LIBRARY_PREFERENCES,
+                  statuses: ['在看'],
+                });
+              }
+            } catch {
+              // ignore
+            }
+          })(),
+        ]);
+        setInitialization('ready');
+        void startCoordinator().catch(() => onBackgroundSyncError(publicFailureMessage('启动同步')));
+      } catch (error) {
+        console.error('[MobileApp.Initialize]', error);
+        setInitialization('error');
+      } finally {
+        initializationPromise.current = null;
+      }
+    })();
     initializationPromise.current = pending;
     return pending;
   }, [onBackgroundSyncError, reloadRecords, startCoordinator]);
